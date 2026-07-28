@@ -1,0 +1,6 @@
+.DS_Store
+/.vers/
+/.worktrees/
+/.tools/
+/build/
+/dist/

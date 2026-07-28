@@ -1,0 +1,3 @@
+[submodule "upstream/jq"]
+	path = upstream/jq
+	url = https://github.com/jqlang/jq.git
