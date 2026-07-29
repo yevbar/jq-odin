@@ -1,7 +1,7 @@
 [machine]
 mem_size_mib = 2048
 vcpu_count = 4
-fs_size_vm_mib = 4096
+fs_size_vm_mib = 8192
 
 [rootfs]
 name = "default"
@@ -12,4 +12,3 @@ dockerfile = "Dockerfile"
 
 [kernel]
 name = "default.bin"
-

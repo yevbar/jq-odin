@@ -14,6 +14,7 @@ Usage:
 Options:
   --base BRANCH       Integration base (default: main)
   --commit KEY        Vers commit key
+  --disk-size MIB     Minimum task disk size (default: 8192)
   --repo URL          GitHub repository URL
   --repo-dir PATH     Repository location inside the VM
   --prepare-only      Prepare the VM without starting Codex
@@ -25,6 +26,7 @@ task_slug=
 prompt_file=
 base_branch=main
 commit_key=${JQ_CODEX_VERS_COMMIT:-$default_commit}
+disk_size_mib=8192
 repo_url=$default_repo
 repo_dir=$default_repo_dir
 prepare_only=false
@@ -49,6 +51,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --commit)
             commit_key=${2:?missing value for --commit}
+            shift 2
+            ;;
+        --disk-size)
+            disk_size_mib=${2:?missing value for --disk-size}
             shift 2
             ;;
         --repo)
@@ -91,6 +97,17 @@ case "$task_slug" in
         ;;
 esac
 
+case "$disk_size_mib" in
+    *[!0-9]*|'')
+        echo "Disk size must be a positive integer in MiB" >&2
+        exit 2
+        ;;
+esac
+if [ "$disk_size_mib" -eq 0 ]; then
+    echo "Disk size must be greater than zero" >&2
+    exit 2
+fi
+
 if [ "$prepare_only" = false ]; then
     if [ -z "$prompt_file" ] || [ ! -f "$prompt_file" ]; then
         echo "--prompt-file must name an existing file" >&2
@@ -120,8 +137,18 @@ run_json=$(
 )
 vm_id=$(printf '%s\n' "$run_json" | jq -er .vm_id)
 
+current_disk_kib=$(
+    vers exec --ssh -t 60 "$vm_id" env HOME=/root sh -lc \
+        "df -Pk / | awk 'NR == 2 { print \$2 }'"
+)
+current_disk_mib=$((current_disk_kib / 1024))
+if [ "$current_disk_mib" -lt "$disk_size_mib" ]; then
+    echo "Growing VM disk: ${current_disk_mib} MiB -> ${disk_size_mib} MiB"
+    vers resize "$vm_id" --size "$disk_size_mib"
+fi
+
 echo "Preparing VM $vm_id"
-if ! vers exec -i -t 0 "$vm_id" sh -s -- \
+if ! vers exec --ssh -i -t 1800 "$vm_id" env HOME=/root sh -s -- \
     "$repo_url" "$base_branch" "$feature_branch" "$repo_dir" \
     <"$prepare_script"; then
     echo "VM preparation failed; preserved for diagnosis: $vm_id" >&2
@@ -157,7 +184,7 @@ trap 'rm -f "$wrapped_prompt"' EXIT HUP INT TERM
 } >"$wrapped_prompt"
 
 echo "Starting Codex in VM $vm_id"
-if ! vers exec -i -t 0 "$vm_id" sh -lc \
+if ! vers exec --ssh -i -t 7200 "$vm_id" env HOME=/root sh -lc \
     "export GH_TOKEN=\"\$GITHUB_API_KEY\"; cd '$repo_dir'; codex exec --dangerously-bypass-approvals-and-sandbox --color never -C '$repo_dir' -" \
     <"$wrapped_prompt"; then
     echo "Codex task failed; VM preserved for diagnosis: $vm_id" >&2

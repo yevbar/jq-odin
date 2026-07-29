@@ -43,6 +43,7 @@ The launcher:
 - synchronizes the restored clock before TLS or package operations;
 - uses `GITHUB_API_KEY` through an environment-backed Git credential helper;
 - clones or fetches every GitHub branch and prunes deleted remote branches;
+- grows the task filesystem to at least 8 GiB by default;
 - checks out or creates `agent/<workstream>/<task>` from the latest base;
 - initializes submodules and the pinned Odin toolchain;
 - validates the repository;
@@ -59,7 +60,8 @@ scripts/handle-task.sh \
 ```
 
 Override the integration base with `--base <branch>` and the snapshot with
-`--commit <vers-commit-key>` only when the task explicitly requires it.
+`--commit <vers-commit-key>` only when the task explicitly requires it. Use
+`--disk-size <mib>` when a task needs more than the default 8 GiB.
 
 ## Supervise and hand off
 
