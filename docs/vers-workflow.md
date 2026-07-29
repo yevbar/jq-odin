@@ -3,6 +3,24 @@
 Vers isolates live agent environments; Git records reviewable changes. A Vers
 branch is not a substitute for a Git feature branch or pull request.
 
+## Handle-task skill
+
+Invoke the repository-local `$handle-task` skill to prepare and run one author
+task. Its launcher uses the authenticated Codex Vers snapshot, synchronizes the
+restored clock, fetches all current GitHub branch state, creates or resumes the
+assigned `agent/<workstream>/<task>` branch, installs the pinned toolchain, and
+runs Codex.
+
+The approved default snapshot is:
+
+```text
+13b7c648-7849-4b9b-a788-16b4522edeb8
+```
+
+Override it with `JQ_CODEX_VERS_COMMIT` only after validating and approving a
+replacement snapshot. `GITHUB_API_KEY` is injected by Vers and is never stored
+in the image or repository.
+
 ## Golden environment
 
 Create one clean Linux VM, install the pinned toolchain, clone the repository

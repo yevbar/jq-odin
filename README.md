@@ -58,3 +58,5 @@ git submodule update --init --recursive
   pull-request, and adversarial-review loop.
 
 Agents must read [`AGENTS.md`](AGENTS.md) before changing the repository.
+Use the repository-local `$handle-task` skill to launch an isolated Vers author
+agent for one workstream task.
