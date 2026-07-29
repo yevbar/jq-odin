@@ -23,9 +23,12 @@ for package_name in diagnostic value json syntax program compiler eval; do
     fi
 done
 
-for script in "$root_dir"/scripts/*.sh "$root_dir"/scripts/vers/*.sh; do
+for script in \
+    "$root_dir"/scripts/*.sh \
+    "$root_dir"/scripts/ci/*.sh \
+    "$root_dir"/scripts/vers/*.sh
+do
     sh -n "$script"
 done
 
 echo "Repository layout is consistent."
-

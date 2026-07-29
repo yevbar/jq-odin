@@ -60,3 +60,8 @@ git submodule update --init --recursive
 Agents must read [`AGENTS.md`](AGENTS.md) before changing the repository.
 Use the repository-local `$handle-task` skill to launch an isolated Vers author
 agent for one workstream task.
+
+Pull requests are merge-gated by one required GitHub Actions check,
+`adversarial-diff-review`. It combines repository validation with an
+adversarial review that receives only the proposed net diff. See
+[`docs/decisions/0001-diff-centric-merge-gate.md`](docs/decisions/0001-diff-centric-merge-gate.md).

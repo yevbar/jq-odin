@@ -63,6 +63,16 @@ replacement for Git commits.
 
 ## Review loop
 
+The required `adversarial-diff-review` GitHub Actions check runs first. It
+reviews the net merge-base-to-head diff in an isolated directory and fails
+closed on validation errors, reviewer errors, or concrete findings. GitHub
+Actions publishes the check result; the Vers `GITHUB_API_KEY` needs only read
+access to observe it.
+
+This automated diff-only gate does not replace the deeper lanes below, which
+can inspect source context, execute probes, and submit evidence as pull-request
+reviews.
+
 Do not branch reviewers from the author's live VM. A Vers branch preserves
 memory and running processes, which would also preserve author-agent context.
 
@@ -103,16 +113,18 @@ falsify changes rather than confirm them.
 
 ## GitHub repository settings
 
-After the private remote exists, protect `main` with:
+Protect `main` with:
 
 - pull requests required;
-- the `validate` status check required;
-- at least two approving reviews;
-- stale approvals dismissed after new commits;
-- author self-approval disallowed;
+- the single `adversarial-diff-review` check required and strictly up to date;
+- two approving reviews, with stale approvals dismissed after new commits;
+- approval by someone other than the last pusher;
+- unresolved review conversations blocked;
+- linear history required;
 - force pushes and branch deletion disallowed.
 
-GitHub's ordinary approval count does not prove that the required adversarial
-lanes ran. The first orchestration implementation should publish one distinct
-check run per lane, such as `review/semantic-parity`, `review/odin-safety`, and
-`review/test-gap`. Protect the applicable checks once they exist.
+Configure the `OPENAI_API_KEY` Actions secret before enabling protection. The
+workflow uses trusted policy from the base branch, runs pull-request code only
+in a secretless job, and gives the reviewer no repository checkout. The Vers
+review lanes remain independent pull-request reviews rather than status
+writers.

@@ -74,6 +74,11 @@ branch, and PR URL. If the agent fails:
 - delete it only when the user or coordinator confirms it is no longer needed.
 
 Before reporting completion, verify the pull request exists, CI has started,
-and the author did not merge it. Adversarial-review agents use separate fresh
-VMs and the review prompts in the repository; they are not launched from the
-author VM.
+and the author did not merge it. The author may observe
+`adversarial-diff-review` with read-only status access but must never create,
+override, or spoof that check. A failed gate returns the task to the same
+feature branch for a narrow fix and a fresh workflow run.
+
+The required automated reviewer sees only the net pull-request diff. Deeper
+semantic-parity, Odin-safety, and test-gap reviewers use separate fresh VMs and
+the prompts in `reviews/prompts/`; they are not launched from the author VM.

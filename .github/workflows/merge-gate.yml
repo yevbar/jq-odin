@@ -1,0 +1,120 @@
+name: merge-gate
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+
+concurrency:
+  group: merge-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate-untrusted-head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the pull-request head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: recursive
+          persist-credentials: false
+
+      # This job intentionally has no repository secrets. The pull-request
+      # checkout controls the Makefile and every command it invokes.
+      - name: Install pinned Odin toolchain
+        run: make bootstrap
+
+      - name: Validate repository
+        run: make validate
+
+  review:
+    name: review-isolated-net-diff
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out trusted review policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: policy
+          persist-credentials: false
+
+      - name: Check out pull-request history without submodules
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+
+      - name: Build the diff-only review packet
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          policy/scripts/ci/build-review-packet.sh \
+            source "$BASE_SHA" "$HEAD_SHA" review-input
+
+      - name: Remove repository checkouts
+        run: rm -rf policy source
+
+      - name: Confirm the isolation boundary
+        run: |
+          test "$(find . -mindepth 1 -maxdepth 1 -type d -print)" = "./review-input"
+          test ! -e .git
+          find review-input -maxdepth 1 -type f -print | sort
+
+      - name: Run adversarial diff review
+        id: codex
+        uses: openai/codex-action@b11346a6fa031e2e164ab4b7c7ea201afffd7d59 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt-file: review-input/PROMPT.md
+          output-file: review-input/result.json
+          output-schema-file: review-input/result.schema.json
+          working-directory: review-input
+          permission-profile: :read-only
+          safety-strategy: drop-sudo
+          model: gpt-5.6-sol
+          effort: high
+
+      - name: Enforce reviewer verdict
+        run: |
+          jq . review-input/result.json
+          jq -e '
+            .verdict == "pass" and
+            (.findings | length == 0)
+          ' review-input/result.json
+
+  gate:
+    name: adversarial-diff-review
+    if: ${{ always() }}
+    needs:
+      - validate
+      - review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Require validation and adversarial review
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: |
+          printf 'validation: %s\nreview: %s\n' \
+            "$VALIDATE_RESULT" "$REVIEW_RESULT"
+          test "$VALIDATE_RESULT" = success
+          test "$REVIEW_RESULT" = success
