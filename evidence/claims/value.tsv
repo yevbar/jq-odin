@@ -1,35 +1,36 @@
 id	area	claim	source_path	source_lines	author	reviewer_1	reviewer_2	status
-value-001	kind	jv_kind assigns distinct enum values to invalid and null.	upstream/jq/src/jv.h	19-28	yevbar			proposed
-value-002	representation	A jv stores kind flags, an array-view offset, a size, and a union containing either a refcount pointer or an inline double.	upstream/jq/src/jv.h	30-43	yevbar			proposed
-value-003	ownership	Consumption must be determined per public jv function: jv_get_kind and jv_string_value borrow their jv inputs, while jv_copy increments the refcount of an allocated input and returns it.	upstream/jq/src/jv.c	98-100,1446-1449,1957-1962	yevbar			proposed
-value-004	reference-counting	jv_copy increments the refcount only for payloads marked allocated and otherwise returns the jv unchanged.	upstream/jq/src/jv.c	1954-1962	yevbar			proposed
-value-005	release	jv_free dispatches array, string, object, invalid, and number values to kind-specific release procedures.	upstream/jq/src/jv.c	1964-1982	yevbar			proposed
-value-006	equality	jv_equal returns false when the two jv kinds differ.	upstream/jq/src/jv.c	1996-2000	yevbar			proposed
-value-007	number-storage	A native number stores its double directly in jv.u.number.	upstream/jq/src/jv.c	674-683	yevbar			proposed
-value-008	number-equality	Number equality delegates to numeric comparison, which compares two literal numbers as decimals when USE_DECNUM is enabled and otherwise compares their double values.	upstream/jq/src/jv.c	770-806	yevbar			proposed
-value-009	number-parsing	With USE_DECNUM, the JSON parser passes the NUL-terminated token buffer to jv_number_with_literal.	upstream/jq/src/jv_parse.c	529-534	yevbar			proposed
-value-010	number-parsing	Without USE_DECNUM, the JSON parser converts the token buffer with jvp_strtod and constructs an inline native number.	upstream/jq/src/jv_parse.c	538-545	yevbar			proposed
-value-011	number-literal	A USE_DECNUM literal number lazily allocates and caches its decNumberToString output.	upstream/jq/src/jv.c	623-652	yevbar			proposed
-value-012	array-storage	An array allocation contains a refcount, logical backing length, allocation length, and inline jv element slots.	upstream/jq/src/jv.c	821-839	yevbar			proposed
-value-013	array-slice	A non-empty array slice normally aliases the consumed array's backing allocation by changing only the jv offset and visible size.	upstream/jq/src/jv.c	961-983	yevbar			proposed
-value-014	array-copy-on-write	An array write reuses backing storage only when capacity suffices and the refcount is one; otherwise it allocates storage and jv_copy copies the visible elements.	upstream/jq/src/jv.c	878-909	yevbar			proposed
-value-015	array-mutation	jv_array_set consumes the supplied value, frees the overwritten slot, and stores the supplied jv directly in that slot.	upstream/jq/src/jv.c	1018-1037	yevbar			proposed
-value-016	array-equality	Array equality requires equal visible lengths and recursively compares elements at the same indices.	upstream/jq/src/jv.c	911-923	yevbar			proposed
-value-017	string-storage	A string allocation contains a refcount, cached hash state, byte length state, allocation length, and a trailing NUL-terminated byte buffer.	upstream/jq/src/jv.c	1088-1109	yevbar			proposed
-value-018	string-copy-on-write	String append mutates in place only when the refcount is one and capacity suffices; otherwise it allocates and copies into a larger buffer.	upstream/jq/src/jv.c	1174-1197	yevbar			proposed
-value-019	string-equality	String equality requires equal byte lengths and byte-for-byte equality.	upstream/jq/src/jv.c	1265-1272	yevbar			proposed
-value-020	object-storage	An object allocation contains object slots followed by twice as many hash buckets.	upstream/jq/src/jv.c	1572-1603	yevbar			proposed
-value-021	object-copy-on-write	Object mutation returns the original object when its refcount is one; otherwise it copies occupied keys and values with jv_copy into a new object.	upstream/jq/src/jv.c	1708-1731	yevbar			proposed
-value-022	object-rehash	Object rehash transfers occupied slot key and value references to the new table and frees the old table without decrementing those transferred references.	upstream/jq/src/jv.c	1685-1705	yevbar			proposed
-value-023	object-equality	Object equality looks up each occupied key from the first object in the second object and recursively compares values, then requires equal member counts.	upstream/jq/src/jv.c	1792-1805	yevbar			proposed
-value-024	object-order	New object keys occupy successive next_free slot indices.	upstream/jq/src/jv.c	1650-1660	yevbar			proposed
-value-025	object-order	Object iteration advances through increasing slot indices and skips slots whose key marker is null.	upstream/jq/src/jv.c	1929-1942	yevbar			proposed
-value-026	object-output	Object printing uses sorted keys only with JV_PRINT_SORTED; otherwise it emits members in object-iterator order.	upstream/jq/src/jv_print.c	312-345	yevbar			proposed
-value-027	number-unresolved	Does compatibility require jq's default USE_DECNUM build mode rather than the --disable-decnum mode?	upstream/jq/configure.ac	103-109	yevbar			proposed
-value-028	object-release	On the object-too-big path, jv_object_set frees the object but does not release its key input.	upstream/jq/src/jv.c	1734-1750,1855-1863	yevbar			proposed
-value-029	object-release	On the object-too-big path, jv_object_set frees the object but does not release its value input.	upstream/jq/src/jv.c	1734-1750,1855-1863	yevbar			proposed
-value-030	equality	For equal kinds, jv_equal uses type-specific equality for numbers, arrays, strings, and objects; other kinds compare equal.	upstream/jq/src/jv.c	2000-2027	yevbar			proposed
-value-031	number-storage	With USE_DECNUM, number flags distinguish inline native numbers from allocated literal numbers.	upstream/jq/src/jv.c	204-210,674-683	yevbar			proposed
-value-032	number-literal	Generating a USE_DECNUM literal string deliberately does not trim parsed decimal precision.	upstream/jq/src/jv.c	641-649	yevbar			proposed
-value-033	object-storage	Each object slot stores collision linkage, a hash, a string jv, and a value jv.	upstream/jq/src/jv.c	1563-1570	yevbar			proposed
-value-034	object-order	Updating an existing object key retains its slot and releases the incoming duplicate key.	upstream/jq/src/jv.c	1734-1742	yevbar			proposed
+value-001	kind	jv_kind assigns distinct enum values to invalid and null.	upstream/jq/src/jv.h	19-28	yevbar	codex-value-r1		proposed
+value-002	representation	A jv stores kind flags, an array-view offset, a size, and a union containing either a refcount pointer or an inline double.	upstream/jq/src/jv.h	30-43	yevbar	codex-value-r1		proposed
+value-003	ownership	Consumption must be determined per public jv function: jv_get_kind and jv_string_value borrow their jv inputs, while jv_copy increments the refcount of an allocated input and returns it.	upstream/jq/src/jv.c	98-100,1446-1449,1957-1962	yevbar	codex-value-r1		proposed
+value-004	reference-counting	jv_copy increments the refcount only for payloads marked allocated and otherwise returns the jv unchanged.	upstream/jq/src/jv.c	1954-1962	yevbar	codex-value-r1		proposed
+value-005	release	jv_free dispatches array, string, object, invalid, and number values to kind-specific release procedures.	upstream/jq/src/jv.c	1964-1982	yevbar	codex-value-r1		proposed
+value-006	equality	jv_equal returns false when the two jv kinds differ.	upstream/jq/src/jv.c	1996-2000	yevbar	codex-value-r1		proposed
+value-007	number-storage	A native number stores its double directly in jv.u.number.	upstream/jq/src/jv.c	674-683	yevbar	codex-value-r1		proposed
+value-008	number-equality	Number equality delegates to numeric comparison, which compares two literal numbers as decimals when USE_DECNUM is enabled and otherwise compares their double values.	upstream/jq/src/jv.c	770-806	yevbar	codex-value-r1		proposed
+value-009	number-parsing	With USE_DECNUM, the JSON parser passes the NUL-terminated token buffer to jv_number_with_literal.	upstream/jq/src/jv_parse.c	529-534	yevbar	codex-value-r1		proposed
+value-010	number-parsing	Without USE_DECNUM, the JSON parser converts the token buffer with jvp_strtod and constructs an inline native number.	upstream/jq/src/jv_parse.c	538-545	yevbar	codex-value-r1		proposed
+value-011	number-literal	A USE_DECNUM literal number lazily allocates and caches its decNumberToString output.	upstream/jq/src/jv.c	623-652	yevbar			disputed
+value-012	array-storage	An array allocation contains a refcount, logical backing length, allocation length, and inline jv element slots.	upstream/jq/src/jv.c	821-839	yevbar	codex-value-r1		proposed
+value-013	array-slice	A non-empty array slice retains the consumed array's backing pointer and changes only offset and visible size unless the updated offset would overflow; that exceptional path copies the selected elements into a new allocation.	upstream/jq/src/jv.c	961-983	yevbar	codex-value-r1		proposed
+value-014	array-copy-on-write	An array write reuses backing storage only when capacity suffices and the refcount is one; otherwise it allocates storage and jv_copy copies the visible elements.	upstream/jq/src/jv.c	878-909	yevbar	codex-value-r1		proposed
+value-015	array-mutation	jv_array_set consumes the supplied value, frees the overwritten slot, and stores the supplied jv directly in that slot.	upstream/jq/src/jv.c	1018-1037	yevbar	codex-value-r1		proposed
+value-016	array-equality	Array equality requires equal visible lengths and recursively compares elements at the same indices.	upstream/jq/src/jv.c	911-923	yevbar	codex-value-r1		proposed
+value-017	string-storage	A string allocation contains a refcount, cached hash state, byte length state, allocation length, and a trailing NUL-terminated byte buffer.	upstream/jq/src/jv.c	1088-1109	yevbar			disputed
+value-018	string-copy-on-write	String append mutates in place only when the refcount is one and capacity suffices; otherwise it allocates and copies into a larger buffer.	upstream/jq/src/jv.c	1174-1197	yevbar	codex-value-r1		proposed
+value-019	string-equality	String equality requires equal byte lengths and byte-for-byte equality.	upstream/jq/src/jv.c	1265-1272	yevbar	codex-value-r1		proposed
+value-020	object-storage	An object allocation contains object slots followed by twice as many hash buckets.	upstream/jq/src/jv.c	1572-1603	yevbar	codex-value-r1		proposed
+value-021	object-copy-on-write	Object mutation returns the original object when its refcount is one; otherwise it copies occupied keys and values with jv_copy into a new object.	upstream/jq/src/jv.c	1708-1731	yevbar			disputed
+value-022	object-rehash	Object rehash transfers occupied slot key and value references to the new table and frees the old table without decrementing those transferred references.	upstream/jq/src/jv.c	1685-1705	yevbar	codex-value-r1		proposed
+value-023	object-equality	Object equality looks up each occupied key from the first object in the second object and recursively compares values, then requires equal member counts.	upstream/jq/src/jv.c	1792-1805	yevbar	codex-value-r1		proposed
+value-024	object-order	New object keys occupy successive next_free slot indices.	upstream/jq/src/jv.c	1650-1660	yevbar	codex-value-r1		proposed
+value-025	object-order	Object iteration advances through increasing slot indices and skips slots whose key marker is null.	upstream/jq/src/jv.c	1929-1942	yevbar	codex-value-r1		proposed
+value-026	object-output	Object printing uses sorted keys only with JV_PRINT_SORTED; otherwise it emits members in object-iterator order.	upstream/jq/src/jv_print.c	312-345	yevbar	codex-value-r1		proposed
+value-027	number-unresolved	Does compatibility require jq's default USE_DECNUM build mode rather than the --disable-decnum mode?	upstream/jq/configure.ac	103-109	yevbar			disputed
+value-028	object-release	On the object-too-big path, jv_object_set frees the object but does not release its key input.	upstream/jq/src/jv.c	1734-1750,1855-1863	yevbar	codex-value-r1		proposed
+value-029	object-release	On the object-too-big path, jv_object_set frees the object but does not release its value input.	upstream/jq/src/jv.c	1734-1750,1855-1863	yevbar	codex-value-r1		proposed
+value-030	equality	For equal kinds, jv_equal uses type-specific equality for numbers, arrays, strings, and objects; other kinds compare equal.	upstream/jq/src/jv.c	2000-2027	yevbar	codex-value-r1		proposed
+value-031	number-storage	With USE_DECNUM, number flags distinguish inline native numbers from allocated literal numbers.	upstream/jq/src/jv.c	204-210,674-683	yevbar	codex-value-r1		proposed
+value-032	number-literal	Generating a USE_DECNUM literal string deliberately does not trim parsed decimal precision.	upstream/jq/src/jv.c	641-649	yevbar	codex-value-r1		proposed
+value-033	object-storage	Each object slot stores collision linkage, a hash, a string jv, and a value jv.	upstream/jq/src/jv.c	1563-1570	yevbar	codex-value-r1		proposed
+value-034	object-order	Updating an existing object key retains its slot and releases the incoming duplicate key.	upstream/jq/src/jv.c	1734-1742	yevbar	codex-value-r1		proposed
+value-035	allocation-failure	If jv_mem_alloc cannot allocate, it calls memory_exhausted. In USE_TLS and pthread builds, memory_exhausted invokes a configured no-memory handler, which may longjmp, then prints an error and aborts if the handler returns; in the valid fallback with neither TLS nor pthread support, jv_nomem_handler stores the configured handler and data but memory_exhausted ignores them and unconditionally prints the error and aborts.	upstream/jq/src/jv_alloc.c	12-43,108-147	yevbar			proposed
