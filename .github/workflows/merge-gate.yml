@@ -68,36 +68,55 @@ jobs:
           policy/scripts/ci/build-review-packet.sh \
             source "$BASE_SHA" "$HEAD_SHA" review-input
 
+      - name: Preserve trusted Vers controller
+        run: |
+          mkdir controller
+          cp policy/scripts/ci/run-vers-review.sh controller/
+          cp policy/scripts/ci/vers-review-vm.sh controller/
+
       - name: Remove repository checkouts
         run: rm -rf policy source
 
       - name: Confirm the isolation boundary
         run: |
-          test "$(find . -mindepth 1 -maxdepth 1 -type d -print)" = "./review-input"
+          test "$(find . -mindepth 1 -maxdepth 1 -type d -print | sort)" = "$(printf './controller\n./review-input')"
           test ! -e .git
           find review-input -maxdepth 1 -type f -print | sort
 
       - name: Run adversarial diff review
-        id: codex
-        uses: openai/codex-action@b11346a6fa031e2e164ab4b7c7ea201afffd7d59 # v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: review-input/PROMPT.md
-          output-file: review-input/result.json
-          output-schema-file: review-input/result.schema.json
-          working-directory: review-input
-          permission-profile: :read-only
-          safety-strategy: drop-sudo
-          model: gpt-5.6-sol
-          effort: high
+        env:
+          VERS_API_KEY: ${{ secrets.VERS_API_KEY }}
+          VERS_REVIEW_COMMIT: 13b7c648-7849-4b9b-a788-16b4522edeb8
+        run: controller/run-vers-review.sh review-input review-input/result.json
 
-      - name: Enforce reviewer verdict
+      - name: Validate and summarize assessment
         run: |
           jq . review-input/result.json
           jq -e '
-            .verdict == "pass" and
-            (.findings | length == 0)
+            (
+              .recommendation == "merge_as_is" and
+              .quality_score >= 4 and
+              (.confidence == "medium" or .confidence == "high") and
+              (.findings | length == 0)
+            ) or (
+              .recommendation == "task_agent" and
+              (.findings | length > 0)
+            )
           ' review-input/result.json
+          {
+            printf '## Adversarial diff assessment\n\n'
+            jq -r '"**Quality:** \(.quality_score)/5  \n**Confidence:** \(.confidence)  \n**Recommendation:** `\(.recommendation)`\n\n\(.summary)"' \
+              review-input/result.json
+            printf '\n\nThe recommendation is advisory; the integration coordinator owns disposition.\n'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve assessment for the coordinator
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: adversarial-assessment-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: review-input/result.json
+          if-no-files-found: error
+          retention-days: 30
 
   gate:
     name: adversarial-diff-review

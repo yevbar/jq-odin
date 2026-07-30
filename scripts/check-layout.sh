@@ -26,7 +26,8 @@ done
 for script in \
     "$root_dir"/scripts/*.sh \
     "$root_dir"/scripts/ci/*.sh \
-    "$root_dir"/scripts/vers/*.sh
+    "$root_dir"/scripts/vers/*.sh \
+    "$root_dir"/.agents/skills/*/scripts/*.sh
 do
     sh -n "$script"
 done

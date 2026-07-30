@@ -1,4 +1,4 @@
 interface:
   display_name: "Handle jq Rewrite Task"
-  short_description: "Launch an isolated Vers task agent"
-  default_prompt: "Use $handle-task to launch and supervise an isolated jq rewrite task."
+  short_description: "Run Vers tasks and coordinate PR decisions"
+  default_prompt: "Use $handle-task to run a jq rewrite task, read its adversarial assessment, and decide whether to fix or merge."

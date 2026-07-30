@@ -64,14 +64,23 @@ replacement for Git commits.
 ## Review loop
 
 The required `adversarial-diff-review` GitHub Actions check runs first. It
-reviews the net merge-base-to-head diff in an isolated directory and fails
-closed on validation errors, reviewer errors, or concrete findings. GitHub
-Actions publishes the check result; the Vers `GITHUB_API_KEY` needs only read
-access to observe it.
+reviews the net merge-base-to-head diff in an isolated directory and preserves
+a quality score, recommendation, and findings for the exact PR head. It fails
+closed on validation, reviewer, schema, or artifact errors—not merely because
+the reviewer found a defect. GitHub Actions publishes the check result; the
+Vers `GITHUB_API_KEY` needs only read access to observe it.
 
-This automated diff-only gate does not replace the deeper lanes below, which
-can inspect source context, execute probes, and submit evidence as pull-request
-reviews.
+The GitHub-hosted review job is a Vers API controller, not a persistent
+self-hosted runner. It uses a dedicated `VERS_API_KEY` Actions secret to
+restore the approved snapshot, upload only the review packet, execute the
+already-authenticated Codex reviewer, retrieve its JSON result, and delete the
+VM. The token stays on the GitHub runner. The disposable VM synchronizes time,
+removes any stale author checkout at the approved snapshot path, and unsets
+GitHub credentials before review.
+
+The top-level integration coordinator reads that artifact and owns the
+decision. It may merge as-is, launch a fresh fixer agent on the same task
+branch, or request deeper lanes below to inspect context and execute probes.
 
 Do not branch reviewers from the author's live VM. A Vers branch preserves
 memory and running processes, which would also preserve author-agent context.
@@ -98,11 +107,13 @@ vote down a finding.
 ## Fix and merge loop
 
 Accepted findings are handled by a fixer agent in a fresh VM based on the PR
-head. The fixer pushes new commits to the feature branch, after which all CI
-and adversarial lanes rerun. The integration coordinator merges only when:
+head. The fixer pushes new commits to the existing feature branch, after which
+validation and the diff assessment rerun. The integration coordinator may
+instead merge as-is when the recommendation or findings do not withstand the
+full evidence. In either case, only the coordinator decides. It merges only
+when:
 
 - required CI passes;
-- required independent reviews approve;
 - evidence and ownership shards are updated;
 - no unresolved high-severity finding remains;
 - the PR is rebased or otherwise tested against the current integration base.
@@ -117,14 +128,12 @@ Protect `main` with:
 
 - pull requests required;
 - the single `adversarial-diff-review` check required and strictly up to date;
-- two approving reviews, with stale approvals dismissed after new commits;
-- approval by someone other than the last pusher;
 - unresolved review conversations blocked;
 - linear history required;
 - force pushes and branch deletion disallowed.
 
-Configure the `OPENAI_API_KEY` Actions secret before enabling protection. The
-workflow uses trusted policy from the base branch, runs pull-request code only
-in a secretless job, and gives the reviewer no repository checkout. The Vers
-review lanes remain independent pull-request reviews rather than status
-writers.
+Configure a dedicated `VERS_API_KEY` Actions secret before enabling
+protection. The workflow uses trusted policy from the base branch, runs
+pull-request code only in a secretless job, gives the reviewer no repository
+checkout, and preserves the assessment for the coordinator rather than making
+the reviewer the merge authority.

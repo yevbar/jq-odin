@@ -3,9 +3,18 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "verdict": {
+    "recommendation": {
       "type": "string",
-      "enum": ["pass", "fail"]
+      "enum": ["merge_as_is", "task_agent"]
+    },
+    "quality_score": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
     },
     "summary": {
       "type": "string"
@@ -48,5 +57,11 @@
       }
     }
   },
-  "required": ["verdict", "summary", "findings"]
+  "required": [
+    "recommendation",
+    "quality_score",
+    "confidence",
+    "summary",
+    "findings"
+  ]
 }

@@ -1,6 +1,6 @@
 ---
 name: handle-task
-description: Launch and supervise one jq-to-Odin implementation task in an isolated Vers VM with authenticated Codex, current GitHub branch state, a dedicated agent feature branch, the pinned toolchain, and repository validation. Use when asked to handle, dispatch, start, resume, or implement a jq rewrite task on Vers, especially when the result should become a pull request.
+description: Launch and supervise one jq-to-Odin implementation task in an isolated Vers VM, then coordinate its pull request using the required adversarial diff assessment. Use when asked to handle, dispatch, start, resume, implement, assess, fix, or decide whether to merge a jq rewrite task on Vers.
 ---
 
 # Handle Task
@@ -73,12 +73,41 @@ branch, and PR URL. If the agent fails:
 - never silently relaunch the same task on another branch;
 - delete it only when the user or coordinator confirms it is no longer needed.
 
-Before reporting completion, verify the pull request exists, CI has started,
-and the author did not merge it. The author may observe
+Before reporting author completion, verify the pull request exists, CI has
+started, and the author did not merge it. The author may observe
 `adversarial-diff-review` with read-only status access but must never create,
-override, or spoof that check. A failed gate returns the task to the same
-feature branch for a narrow fix and a fresh workflow run.
+override, or spoof that check.
 
-The required automated reviewer sees only the net pull-request diff. Deeper
-semantic-parity, Odin-safety, and test-gap reviewers use separate fresh VMs and
-the prompts in `reviews/prompts/`; they are not launched from the author VM.
+## Decide the pull request
+
+Keep disposition with the top-level integration coordinator. After the
+required check completes. The check itself runs the diff-only adversarial
+review in a disposable Vers VM restored from the approved authenticated
+snapshot; it is not a self-hosted Actions runner.
+
+1. Confirm the repository has a dedicated `VERS_API_KEY` Actions secret. Never
+   copy that token into an author or reviewer prompt.
+2. Verify `adversarial-diff-review` succeeded for the current PR head.
+3. Read the exact-head assessment:
+
+    ```sh
+    scripts/read-assessment.sh --pr <number>
+    ```
+
+4. Inspect the assessment evidence, author handoff, test results, affected
+   contracts, and risk. Treat `merge_as_is` or `task_agent` as advice, not an
+   automatic decision.
+5. Choose one outcome:
+   - launch a fresh agent in a fresh Vers VM on the existing
+     `agent/<workstream>/<task>` branch, giving it only accepted findings and
+     acceptance checks; or
+   - merge the pull request as-is when the evidence supports it and all
+     repository gates pass.
+
+Never ask the author agent or adversarial reviewer to merge. Never reuse the
+author VM for a fixer. A fixer pushes to the same feature branch so validation
+and assessment rerun against the new head. Do not read or accept an artifact
+whose name does not contain the current PR head SHA.
+
+Dispatch source-aware semantic-parity, Odin-safety, or test-gap reviewers in
+fresh VMs when the diff assessment or risk cannot be resolved from the packet.

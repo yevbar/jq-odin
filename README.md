@@ -63,5 +63,7 @@ agent for one workstream task.
 
 Pull requests are merge-gated by one required GitHub Actions check,
 `adversarial-diff-review`. It combines repository validation with an
-adversarial review that receives only the proposed net diff. See
+adversarial assessment that receives only the proposed net diff. The
+integration coordinator then decides whether to launch a fresh fixer agent on
+the task branch or merge as-is. See
 [`docs/decisions/0001-diff-centric-merge-gate.md`](docs/decisions/0001-diff-centric-merge-gate.md).
