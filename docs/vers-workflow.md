@@ -11,6 +11,16 @@ restored clock, fetches all current GitHub branch state, creates or resumes the
 assigned `agent/<workstream>/<task>` branch, installs the pinned toolchain, and
 runs Codex.
 
+The launcher requires Vers CLI v0.12.0 or newer. If an older system binary
+cannot be upgraded in place, set `VERS_BIN` to the verified newer executable.
+Long preparation and author commands run as durable in-VM jobs so local API
+deadlines do not terminate them. A detached runner that exits without writing
+its status is detected and reported rather than polled forever.
+Codex itself runs as an unprivileged `jqagent` account. Its repository and
+authentication copy belong to that account, while supervision state remains
+root-owned under `/run/handle-task`; task code cannot write its own completion
+status.
+
 The approved default snapshot is:
 
 ```text

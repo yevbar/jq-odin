@@ -114,11 +114,56 @@ configure_identity() {
     fi
 }
 
+configure_worker() {
+    worker_user=jqagent
+    worker_home=/home/jqagent
+    worker_codex_root=/opt/codex-worker
+
+    if ! id "$worker_user" >/dev/null 2>&1; then
+        useradd --create-home --shell /bin/sh "$worker_user"
+    fi
+
+    codex_js=$(readlink -f "$(command -v codex)")
+    codex_package=$(CDPATH= cd -- "$(dirname -- "$codex_js")/.." && pwd)
+    node_binary=$(readlink -f "$(command -v node)")
+    install -d -m 755 "$worker_codex_root"
+    if [ ! -d "$worker_codex_root/package" ]; then
+        cp -a --link "$codex_package" "$worker_codex_root/package"
+    fi
+    if [ ! -f "$worker_codex_root/node" ]; then
+        ln "$node_binary" "$worker_codex_root/node"
+    fi
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'exec /opt/codex-worker/node /opt/codex-worker/package/bin/codex.js "$@"' \
+        >/usr/local/bin/codex-worker
+    chmod 755 /usr/local/bin/codex-worker
+
+    install -d -m 700 -o "$worker_user" -g "$worker_user" \
+        "$worker_home/.codex" "$worker_home/bin"
+    install -m 600 -o "$worker_user" -g "$worker_user" \
+        /root/.codex/auth.json "$worker_home/.codex/auth.json"
+    if [ -f /root/.codex/config.toml ]; then
+        install -m 600 -o "$worker_user" -g "$worker_user" \
+            /root/.codex/config.toml "$worker_home/.codex/config.toml"
+    fi
+
+    worker_helper="$worker_home/bin/git-credential-github-env"
+    install -m 700 -o "$worker_user" -g "$worker_user" \
+        /root/bin/git-credential-github-env "$worker_helper"
+    runuser -u "$worker_user" -- env HOME="$worker_home" \
+        git config --global credential.https://github.com.helper "$worker_helper"
+
+    chown -R "$worker_user:$worker_user" "$repo_dir"
+    git config --global --add safe.directory "$repo_dir"
+}
+
 sync_clock
 configure_github_credentials
 sync_repository
 "$repo_dir/scripts/vers/bootstrap-vm.sh"
 configure_identity
+configure_worker
 
 printf '%s\n' \
     "Repository ready: $repo_dir" \

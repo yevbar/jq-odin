@@ -38,6 +38,8 @@ scripts/handle-task.sh \
 
 The launcher:
 
+- requires Vers CLI v0.12.0 or newer; set `VERS_BIN` to an alternate binary
+  path when the system installation is older;
 - boots the Vers commit named by `JQ_CODEX_VERS_COMMIT`, defaulting to the
   repository's approved authenticated snapshot;
 - synchronizes the restored clock before TLS or package operations;
@@ -48,6 +50,14 @@ The launcher:
 - initializes submodules and the pinned Odin toolchain;
 - validates the repository;
 - invokes authenticated Codex non-interactively inside the VM.
+
+VM preparation and Codex run as durable in-VM jobs with polled status files.
+This prevents a local API request deadline or transient client disconnect from
+terminating a long-running author task. The launcher also tracks each runner
+PID and fails closed if a runner disappears before recording its status.
+Preparation runs as root, but Codex and repository commands run as the
+unprivileged `jqagent` user. Root-owned status files live under
+`/run/handle-task`, so reviewed code cannot forge task completion.
 
 Use `--prepare-only` instead of `--prompt-file` to prepare a VM for interactive
 access:
