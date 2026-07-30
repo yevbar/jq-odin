@@ -78,6 +78,13 @@ VM. The token stays on the GitHub runner. The disposable VM synchronizes time,
 removes any stale author checkout at the approved snapshot path, and unsets
 GitHub credentials before review.
 
+A separate GitHub job mirrors the validated assessment into a bot-authored,
+head-specific pull-request comment. It updates only the comment for the same
+head and skips publication when that head is no longer current, preventing a
+slow older workflow from replacing newer review output. It has
+`pull-requests: write` and `actions: read`, but no Vers secret. The exact-head
+artifact remains authoritative; each comment is a human-readable projection.
+
 The top-level integration coordinator reads that artifact and owns the
 decision. It may merge as-is, launch a fresh fixer agent on the same task
 branch, or request deeper lanes below to inspect context and execute probes.

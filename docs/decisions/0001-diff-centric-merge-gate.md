@@ -43,6 +43,15 @@ findings and is stored as a head-SHA-keyed artifact. The integration
 coordinator judges that evidence and either starts a fresh fixer agent on the
 existing task branch or merges the pull request as-is.
 
+After artifact validation, a separate least-privilege job creates or updates
+one head-SHA-specific `github-actions[bot]` pull-request comment with the same
+assessment. Before publication it verifies that the assessment head is still
+the pull request's current head. Older runs therefore cannot overwrite a newer
+assessment. The job receives no Vers secret, executes only policy from the
+protected base, and treats assessment text as untrusted display data. Comment
+publication is visible to humans but does not replace the head-SHA-bound
+artifact as the coordinator's source of truth or change the gate verdict.
+
 A `merge_as_is` assessment is structurally acceptable only with no findings,
 quality at least 4, and medium or high confidence. This prevents an
 environmental reviewer failure from becoming a successful empty assessment.
@@ -80,6 +89,8 @@ usable on Vers kernels that do not support Codex's Linux seccomp sandbox.
   remains in the approved Vers snapshot.
 - Any validation failure, reviewer execution failure, malformed reviewer
   output, or missing current-head artifact fails closed.
+- A comment-publication failure is visible in its job but does not turn a
+  valid assessment into a failed merge gate; the artifact remains available.
 - Branch protection must require an up-to-date
   `adversarial-diff-review` check and pull requests for `main`.
 - The coordinator, not the author or reviewer, decides whether findings need a

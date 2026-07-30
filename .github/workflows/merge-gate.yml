@@ -118,12 +118,105 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  publish:
+    name: publish-review-comment
+    needs:
+      - review
+    if: ${{ needs.review.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Check out trusted comment renderer
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: policy
+          persist-credentials: false
+
+      - name: Download exact-head assessment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: adversarial-assessment-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+        run: |
+          artifacts=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100")
+          artifact_id=$(
+            printf '%s' "$artifacts" |
+              jq -er --arg name "$ARTIFACT_NAME" '
+                .artifacts
+                | map(select(.name == $name and .expired == false))
+                | if length == 1 then .[0].id else error("expected one artifact") end
+              '
+          )
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
+            >assessment.zip
+          unzip -p assessment.zip result.json >result.json
+          policy/scripts/ci/render-review-comment.sh \
+            result.json \
+            "$GITHUB_REPOSITORY" \
+            "${{ github.event.pull_request.head.sha }}" \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            >comment.md
+
+      - name: Create or update pull-request comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          current_head=$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+              --jq .head.sha
+          )
+          if [ "$current_head" != "$HEAD_SHA" ]; then
+            printf 'Skipping stale assessment for %s; current head is %s\n' \
+              "$HEAD_SHA" "$current_head"
+            exit 0
+          fi
+
+          marker="<!-- jq-adversarial-assessment head=$HEAD_SHA -->"
+          comments=$(
+            gh api \
+              "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100"
+          )
+          comment_id=$(
+            printf '%s' "$comments" |
+              jq -r --arg marker "$marker" '
+                map(select(
+                  .user.login == "github-actions[bot]" and
+                  (.body | startswith($marker))
+                ))
+                | last
+                | .id // empty
+              '
+          )
+          payload=$(jq -cn --rawfile body comment.md '{body: $body}')
+          if [ -n "$comment_id" ]; then
+            printf '%s' "$payload" |
+              gh api --method PATCH \
+                "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+                --input - >/dev/null
+          else
+            printf '%s' "$payload" |
+              gh api --method POST \
+                "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+                --input - >/dev/null
+          fi
+
   gate:
     name: adversarial-diff-review
     if: ${{ always() }}
     needs:
       - validate
       - review
+      - publish
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
@@ -132,8 +225,9 @@ jobs:
         env:
           VALIDATE_RESULT: ${{ needs.validate.result }}
           REVIEW_RESULT: ${{ needs.review.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
         run: |
-          printf 'validation: %s\nreview: %s\n' \
-            "$VALIDATE_RESULT" "$REVIEW_RESULT"
+          printf 'validation: %s\nreview: %s\ncomment: %s\n' \
+            "$VALIDATE_RESULT" "$REVIEW_RESULT" "$PUBLISH_RESULT"
           test "$VALIDATE_RESULT" = success
           test "$REVIEW_RESULT" = success
