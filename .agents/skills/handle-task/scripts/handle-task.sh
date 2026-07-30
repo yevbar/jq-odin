@@ -18,6 +18,7 @@ Options:
   --repo URL          GitHub repository URL
   --repo-dir PATH     Repository location inside the VM
   --prepare-only      Prepare the VM without starting Codex
+  --keep-vm           Keep the VM running after this command exits
 EOF
 }
 
@@ -30,7 +31,90 @@ disk_size_mib=8192
 repo_url=$default_repo
 repo_dir=$default_repo_dir
 prepare_only=false
+keep_vm=false
 vers_bin=${VERS_BIN:-vers}
+vm_id=
+vm_phase=not-created
+wrapped_prompt=
+vm_alias=
+
+finish() {
+    status=$?
+    trap - EXIT HUP INT TERM
+
+    if [ -n "$wrapped_prompt" ]; then
+        rm -f "$wrapped_prompt"
+    fi
+
+    if [ -z "$vm_id" ] && [ "$vm_phase" = creating ] &&
+       [ -n "$vm_alias" ]; then
+        # run-commit can create the VM and then lose its response. Resolve the
+        # unique alias so an interrupted controller does not leak that VM.
+        resolved_vm_id=$("$vers_bin" alias "$vm_alias" 2>/dev/null || true)
+        case "$resolved_vm_id" in
+            *[!0-9a-f-]*|'')
+                ;;
+            *)
+                vm_id=$resolved_vm_id
+                ;;
+        esac
+    fi
+
+    if [ -z "$vm_id" ]; then
+        exit "$status"
+    fi
+
+    if [ "$keep_vm" = true ]; then
+        echo "Keeping VM $vm_id because --keep-vm was requested"
+        exit "$status"
+    fi
+
+    case "$vm_phase" in
+        prepared)
+            if [ "$prepare_only" = true ]; then
+                # --prepare-only is an explicit request for an interactive VM.
+                echo "Interactive VM retained: $vm_id"
+            else
+                echo "Deleting prepared task VM that did not start Codex: $vm_id" >&2
+                if ! "$vers_bin" delete -y "$vm_id"; then
+                    echo "Failed to delete prepared task VM $vm_id" >&2
+                    status=1
+                fi
+            fi
+            ;;
+        completed)
+            echo "Deleting completed task VM $vm_id"
+            if ! "$vers_bin" delete -y "$vm_id"; then
+                echo "Failed to delete completed task VM $vm_id" >&2
+                status=1
+            fi
+            ;;
+        codex)
+            echo "Pausing failed or interrupted task VM $vm_id" >&2
+            if ! "$vers_bin" pause "$vm_id"; then
+                echo "Unable to pause task VM; deleting it to prevent a runaway VM: $vm_id" >&2
+                if ! "$vers_bin" delete -y "$vm_id"; then
+                    echo "Failed to delete task VM $vm_id" >&2
+                    status=1
+                fi
+            fi
+            ;;
+        *)
+            # A preparation failure has no author work to preserve.
+            echo "Deleting incomplete preparation VM $vm_id" >&2
+            if ! "$vers_bin" delete -y "$vm_id"; then
+                echo "Failed to delete incomplete preparation VM $vm_id" >&2
+                status=1
+            fi
+            ;;
+    esac
+
+    exit "$status"
+}
+trap finish EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -68,6 +152,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --prepare-only)
             prepare_only=true
+            shift
+            ;;
+        --keep-vm)
+            keep_vm=true
             shift
             ;;
         -h|--help)
@@ -125,7 +213,7 @@ done
 
 feature_branch="agent/$workstream/$task_slug"
 alias_suffix=$(date +%s)
-vm_alias="jq-$workstream-$task_slug-$alias_suffix"
+vm_alias="jq-$workstream-$task_slug-$alias_suffix-$$"
 skill_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 prepare_script="$skill_dir/scripts/prepare-vm.sh"
 job_script="$skill_dir/scripts/run-job.sh"
@@ -192,6 +280,7 @@ wait_for_remote_job() {
 }
 
 echo "Booting Vers commit $commit_key"
+vm_phase=creating
 run_output=$(
     "$vers_bin" run-commit "$commit_key" \
         --vm-alias "$vm_alias" \
@@ -207,6 +296,7 @@ if [ -z "$vm_id" ]; then
     echo "Unable to parse VM ID from vers run-commit output" >&2
     exit 1
 fi
+vm_phase=booted
 
 current_disk_kib=$(
     "$vers_bin" exec --ssh -t 60 "$vm_id" env HOME=/root sh -lc \
@@ -246,9 +336,10 @@ prepare_log=$remote_state_dir/prepare.log
     env HOME=/root sh "$remote_prepare" \
     "$repo_url" "$base_branch" "$feature_branch" "$repo_dir"
 if ! wait_for_remote_job "VM preparation" "$prepare_status" "$prepare_log"; then
-    echo "VM preparation failed; preserved for diagnosis: $vm_id" >&2
+    echo "VM preparation failed: $vm_id" >&2
     exit 1
 fi
+vm_phase=prepared
 
 printf '%s\n' \
     "VM_ID=$vm_id" \
@@ -264,7 +355,6 @@ if [ "$prepare_only" = true ]; then
 fi
 
 wrapped_prompt=$(mktemp "${TMPDIR:-/tmp}/handle-task-prompt.XXXXXX")
-trap 'rm -f "$wrapped_prompt"' EXIT HUP INT TERM
 
 {
     printf '%s\n\n' \
@@ -279,6 +369,7 @@ trap 'rm -f "$wrapped_prompt"' EXIT HUP INT TERM
 } >"$wrapped_prompt"
 
 echo "Starting Codex in VM $vm_id"
+vm_phase=codex
 remote_prompt=/tmp/handle-task-prompt.txt
 remote_codex=/tmp/handle-task-run-codex.sh
 codex_status=$remote_state_dir/codex.status
@@ -294,8 +385,9 @@ codex_log=$remote_state_dir/codex.log
     runuser -u jqagent -- env HOME=/home/jqagent \
     "$remote_codex" "$repo_dir" "$remote_prompt"
 if ! wait_for_remote_job "Codex task" "$codex_status" "$codex_log"; then
-    echo "Codex task failed; VM preserved for diagnosis: $vm_id" >&2
+    echo "Codex task failed: $vm_id" >&2
     exit 1
 fi
 
+vm_phase=completed
 echo "Task agent completed in VM $vm_id"

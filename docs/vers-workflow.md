@@ -21,6 +21,19 @@ authentication copy belong to that account, while supervision state remains
 root-owned under `/run/handle-task`; task code cannot write its own completion
 status.
 
+VM retention is bounded by default:
+
+- successful non-interactive author tasks are deleted after their final log is
+  collected;
+- failed or interrupted author tasks are paused, preserving their disk without
+  consuming running-VM capacity;
+- preparation failures are deleted because no author work exists yet;
+- `--prepare-only` retains the requested interactive VM;
+- `--keep-vm` is the explicit exception for coordinator-directed diagnosis.
+
+Resume, checkpoint, or delete a paused failure after inspecting it. Do not
+leave it running between coordinator actions.
+
 The approved default snapshot is:
 
 ```text
@@ -87,6 +100,11 @@ already-authenticated Codex reviewer, retrieve its JSON result, and delete the
 VM. The token stays on the GitHub runner. The disposable VM synchronizes time,
 removes any stale author checkout at the approved snapshot path, and unsets
 GitHub credentials before review.
+
+The controller records the disposable VM ID before upload. Both its shell exit
+trap and an unconditional GitHub Actions cleanup step delete that ID; HTTP 404
+is treated as an already-completed deletion. This second cleanup path covers a
+controller interruption or cancellation during a superseded PR run.
 
 A separate GitHub job mirrors the validated assessment into a bot-authored,
 head-specific pull-request comment. It updates only the comment for the same

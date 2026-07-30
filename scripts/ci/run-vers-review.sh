@@ -28,6 +28,8 @@ packet_dir=$1
 result_file=$2
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 vm_script="$script_dir/vers-review-vm.sh"
+cleanup_script="$script_dir/cleanup-vers-review.sh"
+vm_id_file=${VERS_VM_ID_FILE:-"$(dirname -- "$result_file")/vers-vm-id"}
 vm_id=
 
 if [ -z "${VERS_API_KEY:-}" ]; then
@@ -95,8 +97,7 @@ cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
     if [ -n "$vm_id" ]; then
-        echo "Deleting disposable review VM $vm_id"
-        if ! api_retry DELETE "/vm/$vm_id" >/dev/null; then
+        if ! VERS_API_BASE="$api_base" "$cleanup_script" "$vm_id_file"; then
             echo "Failed to delete review VM $vm_id" >&2
             status=1
         fi
@@ -128,6 +129,8 @@ echo "Restoring approved Vers review snapshot $commit_id"
 create_body=$(jq -cn --arg id "$commit_id" '{commit_id: $id}')
 create_response=$(api POST /vm/from_commit "$create_body")
 vm_id=$(printf '%s\n' "$create_response" | jq -er .vm_id)
+mkdir -p "$(dirname -- "$vm_id_file")"
+printf '%s\n' "$vm_id" >"$vm_id_file"
 echo "Review VM: $vm_id"
 
 attempt=0

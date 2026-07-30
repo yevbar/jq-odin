@@ -75,13 +75,20 @@ Override the integration base with `--base <branch>` and the snapshot with
 
 ## Supervise and hand off
 
-The launcher intentionally leaves the VM running. Capture its reported VM ID,
-branch, and PR URL. If the agent fails:
+The launcher deletes a VM after a successful non-interactive task. A failed or
+interrupted Codex task is paused so its disk can be inspected or checkpointed
+without consuming running-VM capacity. A VM that fails during preparation is
+deleted because it contains no author work. `--prepare-only` retains its
+interactive VM by design.
 
-- inspect it with `vers exec <vm-id> ...` or `vers connect <vm-id>`;
+Use `--keep-vm` only when the coordinator explicitly needs a running VM after
+the launcher exits. Capture its reported VM ID, branch, and PR URL. If an agent
+is paused after failure:
+
+- resume it before using `vers exec <vm-id> ...` or `vers connect <vm-id>`;
 - preserve it for diagnosis or checkpoint it with `vers commit create <vm-id>`;
 - never silently relaunch the same task on another branch;
-- delete it only when the user or coordinator confirms it is no longer needed.
+- delete it when its useful state is pushed or checkpointed.
 
 Before reporting author completion, verify the pull request exists, CI has
 started, and the author did not merge it. The author may observe

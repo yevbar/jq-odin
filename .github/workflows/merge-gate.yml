@@ -73,6 +73,7 @@ jobs:
           mkdir controller
           cp policy/scripts/ci/run-vers-review.sh controller/
           cp policy/scripts/ci/vers-review-vm.sh controller/
+          cp policy/scripts/ci/cleanup-vers-review.sh controller/
 
       - name: Remove repository checkouts
         run: rm -rf policy source
@@ -87,7 +88,14 @@ jobs:
         env:
           VERS_API_KEY: ${{ secrets.VERS_API_KEY }}
           VERS_REVIEW_COMMIT: 13b7c648-7849-4b9b-a788-16b4522edeb8
+          VERS_VM_ID_FILE: controller/review-vm-id
         run: controller/run-vers-review.sh review-input review-input/result.json
+
+      - name: Ensure disposable review VM is deleted
+        if: ${{ always() }}
+        env:
+          VERS_API_KEY: ${{ secrets.VERS_API_KEY }}
+        run: controller/cleanup-vers-review.sh controller/review-vm-id
 
       - name: Validate and summarize assessment
         run: |
