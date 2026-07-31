@@ -105,8 +105,24 @@ The ownership vocabulary is part of the public contract:
 - owned data returned to a caller is allocated with an explicit caller
   allocator.
 
-Fallible constructors return a success/error result with either one complete
-owned value or an inert value. They release partial allocations on failure.
+Fallible constructors return a complete owned value plus an inert constructor
+error, or an inert value plus a constructor error. A constructor error is an
+opaque owning handle when exact-length allocation validation received a
+nonempty mismatched slice and retiring that slice genuinely failed. Callers
+inspect it with `constructor_error_kind`, transfer it with
+`take_constructor_error`, and retry `destroy_constructor_error` while keeping
+the captured allocator and its backing state alive. Ordinary syntax, overflow,
+nil/no-error, allocator-error, and successfully retired mismatch failures carry
+no storage. Constructor errors must not be copied.
+
+Every allocation boundary requires an exact-length result before indexing or
+constructing a payload. A nil/no-error or short/no-error result is an allocation
+failure. Any nonempty mismatch is retired with its originating allocator;
+`.Mode_Not_Implemented` is successful retirement under the allocator's bulk
+lifetime, while a genuine `Free` failure keeps the only slice handle in the
+constructor error for retry. Thus constructors release or transfer every
+partial allocation on failure rather than losing it.
+
 Destruction uses the allocator captured by the payload, never whichever
 allocator is current in the caller's Odin `context`. Arena-backed values and
 their clones must therefore be destroyed before arena teardown. A future
@@ -147,9 +163,13 @@ be torn down only after the last owning handle has been destroyed.
 
 `json`, `program`, and `eval` may retain a `Value` only by receiving ownership
 or calling `clone_value`. Their APIs must name borrowed versus owned
-parameters and results. They use the public procedures rather than selecting
-representation fields. Syntax remains independent of `Value`. The opaque union
-layout changes no package import edge.
+parameters and results. Direct constructor consumers must also inspect and
+retire or transfer every returned constructor error before allocator teardown.
+At this refinement's adoption, the direct consumers are `json.parse_scalar`
+and the focused Value tests; future `program` and `eval` consumers inherit the
+same rule. They use the public procedures rather than selecting representation
+fields. Syntax remains independent of `Value`. The opaque union layout changes
+no package import edge.
 
 The scalar implementation must not expose fields that let another package
 forge a kind/payload mismatch. Exhaustive switches must handle the reserved
@@ -157,8 +177,9 @@ array/object kinds even though constructors are not yet available.
 
 ## Validation
 
-- Allocation-tracked tests for clone, take, destroy, constructor failure, and
-  allocator provenance.
+- Allocation-tracked tests for clone, take, destroy, constructor failure,
+  exact-length nil/short results, retryable mismatch cleanup, and allocator
+  provenance.
 - A retired/detector allocator test proves that allocator backing state stays
   valid through final destruction (or a documented bulk-retirement operation)
   and that no operation permitted afterward calls the allocator.

@@ -30,6 +30,82 @@ Error :: enum u8 {
 }
 
 @(private)
+constructor_error_storage :: struct {
+	kind:              Error,
+	cleanup_memory:    []byte,
+	cleanup_allocator: runtime.Allocator,
+}
+
+// Constructor_Error is inert for ordinary failures. When exact-length
+// allocation validation cannot retire a nonempty mismatched result, it owns
+// that slice until destroy_constructor_error succeeds. It must not be copied.
+Constructor_Error :: union {
+	constructor_error_storage,
+}
+
+@(private)
+make_constructor_error :: proc(kind: Error) -> Constructor_Error {
+	if kind == .None {
+		return {}
+	}
+	return constructor_error_storage{kind = kind}
+}
+
+@(private)
+make_cleanup_constructor_error :: proc(
+	kind: Error,
+	memory: []byte,
+	allocator: runtime.Allocator,
+) -> Constructor_Error {
+	return constructor_error_storage{
+		kind = kind,
+		cleanup_memory = memory,
+		cleanup_allocator = allocator,
+	}
+}
+
+constructor_error_kind :: proc(err: ^Constructor_Error) -> Error {
+	if err == nil || err^ == nil {
+		return .None
+	}
+	return err.(constructor_error_storage).kind
+}
+
+constructor_error_needs_cleanup :: proc(err: ^Constructor_Error) -> bool {
+	if err == nil || err^ == nil {
+		return false
+	}
+	return len(err.(constructor_error_storage).cleanup_memory) > 0
+}
+
+take_constructor_error :: proc(source: ^Constructor_Error) -> Constructor_Error {
+	if source == nil {
+		return {}
+	}
+	result := source^
+	source^ = {}
+	return result
+}
+
+// destroy_constructor_error retries retirement of a mismatched allocation.
+// A genuine Free error leaves the owning handle unchanged for another retry;
+// Mode_Not_Implemented is successful retirement under a bulk allocator.
+destroy_constructor_error :: proc(err: ^Constructor_Error) -> runtime.Allocator_Error {
+	if err == nil || err^ == nil {
+		return nil
+	}
+	storage := &err.(constructor_error_storage)
+	if len(storage.cleanup_memory) > 0 {
+		free_error := runtime.mem_free_bytes(storage.cleanup_memory, storage.cleanup_allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			return free_error
+		}
+	}
+	err^ = {}
+	return nil
+}
+
+@(private)
 payload_kind :: enum u8 {
 	String,
 	Literal_Number,
@@ -168,14 +244,14 @@ allocate_payload :: proc(
 	kind: payload_kind,
 	byte_count, coefficient_capacity: int,
 	allocator: runtime.Allocator,
-) -> (p: ^payload, err: Error) {
+) -> (p: ^payload, err: Constructor_Error) {
 	if byte_count < 0 || coefficient_capacity < 0 {
-		return nil, .Size_Overflow
+		return nil, make_constructor_error(.Size_Overflow)
 	}
 	header_size := int(size_of(payload))
 	if byte_count > max(int) - header_size ||
 	   coefficient_capacity > max(int) - header_size - byte_count {
-		return nil, .Size_Overflow
+		return nil, make_constructor_error(.Size_Overflow)
 	}
 	allocation_size := header_size + byte_count + coefficient_capacity
 	memory, alloc_error := runtime.mem_alloc(
@@ -184,7 +260,13 @@ allocate_payload :: proc(
 		allocator,
 	)
 	if alloc_error != nil || len(memory) != allocation_size {
-		return nil, .Out_Of_Memory
+		if len(memory) > 0 {
+			free_error := runtime.mem_free_bytes(memory, allocator)
+			if free_error != nil && free_error != .Mode_Not_Implemented {
+				return nil, make_cleanup_constructor_error(.Out_Of_Memory, memory, allocator)
+			}
+		}
+		return nil, make_constructor_error(.Out_Of_Memory)
 	}
 	p = cast(^payload)(raw_data(memory))
 	p.references = 1
@@ -195,7 +277,10 @@ allocate_payload :: proc(
 	return p, nil
 }
 
-string_value :: proc(bytes: string, allocator: runtime.Allocator) -> (result: Value, err: Error) {
+string_value :: proc(bytes: string, allocator: runtime.Allocator) -> (
+	result: Value,
+	err: Constructor_Error,
+) {
 	p, payload_error := allocate_payload(.String, len(bytes), 0, allocator)
 	if payload_error != nil {
 		return {}, payload_error
@@ -547,7 +632,7 @@ literal_number_value_with_context :: proc(
 	allocator: runtime.Allocator,
 	context_digits: int,
 	context_emin, context_emax: i64,
-) -> (result: Value, err: Error) {
+) -> (result: Value, err: Constructor_Error) {
 	special_negative, special_infinite, special_nan, special_ok :=
 		special_literal(literal)
 	if special_ok && special_nan {
@@ -556,11 +641,11 @@ literal_number_value_with_context :: proc(
 
 	scan, ok := scan_literal(literal)
 	if !ok && !special_infinite {
-		return {}, .Invalid_Number_Literal
+		return {}, make_constructor_error(.Invalid_Number_Literal)
 	}
 	assert(context_digits > 0 && context_digits <= DECIMAL_DIGITS)
 	if context_emin > context_emax {
-		return {}, .Invalid_Number_Literal
+		return {}, make_constructor_error(.Invalid_Number_Literal)
 	}
 
 	coefficient_capacity := 0
@@ -645,7 +730,7 @@ literal_number_value_with_precision :: proc(
 	literal: string,
 	allocator: runtime.Allocator,
 	precision: int,
-) -> (result: Value, err: Error) {
+) -> (result: Value, err: Constructor_Error) {
 	return literal_number_value_with_context(
 		literal,
 		allocator,
@@ -662,7 +747,7 @@ literal_number_value_with_precision :: proc(
 literal_number_value :: proc(
 	literal: string,
 	allocator: runtime.Allocator,
-) -> (result: Value, err: Error) {
+) -> (result: Value, err: Constructor_Error) {
 	return literal_number_value_with_context(
 		literal,
 		allocator,

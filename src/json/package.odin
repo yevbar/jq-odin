@@ -1,2 +1,852 @@
 // Package json owns JSON text parsing, printing, and streaming.
 package json
+
+import "base:runtime"
+import "jq:value"
+
+// Scalar_Parse_Error_Kind is deliberately specific to the one-shot scalar
+// parser. Container and streaming implementations may extend the package
+// without changing this API into a partial container parser.
+Scalar_Parse_Error_Kind :: enum u8 {
+	None,
+	Expected_Value,
+	Trailing_Input,
+	Array_Not_Supported,
+	Object_Not_Supported,
+	Invalid_Literal,
+	Invalid_Number,
+	Unfinished_String,
+	Unfinished_Escape,
+	Unfinished_Unicode_Escape,
+	Invalid_Escape,
+	Invalid_Unicode_Escape,
+	Invalid_Surrogate_Pair,
+	Unescaped_Control,
+	Malformed_BOM,
+	Allocation_Failure,
+	Size_Overflow,
+	Value_Construction_Failure,
+	Scratch_Cleanup_Failure,
+}
+
+// Scalar_Parse_Error contains no view into the input. It is non-owning except
+// when kind is Scratch_Cleanup_Failure. That exceptional error retains every
+// scratch, constructor-error, or Value allocation whose Free failed and must
+// be passed to destroy_scalar_parse_error until retirement succeeds; it must
+// not be copied.
+//
+// detection_offset is the zero-based absolute byte where jq's scanner detects
+// the error: a delimiter or matched closing quote when one triggered
+// validation, otherwise the last byte observed at EOF. cause_offset is a
+// separate zero-based absolute byte or EOF boundary for the local cause when
+// has_cause_offset is true. Keeping both avoids conflating a useful local cause
+// with the cursor used by jq-facing diagnostics.
+Scalar_Parse_Error :: struct {
+	kind:              Scalar_Parse_Error_Kind,
+	detection_offset:  int,
+	cause_offset:      int,
+	has_cause_offset:  bool,
+	cause_kind:        Scalar_Parse_Error_Kind,
+	cleanup_scratch:   []byte,
+	cleanup_allocator: runtime.Allocator,
+	cleanup_constructor_error: value.Constructor_Error,
+	cleanup_value:     value.Value,
+}
+
+// destroy_scalar_parse_error retires storage retained by a scratch-cleanup
+// failure. A genuine allocator error leaves the corresponding handle in err
+// for a later retry. It is harmless for every other error kind.
+destroy_scalar_parse_error :: proc(err: ^Scalar_Parse_Error) -> runtime.Allocator_Error {
+	if err == nil || err.kind != .Scratch_Cleanup_Failure {
+		return nil
+	}
+	first_error: runtime.Allocator_Error
+	if len(err.cleanup_scratch) > 0 {
+		free_error := runtime.mem_free_bytes(err.cleanup_scratch, err.cleanup_allocator)
+		if free_error == nil || free_error == .Mode_Not_Implemented {
+			err.cleanup_scratch = nil
+			err.cleanup_allocator = {}
+		} else {
+			first_error = free_error
+		}
+	}
+	constructor_error := value.destroy_constructor_error(&err.cleanup_constructor_error)
+	if first_error == nil && constructor_error != nil {
+		first_error = constructor_error
+	}
+	value_error := value.destroy_value(&err.cleanup_value)
+	if first_error == nil && value_error != nil {
+		first_error = value_error
+	}
+	if first_error == nil {
+		err^ = {}
+	}
+	return first_error
+}
+
+@(private)
+parse_failure :: proc(kind: Scalar_Parse_Error_Kind, offset: int) -> (
+	value.Value,
+	Scalar_Parse_Error,
+) {
+	return value.invalid_value(), {
+		kind = kind,
+		detection_offset = offset,
+		cause_offset = offset,
+		has_cause_offset = true,
+	}
+}
+
+@(private)
+parse_detected_failure :: proc(
+	kind: Scalar_Parse_Error_Kind,
+	detection_offset, cause_offset: int,
+) -> (value.Value, Scalar_Parse_Error) {
+	return value.invalid_value(), {
+		kind = kind,
+		detection_offset = detection_offset,
+		cause_offset = cause_offset,
+		has_cause_offset = true,
+	}
+}
+
+@(private)
+is_whitespace :: proc(c: byte) -> bool {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n'
+}
+
+@(private)
+is_structure :: proc(c: byte) -> bool {
+	return c == '[' || c == ']' || c == '{' || c == '}' || c == ',' || c == ':'
+}
+
+@(private)
+is_token_delimiter :: proc(c: byte) -> bool {
+	return is_whitespace(c) || is_structure(c) || c == '"'
+}
+
+@(private)
+is_digit :: proc(c: byte) -> bool {
+	return c >= '0' && c <= '9'
+}
+
+// number_cause_offset is diagnostic-only. Acceptance is decided solely by the
+// Value numeric constructor; this permissive walk only identifies a useful
+// local cause for ordinary decimal spellings after that constructor rejects.
+@(private)
+number_cause_offset :: proc(token: string) -> int {
+	if len(token) == 0 {
+		return 0
+	}
+	i := 0
+	if token[i] == '-' || token[i] == '+' {
+		i += 1
+		if i == len(token) {
+			return i
+		}
+	}
+	digits := 0
+	for i < len(token) && is_digit(token[i]) {
+		i += 1
+		digits += 1
+	}
+	if i < len(token) && token[i] == '.' {
+		i += 1
+		for i < len(token) && is_digit(token[i]) {
+			i += 1
+			digits += 1
+		}
+	}
+	if digits == 0 {
+		return i
+	}
+	if i < len(token) && (token[i] == 'e' || token[i] == 'E') {
+		i += 1
+		if i < len(token) && (token[i] == '+' || token[i] == '-') {
+			i += 1
+		}
+		exponent_at := i
+		for i < len(token) && is_digit(token[i]) {
+			i += 1
+		}
+		if i == exponent_at {
+			return i
+		}
+	}
+	return i
+}
+
+@(private)
+detection_before_eof :: proc(cursor: int) -> int {
+	if cursor > 0 {
+		return cursor - 1
+	}
+	return 0
+}
+
+@(private)
+literal_detection_offset :: proc(input: string, token_end: int) -> int {
+	if token_end < len(input) {
+		return token_end
+	}
+	return detection_before_eof(token_end)
+}
+
+@(private)
+hex_digit :: proc(c: byte) -> (u32, bool) {
+	switch c {
+	case '0'..='9':
+		return u32(c - '0'), true
+	case 'a'..='f':
+		return u32(c - 'a') + 10, true
+	case 'A'..='F':
+		return u32(c - 'A') + 10, true
+	}
+	return 0, false
+}
+
+@(private)
+parse_hex4 :: proc(input: string, at: int) -> (u32, bool) {
+	result := u32(0)
+	for i in 0..<4 {
+		digit, ok := hex_digit(input[at + i])
+		if !ok {
+			return 0, false
+		}
+		result = result << 4 | digit
+	}
+	return result, true
+}
+
+@(private)
+append_codepoint :: proc(output: []byte, at: ^int, codepoint: u32) {
+	switch {
+	case codepoint <= 0x7f:
+		output[at^] = byte(codepoint)
+		at^ += 1
+	case codepoint <= 0x7ff:
+		output[at^] = 0xc0 | byte(codepoint >> 6)
+		output[at^ + 1] = 0x80 | byte(codepoint & 0x3f)
+		at^ += 2
+	case codepoint <= 0xffff:
+		output[at^] = 0xe0 | byte(codepoint >> 12)
+		output[at^ + 1] = 0x80 | byte(codepoint >> 6 & 0x3f)
+		output[at^ + 2] = 0x80 | byte(codepoint & 0x3f)
+		at^ += 3
+	case:
+		output[at^] = 0xf0 | byte(codepoint >> 18)
+		output[at^ + 1] = 0x80 | byte(codepoint >> 12 & 0x3f)
+		output[at^ + 2] = 0x80 | byte(codepoint >> 6 & 0x3f)
+		output[at^ + 3] = 0x80 | byte(codepoint & 0x3f)
+		at^ += 4
+	}
+}
+
+@(private)
+is_continuation :: proc(c: byte) -> bool {
+	return c >= 0x80 && c <= 0xbf
+}
+
+// jq consumes the valid prefix of a malformed multibyte sequence as one bad
+// point, not necessarily one replacement per byte. A truncated sequence
+// consumes all bytes remaining in the current length-delimited buffer.
+@(private)
+copy_utf8_point :: proc(input: string, input_at: int, output: []byte, output_at: ^int) -> int {
+	first := input[input_at]
+	if first < 0x80 {
+		output[output_at^] = first
+		output_at^ += 1
+		return 1
+	}
+	length := 0
+	minimum := u32(0)
+	mask := byte(0)
+	switch {
+	case first >= 0xc2 && first <= 0xdf:
+		length, minimum, mask = 2, 0x80, 0x1f
+	case first >= 0xe0 && first <= 0xef:
+		length, minimum, mask = 3, 0x800, 0x0f
+	case first >= 0xf0 && first <= 0xf4:
+		length, minimum, mask = 4, 0x10000, 0x07
+	case:
+		append_codepoint(output, output_at, 0xfffd)
+		return 1
+	}
+
+	remaining := len(input) - input_at
+	if remaining < length {
+		append_codepoint(output, output_at, 0xfffd)
+		return remaining
+	}
+	codepoint := u32(first & mask)
+	for i in 1..<length {
+		c := input[input_at + i]
+		if !is_continuation(c) {
+			append_codepoint(output, output_at, 0xfffd)
+			return i
+		}
+		codepoint = codepoint << 6 | u32(c & 0x3f)
+	}
+	if codepoint < minimum ||
+	   (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+	   codepoint > 0x10ffff {
+		append_codepoint(output, output_at, 0xfffd)
+		return length
+	}
+	copy(output[output_at^:], transmute([]byte)input[input_at:input_at + length])
+	output_at^ += length
+	return length
+}
+
+@(private)
+constructor_failure_kind :: proc(err: ^value.Constructor_Error) -> Scalar_Parse_Error_Kind {
+	switch value.constructor_error_kind(err) {
+	case .Out_Of_Memory:
+		return .Allocation_Failure
+	case .Size_Overflow:
+		return .Size_Overflow
+	case .None, .Invalid_Number_Literal:
+		return .Value_Construction_Failure
+	}
+	return .Value_Construction_Failure
+}
+
+@(private)
+constructor_failure :: proc(err: ^value.Constructor_Error, offset: int) -> (
+	value.Value,
+	Scalar_Parse_Error,
+) {
+	kind := constructor_failure_kind(err)
+	if value.constructor_error_needs_cleanup(err) {
+		return value.invalid_value(), {
+			kind = .Scratch_Cleanup_Failure,
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+			cause_kind = kind,
+			cleanup_constructor_error = value.take_constructor_error(err),
+		}
+	}
+	return parse_failure(kind, offset)
+}
+
+@(private)
+retire_decode_failure :: proc(
+	kind: Scalar_Parse_Error_Kind,
+	detection_offset, cause_offset, next: int,
+	decoded: []byte,
+	allocator: runtime.Allocator,
+) -> (value.Value, int, Scalar_Parse_Error) {
+	if len(decoded) > 0 {
+		free_error := runtime.mem_free_bytes(decoded, allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			return value.invalid_value(), next, {
+				kind = .Scratch_Cleanup_Failure,
+				detection_offset = detection_offset,
+				cause_offset = cause_offset,
+				has_cause_offset = true,
+				cause_kind = kind,
+				cleanup_scratch = decoded,
+				cleanup_allocator = allocator,
+			}
+		}
+	}
+	return value.invalid_value(), next, {
+		kind = kind,
+		detection_offset = detection_offset,
+		cause_offset = cause_offset,
+		has_cause_offset = true,
+	}
+}
+
+@(private)
+parse_string :: proc(
+	input: string,
+	quote_at, token_end: int,
+	allocator: runtime.Allocator,
+) -> (
+	result: value.Value,
+	next: int,
+	err: Scalar_Parse_Error,
+) {
+	content_len := token_end - quote_at - 2
+	if content_len > max(int) / 3 {
+		return value.invalid_value(), quote_at, {
+			kind = .Size_Overflow,
+			detection_offset = quote_at,
+			cause_offset = quote_at,
+			has_cause_offset = true,
+		}
+	}
+	capacity := content_len * 3
+	decoded: []byte
+	temporary_allocator := context.temp_allocator
+	if capacity > 0 {
+		allocation_error: runtime.Allocator_Error
+		decoded, allocation_error = runtime.mem_alloc(capacity, align_of(uintptr), temporary_allocator)
+		if allocation_error != nil || len(decoded) != capacity {
+			if len(decoded) > 0 {
+				return retire_decode_failure(
+					.Allocation_Failure,
+					quote_at,
+					quote_at,
+					quote_at,
+					decoded,
+					temporary_allocator,
+				)
+			}
+			return value.invalid_value(), quote_at, {
+				kind = .Allocation_Failure,
+				detection_offset = quote_at,
+				cause_offset = quote_at,
+				has_cause_offset = true,
+			}
+		}
+	}
+
+	i := quote_at + 1
+	content_end := token_end - 1
+	detection_offset := content_end
+	// Unescape into the final third of scratch first. Normalization then writes
+	// forward from the start; before the last source byte is consumed, at most
+	// three output bytes per consumed byte cannot reach the unread source.
+	raw_start := content_len * 2
+	raw_out := raw_start
+	for i < content_end {
+		c := input[i]
+		if c < 0x20 {
+			return retire_decode_failure(
+				.Unescaped_Control,
+				detection_offset,
+				i,
+				i,
+				decoded,
+				temporary_allocator,
+			)
+		}
+		if c != '\\' {
+			decoded[raw_out] = c
+			raw_out += 1
+			i += 1
+			continue
+		}
+
+		i += 1
+		if i == content_end {
+			return retire_decode_failure(
+				.Invalid_Escape,
+				detection_offset,
+				i,
+				i,
+				decoded,
+				temporary_allocator,
+			)
+		}
+		switch input[i] {
+		case '"', '\\', '/':
+			decoded[raw_out] = input[i]
+			raw_out += 1
+			i += 1
+		case 'b', 'f', 't', 'n', 'r':
+			switch input[i] {
+			case 'b': decoded[raw_out] = '\b'
+			case 'f': decoded[raw_out] = '\f'
+			case 't': decoded[raw_out] = '\t'
+			case 'n': decoded[raw_out] = '\n'
+			case 'r': decoded[raw_out] = '\r'
+			}
+			raw_out += 1
+			i += 1
+		case 'u':
+			hex_at := i + 1
+			if content_end - hex_at < 4 {
+				return retire_decode_failure(
+					.Invalid_Unicode_Escape,
+					detection_offset,
+					content_end,
+					content_end,
+					decoded,
+					temporary_allocator,
+				)
+			}
+			codepoint, ok := parse_hex4(input, hex_at)
+			if !ok {
+				bad := hex_at
+				for bad < hex_at + 4 {
+					_, digit_ok := hex_digit(input[bad])
+					if !digit_ok {
+						break
+					}
+					bad += 1
+				}
+				return retire_decode_failure(
+					.Invalid_Unicode_Escape,
+					detection_offset,
+					bad,
+					bad,
+					decoded,
+					temporary_allocator,
+				)
+			}
+			i = hex_at + 4
+			if codepoint >= 0xd800 && codepoint <= 0xdbff {
+				if content_end - i < 6 || input[i] != '\\' || input[i + 1] != 'u' {
+					return retire_decode_failure(
+						.Invalid_Surrogate_Pair,
+						detection_offset,
+						i,
+						i,
+						decoded,
+						temporary_allocator,
+					)
+				}
+				low, low_ok := parse_hex4(input, i + 2)
+				if !low_ok || low < 0xdc00 || low > 0xdfff {
+					return retire_decode_failure(
+						.Invalid_Surrogate_Pair,
+						detection_offset,
+						i + 2,
+						i + 2,
+						decoded,
+						temporary_allocator,
+					)
+				}
+				codepoint = 0x10000 + ((codepoint - 0xd800) << 10 | (low - 0xdc00))
+				i += 6
+			}
+			if codepoint >= 0xdc00 && codepoint <= 0xdfff {
+				codepoint = 0xfffd
+			}
+			append_codepoint(decoded, &raw_out, codepoint)
+		case:
+			return retire_decode_failure(
+				.Invalid_Escape,
+				detection_offset,
+				i,
+				i,
+				decoded,
+				temporary_allocator,
+			)
+		}
+	}
+
+	raw_string := transmute(string)decoded[raw_start:raw_out]
+	raw_at := 0
+	out := 0
+	for raw_at < len(raw_string) {
+		raw_at += copy_utf8_point(raw_string, raw_at, decoded, &out)
+	}
+	decoded_string := transmute(string)decoded
+	constructed, construction_error := value.string_value(decoded_string[:out], allocator)
+	construction_kind := Scalar_Parse_Error_Kind.None
+	if construction_error != nil {
+		construction_kind = constructor_failure_kind(&construction_error)
+	}
+	if len(decoded) > 0 {
+		free_error := runtime.mem_free_bytes(decoded, temporary_allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			return value.invalid_value(), token_end, {
+				kind = .Scratch_Cleanup_Failure,
+				detection_offset = quote_at,
+				cause_offset = quote_at,
+				has_cause_offset = true,
+				cause_kind = construction_kind,
+				cleanup_scratch = decoded,
+				cleanup_allocator = temporary_allocator,
+				cleanup_constructor_error = value.take_constructor_error(&construction_error),
+				cleanup_value = constructed,
+			}
+		}
+	}
+	if construction_error != nil {
+		failure_value, failure := constructor_failure(&construction_error, quote_at)
+		return failure_value, token_end, failure
+	}
+	return constructed, token_end, {}
+}
+
+@(private)
+validate_matched_string :: proc(input: string, quote_at, token_end: int) -> Scalar_Parse_Error {
+	content_end := token_end - 1
+	detection_offset := content_end
+	i := quote_at + 1
+	for i < content_end {
+		c := input[i]
+		if c < 0x20 {
+			return {
+				kind = .Unescaped_Control,
+				detection_offset = detection_offset,
+				cause_offset = i,
+				has_cause_offset = true,
+			}
+		}
+		if c != '\\' {
+			i += 1
+			continue
+		}
+		i += 1
+		if i == content_end {
+			return {
+				kind = .Invalid_Escape,
+				detection_offset = detection_offset,
+				cause_offset = i,
+				has_cause_offset = true,
+			}
+		}
+		switch input[i] {
+		case '"', '\\', '/', 'b', 'f', 't', 'n', 'r':
+			i += 1
+		case 'u':
+			hex_at := i + 1
+			if content_end - hex_at < 4 {
+				return {
+					kind = .Invalid_Unicode_Escape,
+					detection_offset = detection_offset,
+					cause_offset = content_end,
+					has_cause_offset = true,
+				}
+			}
+			codepoint, ok := parse_hex4(input, hex_at)
+			if !ok {
+				bad := hex_at
+				for bad < hex_at + 4 {
+					_, digit_ok := hex_digit(input[bad])
+					if !digit_ok {
+						break
+					}
+					bad += 1
+				}
+				return {
+					kind = .Invalid_Unicode_Escape,
+					detection_offset = detection_offset,
+					cause_offset = bad,
+					has_cause_offset = true,
+				}
+			}
+			i = hex_at + 4
+			if codepoint >= 0xd800 && codepoint <= 0xdbff {
+				if content_end - i < 6 || input[i] != '\\' || input[i + 1] != 'u' {
+					return {
+						kind = .Invalid_Surrogate_Pair,
+						detection_offset = detection_offset,
+						cause_offset = i,
+						has_cause_offset = true,
+					}
+				}
+				low, low_ok := parse_hex4(input, i + 2)
+				if !low_ok || low < 0xdc00 || low > 0xdfff {
+					return {
+						kind = .Invalid_Surrogate_Pair,
+						detection_offset = detection_offset,
+						cause_offset = i + 2,
+						has_cause_offset = true,
+					}
+				}
+				i += 6
+			}
+		case:
+			return {
+				kind = .Invalid_Escape,
+				detection_offset = detection_offset,
+				cause_offset = i,
+				has_cause_offset = true,
+			}
+		}
+	}
+	return {}
+}
+
+// scan_string_end first follows jq's scanner states to find a closing quote.
+// Syntax inside a matched token is deliberately validated later so its error
+// retains the closing-quote detection cursor. jq does not validate buffered
+// string content unless it observes a closing quote.
+@(private)
+scan_string_end :: proc(input: string, quote_at: int) -> (
+	next: int,
+	err: Scalar_Parse_Error,
+) {
+	i := quote_at + 1
+	for i < len(input) {
+		if input[i] == '"' {
+			token_end := i + 1
+			return token_end, validate_matched_string(input, quote_at, token_end)
+		}
+		if input[i] == '\\' {
+			i += 1
+			if i == len(input) {
+				break
+			}
+		}
+		i += 1
+	}
+
+	return len(input), {
+		kind = .Unfinished_String,
+		detection_offset = detection_before_eof(len(input)),
+		cause_offset = len(input),
+		has_cause_offset = true,
+	}
+}
+
+@(private)
+keyword_cause_offset :: proc(token, pattern: string) -> int {
+	shared := min(len(token), len(pattern))
+	for i in 0..<shared {
+		if token[i] != pattern[i] {
+			return i
+		}
+	}
+	return shared
+}
+
+@(private)
+scalar_form :: enum u8 {
+	Null,
+	True,
+	False,
+	Number,
+	String,
+}
+
+// parse_scalar parses exactly one top-level JSON scalar from a length-delimited
+// input. input is borrowed only for this call. On success the returned Value is
+// complete owning storage allocated from allocator; on failure it is inert.
+parse_scalar :: proc(input: string, allocator: runtime.Allocator) -> (
+	result: value.Value,
+	err: Scalar_Parse_Error,
+) {
+	i := 0
+	if len(input) > 0 && input[0] == 0xef {
+		bom := [3]byte{0xef, 0xbb, 0xbf}
+		matched := 1
+		for matched < len(bom) && matched < len(input) && input[matched] == bom[matched] {
+			matched += 1
+		}
+		if matched != len(bom) {
+			if matched == len(input) {
+				return parse_detected_failure(
+					.Expected_Value,
+					detection_before_eof(len(input)),
+					len(input),
+				)
+			}
+			return parse_detected_failure(.Malformed_BOM, matched, matched)
+		}
+		i = len(bom)
+	}
+	for i < len(input) && is_whitespace(input[i]) {
+		i += 1
+	}
+	if i == len(input) {
+		return parse_detected_failure(
+			.Expected_Value,
+			detection_before_eof(len(input)),
+			len(input),
+		)
+	}
+	value_at := i
+	next := i
+	form: scalar_form
+	token: string
+	numeric_token: string
+	switch input[i] {
+	case '[':
+		return parse_failure(.Array_Not_Supported, i)
+	case '{':
+		return parse_failure(.Object_Not_Supported, i)
+	case '"':
+		form = .String
+		next, err = scan_string_end(input, i)
+		if err.kind != nil {
+			return value.invalid_value(), err
+		}
+	case:
+		for next < len(input) && !is_token_delimiter(input[next]) {
+			next += 1
+		}
+		token = input[i:next]
+		if len(token) == 0 {
+			return parse_failure(.Invalid_Literal, i)
+		}
+		pattern: string
+		switch token[0] {
+		case 't': pattern, form = "true", .True
+		case 'f': pattern, form = "false", .False
+		case '\'':
+			detection_offset := literal_detection_offset(input, next)
+			return parse_detected_failure(.Invalid_Literal, detection_offset, value_at)
+		case 'n':
+			if len(token) > 1 && token[1] == 'u' {
+				pattern, form = "null", .Null
+			} else {
+				form = .Number
+			}
+		case:
+			form = .Number
+		}
+		if len(pattern) > 0 && token != pattern {
+			detection_offset := literal_detection_offset(input, next)
+			cause_offset := value_at + keyword_cause_offset(token, pattern)
+			return parse_detected_failure(.Invalid_Literal, detection_offset, cause_offset)
+		}
+		if form == .Number {
+			numeric_end := 0
+			for numeric_end < len(token) && token[numeric_end] != 0 {
+				numeric_end += 1
+			}
+			numeric_token = token[:numeric_end]
+		}
+	}
+
+	value_end := next
+	if form == .Number {
+		construction_error: value.Constructor_Error
+		result, construction_error = value.literal_number_value(numeric_token, allocator)
+		if value.constructor_error_kind(&construction_error) == .Invalid_Number_Literal {
+			detection_offset := literal_detection_offset(input, value_end)
+			cause_offset := value_at + number_cause_offset(numeric_token)
+			return parse_detected_failure(.Invalid_Number, detection_offset, cause_offset)
+		}
+		if construction_error != nil {
+			return constructor_failure(&construction_error, value_at)
+		}
+	}
+	for next < len(input) && is_whitespace(input[next]) {
+		next += 1
+	}
+	if next != len(input) {
+		if form == .Number {
+			cleanup_error := value.destroy_value(&result)
+			if cleanup_error != nil {
+				return value.invalid_value(), {
+					kind = .Scratch_Cleanup_Failure,
+					detection_offset = next,
+					cause_offset = next,
+					has_cause_offset = true,
+					cause_kind = .Trailing_Input,
+					cleanup_value = value.take_value(&result),
+				}
+			}
+		}
+		return parse_failure(.Trailing_Input, next)
+	}
+
+	switch form {
+	case .Null:
+		return value.null_value(), {}
+	case .True:
+		return value.boolean_value(true), {}
+	case .False:
+		return value.boolean_value(false), {}
+	case .Number:
+		return result, {}
+	case .String:
+		parsed: value.Value
+		parsed, _, err = parse_string(input, value_at, value_end, allocator)
+		if err.kind != nil {
+			return value.invalid_value(), err
+		}
+		return parsed, {}
+	}
+	return parse_failure(.Value_Construction_Failure, value_at)
+}

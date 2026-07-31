@@ -45,9 +45,9 @@ strings_are_owned_and_length_delimited :: proc(t: ^testing.T) {
 	defer destroy_value(&embedded)
 	defer destroy_value(&utf8)
 
-	testing.expect_value(t, empty_error, Error.None)
-	testing.expect_value(t, embedded_error, Error.None)
-	testing.expect_value(t, utf8_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&empty_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&embedded_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&utf8_error), Error.None)
 	empty_view, empty_ok := string_borrowed(&empty)
 	embedded_view, embedded_ok := string_borrowed(&embedded)
 	utf8_view, utf8_ok := string_borrowed(&utf8)
@@ -60,7 +60,7 @@ strings_are_owned_and_length_delimited :: proc(t: ^testing.T) {
 @(test)
 clone_take_and_destroy_lifecycle :: proc(t: ^testing.T) {
 	original, err := string_value("owned", context.allocator)
-	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, constructor_error_kind(&err), Error.None)
 	clone_a := clone_value(&original)
 	clone_b := clone_value(&clone_a)
 	testing.expect_value(t, destroy_value(&original), runtime.Allocator_Error.None)
@@ -91,8 +91,8 @@ opaque_handle_preserves_public_value_api :: proc(t: ^testing.T) {
 	native := number_value(2.5)
 	string_owned, string_error := string_value("owned", context.allocator)
 	literal, literal_error := literal_number_value("2.50", context.allocator)
-	testing.expect_value(t, string_error, Error.None)
-	testing.expect_value(t, literal_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&string_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&literal_error), Error.None)
 
 	testing.expect_value(t, kind_of(&invalid), Kind.Invalid)
 	testing.expect_value(t, kind_of(&null), Kind.Null)
@@ -132,12 +132,15 @@ allocator_probe :: struct {
 	backing:       runtime.Allocator,
 	allocations:   int,
 	frees:         int,
+	live:          int,
 	fail_after:    int,
 	retired:       bool,
 	called_retired: bool,
 	wrong_free_size: bool,
 	last_size:     int,
 	free_failures_remaining: int,
+	nil_success:   bool,
+	short_success: bool,
 }
 
 allocator_probe_proc :: proc(
@@ -160,7 +163,27 @@ allocator_probe_proc :: proc(
 			return nil, .Out_Of_Memory
 		}
 		probe.allocations += 1
-		probe.last_size = size
+		if probe.nil_success {
+			return nil, nil
+		}
+		request_size := size
+		if probe.short_success {
+			request_size = max(size - 1, 0)
+		}
+		result, err := probe.backing.procedure(
+			probe.backing.data,
+			mode,
+			request_size,
+			alignment,
+			old_memory,
+			old_size,
+			location,
+		)
+		if err == nil && len(result) > 0 {
+			probe.live += 1
+			probe.last_size = len(result)
+		}
+		return result, err
 	case .Free:
 		probe.frees += 1
 		if old_size != probe.last_size {
@@ -170,6 +193,19 @@ allocator_probe_proc :: proc(
 			probe.free_failures_remaining -= 1
 			return nil, .Invalid_Pointer
 		}
+		result, err := probe.backing.procedure(
+			probe.backing.data,
+			mode,
+			size,
+			alignment,
+			old_memory,
+			old_size,
+			location,
+		)
+		if err == nil {
+			probe.live -= 1
+		}
+		return result, err
 	}
 	return probe.backing.procedure(
 		probe.backing.data,
@@ -180,6 +216,65 @@ allocator_probe_proc :: proc(
 		old_size,
 		location,
 	)
+}
+
+@(test)
+constructor_allocation_requires_exact_length_and_preserves_failed_cleanup :: proc(t: ^testing.T) {
+	nil_probe := allocator_probe{
+		backing = context.allocator,
+		fail_after = max(int),
+		nil_success = true,
+	}
+	nil_value, nil_error := string_value("nil", probe_allocator(&nil_probe))
+	testing.expect_value(t, kind_of(&nil_value), Kind.Invalid)
+	testing.expect_value(t, constructor_error_kind(&nil_error), Error.Out_Of_Memory)
+	testing.expect(t, !constructor_error_needs_cleanup(&nil_error))
+	testing.expect_value(t, nil_probe.frees, 0)
+
+	short_probe := allocator_probe{
+		backing = context.allocator,
+		fail_after = max(int),
+		short_success = true,
+	}
+	short_value, short_error := literal_number_value("1.25", probe_allocator(&short_probe))
+	testing.expect_value(t, kind_of(&short_value), Kind.Invalid)
+	testing.expect_value(t, constructor_error_kind(&short_error), Error.Out_Of_Memory)
+	testing.expect(t, !constructor_error_needs_cleanup(&short_error))
+	testing.expect_value(t, short_probe.frees, 1)
+	testing.expect_value(t, short_probe.live, 0)
+
+	retry_probe := allocator_probe{
+		backing = context.allocator,
+		fail_after = max(int),
+		free_failures_remaining = 1,
+		short_success = true,
+	}
+	retry_value, retry_error := string_value("retry", probe_allocator(&retry_probe))
+	testing.expect_value(t, kind_of(&retry_value), Kind.Invalid)
+	testing.expect_value(t, constructor_error_kind(&retry_error), Error.Out_Of_Memory)
+	testing.expect(t, constructor_error_needs_cleanup(&retry_error))
+	testing.expect_value(t, retry_probe.live, 1)
+	testing.expect_value(t, destroy_constructor_error(&retry_error), runtime.Allocator_Error.None)
+	testing.expect_value(t, constructor_error_kind(&retry_error), Error.None)
+	testing.expect_value(t, retry_probe.frees, 2)
+	testing.expect_value(t, retry_probe.live, 0)
+
+	arena: runtime.Arena
+	init_error := runtime.arena_init(&arena, 4096, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error.None)
+	if init_error == nil {
+		bulk_probe := allocator_probe{
+			backing = runtime.arena_allocator(&arena),
+			fail_after = max(int),
+			short_success = true,
+		}
+		bulk_value, bulk_error := literal_number_value("2.5", probe_allocator(&bulk_probe))
+		testing.expect_value(t, kind_of(&bulk_value), Kind.Invalid)
+		testing.expect_value(t, constructor_error_kind(&bulk_error), Error.Out_Of_Memory)
+		testing.expect(t, !constructor_error_needs_cleanup(&bulk_error))
+		testing.expect_value(t, bulk_probe.frees, 1)
+		runtime.arena_destroy(&arena)
+	}
 }
 
 probe_allocator :: proc(probe: ^allocator_probe) -> runtime.Allocator {
@@ -239,7 +334,7 @@ final_free_error_is_observable_and_retryable :: proc(t: ^testing.T) {
 		free_failures_remaining = 1,
 	}
 	value, err := string_value("retryable", probe_allocator(&probe))
-	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, constructor_error_kind(&err), Error.None)
 
 	first_destroy_error := destroy_value(&value)
 	testing.expect_value(t, first_destroy_error, runtime.Allocator_Error.Invalid_Pointer)
@@ -262,7 +357,7 @@ final_free_error_is_observable_and_retryable :: proc(t: ^testing.T) {
 allocator_provenance_and_exact_size_free :: proc(t: ^testing.T) {
 	probe := allocator_probe{backing = context.allocator, fail_after = max(int)}
 	value, err := string_value("provenance", probe_allocator(&probe))
-	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, constructor_error_kind(&err), Error.None)
 	clone := clone_value(&value)
 	saved_allocator := context.allocator
 	context.allocator = runtime.Allocator{}
@@ -275,7 +370,7 @@ allocator_provenance_and_exact_size_free :: proc(t: ^testing.T) {
 	testing.expect(t, !probe.wrong_free_size)
 
 	literal, literal_error := literal_number_value("1.00", probe_allocator(&probe))
-	testing.expect_value(t, literal_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&literal_error), Error.None)
 	testing.expect_value(t, destroy_value(&literal), runtime.Allocator_Error.None)
 	testing.expect_value(t, probe.allocations, 2)
 	testing.expect_value(t, probe.frees, 2)
@@ -295,7 +390,7 @@ arena_values_retire_before_bulk_teardown :: proc(t: ^testing.T) {
 	}
 
 	value, err := string_value("arena-owned", runtime.arena_allocator(&arena))
-	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, constructor_error_kind(&err), Error.None)
 	clone := clone_value(&value)
 	testing.expect_value(t, destroy_value(&value), runtime.Allocator_Error.None)
 	testing.expect_value(t, kind_of(&value), Kind.Invalid)
@@ -323,7 +418,7 @@ non_freeing_allocator_retires_handles_without_false_free :: proc(t: ^testing.T) 
 	allocator := bulk_probe_allocator(&probe)
 
 	value, err := literal_number_value("1.00", allocator)
-	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, constructor_error_kind(&err), Error.None)
 	clone := clone_value(&value)
 	testing.expect_value(t, destroy_value(&value), runtime.Allocator_Error.None)
 	testing.expect_value(t, probe.individual_free_requests, 0)
@@ -352,13 +447,13 @@ non_freeing_allocator_retires_handles_without_false_free :: proc(t: ^testing.T) 
 all_constructor_allocation_failures_are_inert :: proc(t: ^testing.T) {
 	string_probe := allocator_probe{backing = context.allocator, fail_after = 0}
 	string_result, string_error := string_value("x", probe_allocator(&string_probe))
-	testing.expect_value(t, string_error, Error.Out_Of_Memory)
+	testing.expect_value(t, constructor_error_kind(&string_error), Error.Out_Of_Memory)
 	testing.expect_value(t, kind_of(&string_result), Kind.Invalid)
 	destroy_value(&string_result)
 
 	number_probe := allocator_probe{backing = context.allocator, fail_after = 0}
 	number_result, number_error := literal_number_value("1.00", probe_allocator(&number_probe))
-	testing.expect_value(t, number_error, Error.Out_Of_Memory)
+	testing.expect_value(t, constructor_error_kind(&number_error), Error.Out_Of_Memory)
 	testing.expect_value(t, kind_of(&number_result), Kind.Invalid)
 	destroy_value(&number_result)
 	testing.expect_value(t, string_probe.frees, 0)
@@ -372,7 +467,7 @@ all_constructor_allocation_failures_are_inert :: proc(t: ^testing.T) {
 		probe_allocator(&overflow_probe),
 	)
 	testing.expect(t, overflow_payload == nil)
-	testing.expect_value(t, overflow_error, Error.Size_Overflow)
+	testing.expect_value(t, constructor_error_kind(&overflow_error), Error.Size_Overflow)
 	testing.expect_value(t, overflow_probe.allocations, 0)
 }
 
@@ -391,11 +486,11 @@ literal_decimal_identity_and_mixed_fallback :: proc(t: ^testing.T) {
 	defer destroy_value(&big_b)
 	defer destroy_value(&native_big)
 
-	testing.expect_value(t, one_error, Error.None)
-	testing.expect_value(t, one_dot_zero_error, Error.None)
-	testing.expect_value(t, one_dot_zero_zero_error, Error.None)
-	testing.expect_value(t, big_a_error, Error.None)
-	testing.expect_value(t, big_b_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&one_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&one_dot_zero_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&one_dot_zero_zero_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&big_a_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&big_b_error), Error.None)
 	testing.expect(t, values_equal(&one, &one_dot_zero))
 	testing.expect(t, values_equal(&one_dot_zero, &one_dot_zero_zero))
 	testing.expect(t, !values_equal(&big_a, &big_b))
@@ -429,7 +524,7 @@ literal_binary64_cache_matches_jq_reduction :: proc(t: ^testing.T) {
 	defer destroy_value(&literal)
 	defer destroy_value(&native)
 
-	testing.expect_value(t, err, Error.None)
+	testing.expect_value(t, constructor_error_kind(&err), Error.None)
 	cached, ok := number_value_get(&literal)
 	testing.expect(t, ok)
 	testing.expect_value(t, transmute(u64)cached, u64(0x23424d729ee9bdec))
@@ -443,9 +538,9 @@ literal_comparison_normalizes_decimal_forms :: proc(t: ^testing.T) {
 	forms := [4]string{"1", "100e-2", "1e+0", "0.0001e4"}
 	values: [4]Value
 	for literal, i in forms {
-		err: Error
+		err: Constructor_Error
 		values[i], err = literal_number_value(literal, context.allocator)
-		testing.expect_value(t, err, Error.None)
+		testing.expect_value(t, constructor_error_kind(&err), Error.None)
 	}
 	defer destroy_value(&values[0])
 	defer destroy_value(&values[1])
@@ -460,8 +555,8 @@ literal_comparison_normalizes_decimal_forms :: proc(t: ^testing.T) {
 	negative_one, negative_one_error := literal_number_value("-1", context.allocator)
 	defer destroy_value(&negative_two)
 	defer destroy_value(&negative_one)
-	testing.expect_value(t, negative_two_error, Error.None)
-	testing.expect_value(t, negative_one_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&negative_two_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&negative_one_error), Error.None)
 	comparison, ok := compare_numbers(&negative_two, &negative_one)
 	testing.expect(t, ok && comparison < 0)
 }
@@ -474,13 +569,13 @@ literal_zero_orders_against_fractions_and_native_values :: proc(t: ^testing.T) {
 
 	for zero_literal in zero_forms {
 		zero, zero_error := literal_number_value(zero_literal, context.allocator)
-		testing.expect_value(t, zero_error, Error.None)
+		testing.expect_value(t, constructor_error_kind(&zero_error), Error.None)
 		for positive_literal in positive_forms {
 			positive, positive_error := literal_number_value(
 				positive_literal,
 				context.allocator,
 			)
-			testing.expect_value(t, positive_error, Error.None)
+			testing.expect_value(t, constructor_error_kind(&positive_error), Error.None)
 			order, ok := compare_numbers(&zero, &positive)
 			reverse, reverse_ok := compare_numbers(&positive, &zero)
 			testing.expect(t, ok && order < 0)
@@ -492,7 +587,7 @@ literal_zero_orders_against_fractions_and_native_values :: proc(t: ^testing.T) {
 				negative_literal,
 				context.allocator,
 			)
-			testing.expect_value(t, negative_error, Error.None)
+			testing.expect_value(t, constructor_error_kind(&negative_error), Error.None)
 			order, ok := compare_numbers(&negative, &zero)
 			reverse, reverse_ok := compare_numbers(&zero, &negative)
 			testing.expect(t, ok && order < 0)
@@ -600,7 +695,7 @@ parameterized_decimal_context_rounds_once_at_etiny :: proc(t: ^testing.T) {
 			test_case.emin,
 			20,
 		)
-		testing.expect_value(t, err, Error.None)
+		testing.expect_value(t, constructor_error_kind(&err), Error.None)
 		if err == nil {
 			p := value_storage_of(&value).owned_payload
 			actual_coefficient := u64(0)
@@ -621,7 +716,7 @@ parameterized_decimal_context_rounds_once_at_etiny :: proc(t: ^testing.T) {
 		20,
 	)
 	defer destroy_value(&reproduction)
-	testing.expect_value(t, reproduction_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&reproduction_error), Error.None)
 	reproduction_storage := value_storage_of(&reproduction)
 	testing.expect(t, string(payload_coefficient(reproduction_storage.owned_payload)) == "1")
 	testing.expect_value(t, reproduction_storage.owned_payload.exponent, i64(-12))
@@ -656,10 +751,10 @@ decimal_context_precision_and_rounding_constants :: proc(t: ^testing.T) {
 	defer destroy_value(&half)
 	defer destroy_value(&expected_below)
 	defer destroy_value(&expected_half)
-	testing.expect_value(t, below_error, Error.None)
-	testing.expect_value(t, half_error, Error.None)
-	testing.expect_value(t, expected_below_error, Error.None)
-	testing.expect_value(t, expected_half_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&below_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&half_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&expected_below_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&expected_half_error), Error.None)
 	testing.expect(t, values_equal(&below, &expected_below))
 	testing.expect(t, values_equal(&half, &expected_half))
 }
@@ -673,8 +768,8 @@ signed_zero_is_retained_and_compares_numerically :: proc(t: ^testing.T) {
 	defer destroy_value(&negative)
 	defer destroy_value(&native_negative)
 
-	testing.expect_value(t, positive_error, Error.None)
-	testing.expect_value(t, negative_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&positive_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&negative_error), Error.None)
 	testing.expect(t, values_equal(&positive, &negative))
 	testing.expect(t, values_equal(&positive, &native_negative))
 	negative_number, ok := number_value_get(&negative)
@@ -702,14 +797,14 @@ decimal_exponent_boundaries :: proc(t: ^testing.T) {
 	defer destroy_value(&below_half)
 	defer destroy_value(&zero)
 
-	testing.expect_value(t, maximum_error, Error.None)
-	testing.expect_value(t, overflow_error, Error.None)
-	testing.expect_value(t, minimum_error, Error.None)
-	testing.expect_value(t, etiny_error, Error.None)
-	testing.expect_value(t, underflow_error, Error.None)
-	testing.expect_value(t, half_up_error, Error.None)
-	testing.expect_value(t, below_half_error, Error.None)
-	testing.expect_value(t, zero_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&maximum_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&overflow_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&minimum_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&etiny_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&underflow_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&half_up_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&below_half_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&zero_error), Error.None)
 	maximum_f64, _ := number_value_get(&maximum)
 	overflow_f64, _ := number_value_get(&overflow)
 	testing.expect(t, math.is_inf(maximum_f64))
@@ -730,7 +825,7 @@ literal_constructor_accepts_jq_decnumber_grammar :: proc(t: ^testing.T) {
 	accepted_literals := [8]string{"01", "1.", ".1", "+1", "-.1", "1.e2", "00e2", "Infinity"}
 	for literal in accepted_literals {
 		value, err := literal_number_value(literal, probe_allocator(&probe))
-		testing.expect_value(t, err, Error.None)
+		testing.expect_value(t, constructor_error_kind(&err), Error.None)
 		testing.expect_value(t, kind_of(&value), Kind.Number)
 		destroy_value(&value)
 	}
@@ -741,7 +836,7 @@ literal_constructor_accepts_jq_decnumber_grammar :: proc(t: ^testing.T) {
 	nan_literals := [5]string{"nan", "NaN", "-NaN", "sNaN", "NaN00"}
 	for literal in nan_literals {
 		value, err := literal_number_value(literal, probe_allocator(&probe))
-		testing.expect_value(t, err, Error.None)
+		testing.expect_value(t, constructor_error_kind(&err), Error.None)
 		kind, kind_ok := number_kind(&value)
 		number, number_ok := number_value_get(&value)
 		testing.expect(t, kind_ok && kind == .Native)
@@ -757,8 +852,8 @@ literal_constructor_accepts_jq_decnumber_grammar :: proc(t: ^testing.T) {
 		"-Inf",
 		probe_allocator(&probe),
 	)
-	testing.expect_value(t, positive_error, Error.None)
-	testing.expect_value(t, negative_error, Error.None)
+	testing.expect_value(t, constructor_error_kind(&positive_error), Error.None)
+	testing.expect_value(t, constructor_error_kind(&negative_error), Error.None)
 	positive_kind, positive_kind_ok := number_kind(&positive_infinity)
 	negative_kind, negative_kind_ok := number_kind(&negative_infinity)
 	positive_cache, positive_cache_ok := number_value_get(&positive_infinity)
@@ -773,7 +868,7 @@ literal_constructor_accepts_jq_decnumber_grammar :: proc(t: ^testing.T) {
 	invalid_literals := [10]string{"", ".", "+", "-", ".e1", "1e", "NaN1", "sNaN2", "Infinity0", "++1"}
 	for literal in invalid_literals {
 		value, err := literal_number_value(literal, probe_allocator(&probe))
-		testing.expect_value(t, err, Error.Invalid_Number_Literal)
+		testing.expect_value(t, constructor_error_kind(&err), Error.Invalid_Number_Literal)
 		testing.expect_value(t, kind_of(&value), Kind.Invalid)
 	}
 	testing.expect_value(t, probe.allocations, probe.frees)
@@ -791,7 +886,7 @@ special_literals_use_bytewise_ascii_case_folding :: proc(t: ^testing.T) {
 	}
 	for literal in crafted_non_ascii {
 		value, err := literal_number_value(literal, context.allocator)
-		testing.expect_value(t, err, Error.Invalid_Number_Literal)
+		testing.expect_value(t, constructor_error_kind(&err), Error.Invalid_Number_Literal)
 		testing.expect_value(t, kind_of(&value), Kind.Invalid)
 		destroy_value(&value)
 	}
@@ -799,7 +894,7 @@ special_literals_use_bytewise_ascii_case_folding :: proc(t: ^testing.T) {
 	mixed_case_nan := [2]string{"nAn", "SnAn"}
 	for literal in mixed_case_nan {
 		value, err := literal_number_value(literal, context.allocator)
-		testing.expect_value(t, err, Error.None)
+		testing.expect_value(t, constructor_error_kind(&err), Error.None)
 		number, ok := number_value_get(&value)
 		testing.expect(t, ok && math.is_nan(number))
 		destroy_value(&value)
@@ -808,7 +903,7 @@ special_literals_use_bytewise_ascii_case_folding :: proc(t: ^testing.T) {
 	mixed_case_infinity := [2]string{"iNf", "InFiNiTy"}
 	for literal in mixed_case_infinity {
 		value, err := literal_number_value(literal, context.allocator)
-		testing.expect_value(t, err, Error.None)
+		testing.expect_value(t, constructor_error_kind(&err), Error.None)
 		number, ok := number_value_get(&value)
 		testing.expect(t, ok && math.is_inf(number) && number > 0)
 		destroy_value(&value)
