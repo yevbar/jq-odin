@@ -37,6 +37,13 @@ implementation milestone constructs only null, boolean, number, and string;
 array and object payloads remain unconstructible until later decisions extend
 the package.
 
+`Value` is a union whose only payload variant is the package-private tagged
+representation. The nil union is the inert invalid value. Outside packages can
+hold, pass, and point to a `Value`, but cannot name or construct its variant or
+select or mutate its ownership-critical kind, inline payload, or owned payload
+pointer. Public constructors and ownership procedures are the only supported
+way to create, inspect, transfer, clone, or retire a handle.
+
 The scalar representation has these invariants:
 
 - null and boolean payloads are inline;
@@ -64,6 +71,12 @@ The scalar representation has these invariants:
 - numeric equality is numeric, not spelling equality: two literal payloads
   compare by exact normalized decimal value, while a comparison involving a
   native number follows jq's binary `f64` fallback;
+- the package's numeric comparison procedure mirrors jq's low-level
+  `jvp_number_cmp` (`upstream/jq/src/jv.c:770-806`), including its native-NaN
+  fallback of testing `<`, then `==`, then returning `1`; it is not a total
+  Value ordering. jq's separate `jv_cmp` handles NaN before delegating numeric
+  comparison (`upstream/jq/src/jv_aux.c:588-615`), and that total-value
+  behavior belongs to future Value-level work;
 - retaining raw input spelling is a deliberate Odin implementation choice, not
   a claim that jq's C payload keeps the original token bytes: pinned jq parses
   into `decNumber` and later regenerates text
@@ -134,7 +147,9 @@ be torn down only after the last owning handle has been destroyed.
 
 `json`, `program`, and `eval` may retain a `Value` only by receiving ownership
 or calling `clone_value`. Their APIs must name borrowed versus owned
-parameters and results. Syntax remains independent of `Value`.
+parameters and results. They use the public procedures rather than selecting
+representation fields. Syntax remains independent of `Value`. The opaque union
+layout changes no package import edge.
 
 The scalar implementation must not expose fields that let another package
 forge a kind/payload mismatch. Exhaustive switches must handle the reserved
