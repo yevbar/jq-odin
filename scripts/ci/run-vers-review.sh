@@ -31,6 +31,8 @@ vm_script="$script_dir/vers-review-vm.sh"
 cleanup_script="$script_dir/cleanup-vers-review.sh"
 vm_id_file=${VERS_VM_ID_FILE:-"$(dirname -- "$result_file")/vers-vm-id"}
 vm_id=
+upload_tmp_dir=
+auth_header_file=
 
 if [ -z "${VERS_API_KEY:-}" ]; then
     echo "VERS_API_KEY is required" >&2
@@ -59,14 +61,14 @@ api() {
     if [ -n "$body" ]; then
         curl --fail-with-body --silent --show-error \
             -X "$method" \
-            -H "Authorization: Bearer $VERS_API_KEY" \
+            -H "@$auth_header_file" \
             -H "Content-Type: application/json" \
             --data "$body" \
             "$api_base$endpoint"
     else
         curl --fail-with-body --silent --show-error \
             -X "$method" \
-            -H "Authorization: Bearer $VERS_API_KEY" \
+            -H "@$auth_header_file" \
             "$api_base$endpoint"
     fi
 }
@@ -80,7 +82,7 @@ api_retry() {
         curl --fail-with-body --silent --show-error \
             --retry 5 --retry-all-errors \
             -X "$method" \
-            -H "Authorization: Bearer $VERS_API_KEY" \
+            -H "@$auth_header_file" \
             -H "Content-Type: application/json" \
             --data "$body" \
             "$api_base$endpoint"
@@ -88,7 +90,7 @@ api_retry() {
         curl --fail-with-body --silent --show-error \
             --retry 5 --retry-all-errors \
             -X "$method" \
-            -H "Authorization: Bearer $VERS_API_KEY" \
+            -H "@$auth_header_file" \
             "$api_base$endpoint"
     fi
 }
@@ -96,6 +98,9 @@ api_retry() {
 cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
+    if [ -n "$upload_tmp_dir" ]; then
+        rm -rf "$upload_tmp_dir"
+    fi
     if [ -n "$vm_id" ]; then
         if ! VERS_API_BASE="$api_base" "$cleanup_script" "$vm_id_file"; then
             echo "Failed to delete review VM $vm_id" >&2
@@ -106,24 +111,41 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-encode_file() {
-    base64 <"$1" | tr -d '\n'
+api_retry_file() {
+    method=$1
+    endpoint=$2
+    body_file=$3
+
+    curl --fail-with-body --silent --show-error \
+        --retry 5 --retry-all-errors \
+        -X "$method" \
+        -H "@$auth_header_file" \
+        -H "Content-Type: application/json" \
+        --data-binary "@$body_file" \
+        "$api_base$endpoint"
 }
 
 upload_file() {
     local_file=$1
     remote_file=$2
     mode=$3
-    content=$(encode_file "$local_file")
-    body=$(
-        jq -cn \
-            --arg path "$remote_file" \
-            --arg content "$content" \
-            --argjson mode "$mode" \
-            '{path: $path, content_b64: $content, create_dirs: true, mode: $mode}'
-    )
-    api_retry PUT "/vm/$vm_id/files" "$body" >/dev/null
+    encoded_file="$upload_tmp_dir/content.b64"
+    body_file="$upload_tmp_dir/request.json"
+
+    base64 <"$local_file" | tr -d '\n' >"$encoded_file"
+    jq -cn \
+        --arg path "$remote_file" \
+        --rawfile content "$encoded_file" \
+        --argjson mode "$mode" \
+        '{path: $path, content_b64: $content, create_dirs: true, mode: $mode}' \
+        >"$body_file"
+    api_retry_file PUT "/vm/$vm_id/files" "$body_file" >/dev/null
 }
+
+upload_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/vers-review-upload.XXXXXX")
+auth_header_file="$upload_tmp_dir/auth-header"
+printf 'Authorization: Bearer %s\n' "$VERS_API_KEY" >"$auth_header_file"
+chmod 600 "$auth_header_file"
 
 echo "Restoring approved Vers review snapshot $commit_id"
 create_body=$(jq -cn --arg id "$commit_id" '{commit_id: $id}')
@@ -228,7 +250,7 @@ if [ "$review_exit" -ne 0 ]; then
         curl --fail-with-body --silent --show-error \
             --retry 3 --retry-all-errors \
             -G \
-            -H "Authorization: Bearer $VERS_API_KEY" \
+            -H "@$auth_header_file" \
             --data-urlencode path=/tmp/jq-review/review.log \
             "$api_base/vm/$vm_id/files"
     )
@@ -244,7 +266,7 @@ read_response=$(
     curl --fail-with-body --silent --show-error \
         --retry 3 --retry-all-errors \
         -G \
-        -H "Authorization: Bearer $VERS_API_KEY" \
+        -H "@$auth_header_file" \
         --data-urlencode path=/tmp/jq-review/result.json \
         "$api_base/vm/$vm_id/files"
 )
