@@ -9,10 +9,13 @@ payload="literal'; touch $test_dir/injected; #"
 status_file="$test_dir/status"
 job_log="$test_dir/job.log"
 launch_log="$test_dir/launch.log"
+runner="$test_dir/run-job.sh"
+cp "$skill_dir/scripts/run-job.sh" "$runner"
+chmod 600 "$runner"
 
 "$skill_dir/scripts/launch-job.sh" \
     "$launch_log" \
-    "$skill_dir/scripts/run-job.sh" \
+    "$runner" \
     "$status_file" "$job_log" \
     printf '%s\n' "$payload"
 

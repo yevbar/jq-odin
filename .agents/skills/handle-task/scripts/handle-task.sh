@@ -70,18 +70,6 @@ finish() {
     fi
 
     case "$vm_phase" in
-        prepared)
-            if [ "$prepare_only" = true ]; then
-                # --prepare-only is an explicit request for an interactive VM.
-                echo "Interactive VM retained: $vm_id"
-            else
-                echo "Deleting prepared task VM that did not start Codex: $vm_id" >&2
-                if ! "$vers_bin" delete -y "$vm_id"; then
-                    echo "Failed to delete prepared task VM $vm_id" >&2
-                    status=1
-                fi
-            fi
-            ;;
         completed)
             echo "Deleting completed task VM $vm_id"
             if ! "$vers_bin" delete -y "$vm_id"; then
@@ -89,21 +77,22 @@ finish() {
                 status=1
             fi
             ;;
-        codex)
-            echo "Pausing failed or interrupted task VM $vm_id" >&2
-            if ! "$vers_bin" pause "$vm_id"; then
-                echo "Unable to pause task VM; deleting it to prevent a runaway VM: $vm_id" >&2
-                if ! "$vers_bin" delete -y "$vm_id"; then
-                    echo "Failed to delete task VM $vm_id" >&2
+        prepared)
+            if [ "$prepare_only" = true ]; then
+                # --prepare-only is an explicit request for an interactive VM.
+                echo "Interactive VM retained: $vm_id"
+            else
+                echo "Pausing failed or interrupted task VM $vm_id" >&2
+                if ! "$vers_bin" pause "$vm_id"; then
+                    echo "Unable to pause task VM; it has been retained for diagnosis: $vm_id" >&2
                     status=1
                 fi
             fi
             ;;
         *)
-            # A preparation failure has no author work to preserve.
-            echo "Deleting incomplete preparation VM $vm_id" >&2
-            if ! "$vers_bin" delete -y "$vm_id"; then
-                echo "Failed to delete incomplete preparation VM $vm_id" >&2
+            echo "Pausing failed or interrupted task VM $vm_id" >&2
+            if ! "$vers_bin" pause "$vm_id"; then
+                echo "Unable to pause task VM; it has been retained for diagnosis: $vm_id" >&2
                 status=1
             fi
             ;;
@@ -221,6 +210,42 @@ codex_script="$skill_dir/scripts/run-codex.sh"
 launch_script="$skill_dir/scripts/launch-job.sh"
 inspect_script="$skill_dir/scripts/inspect-job.sh"
 
+copy_to_vm() (
+    source_path=$1
+    remote_path=$2
+    expected_bytes=$(wc -c <"$source_path" | tr -d '[:space:]')
+    attempt=1
+
+    while [ "$attempt" -le 3 ]; do
+        if "$vers_bin" copy -t 120 "$vm_id" \
+            "$source_path" "$remote_path"; then
+            remote_bytes=$(
+                "$vers_bin" execute -t 60 "$vm_id" \
+                    sh -c 'wc -c <"$1"' sh "$remote_path" 2>/dev/null |
+                    sed -n '/^[[:space:]]*[0-9][0-9]*[[:space:]]*$/p' |
+                    tr -d '[:space:]' |
+                    sed -n '$p'
+            ) || remote_bytes=
+            if [ "$remote_bytes" = "$expected_bytes" ]; then
+                return 0
+            fi
+        else
+            remote_bytes=
+        fi
+
+        printf 'Copy verification failed for %s (attempt %s/3, expected %s bytes, got %s)\n' \
+            "$remote_path" "$attempt" "$expected_bytes" \
+            "${remote_bytes:-unknown}" >&2
+        attempt=$((attempt + 1))
+        if [ "$attempt" -le 3 ]; then
+            sleep "${HANDLE_TASK_COPY_RETRY_DELAY:-2}"
+        fi
+    done
+
+    echo "Unable to copy a complete helper to $remote_path" >&2
+    return 1
+)
+
 wait_for_remote_job() {
     job_name=$1
     status_file=$2
@@ -230,7 +255,7 @@ wait_for_remote_job() {
 
     while :; do
         if inspection_output=$(
-            "$vers_bin" exec -t 60 "$vm_id" "$remote_inspector" \
+            "$vers_bin" execute -t 60 "$vm_id" sh "$remote_inspector" \
                 "$status_file" "$pid_file"
         ); then
             state=$(
@@ -272,7 +297,7 @@ wait_for_remote_job() {
         sleep 10
     done
 
-    "$vers_bin" exec -t 60 "$vm_id" tail -n 240 "$log_file" || true
+    "$vers_bin" execute -t 60 "$vm_id" tail -n 240 "$log_file" || true
     if [ "$status" -ne 0 ]; then
         echo "$job_name failed with status $status" >&2
         return "$status"
@@ -299,7 +324,7 @@ fi
 vm_phase=booted
 
 current_disk_kib=$(
-    "$vers_bin" exec --ssh -t 60 "$vm_id" env HOME=/root sh -lc \
+    "$vers_bin" execute -t 60 "$vm_id" env HOME=/root sh -lc \
         "df -Pk / | awk 'NR == 2 { print \$2 }'" |
         sed -n '/^[0-9][0-9]*$/p' |
         sed -n '$p'
@@ -322,15 +347,15 @@ remote_inspector=/tmp/handle-task-inspect-job.sh
 remote_state_dir=/run/handle-task
 prepare_status=$remote_state_dir/prepare.status
 prepare_log=$remote_state_dir/prepare.log
-"$vers_bin" exec -t 60 "$vm_id" mkdir -p "$remote_state_dir"
-"$vers_bin" exec -t 60 "$vm_id" chmod 700 "$remote_state_dir"
-"$vers_bin" copy -t 120 "$vm_id" "$prepare_script" "$remote_prepare"
-"$vers_bin" copy -t 120 "$vm_id" "$job_script" "$remote_job"
-"$vers_bin" copy -t 120 "$vm_id" "$launch_script" "$remote_launcher"
-"$vers_bin" copy -t 120 "$vm_id" "$inspect_script" "$remote_inspector"
-"$vers_bin" exec -t 60 "$vm_id" chmod 700 \
+"$vers_bin" execute -t 60 "$vm_id" mkdir -p "$remote_state_dir"
+"$vers_bin" execute -t 60 "$vm_id" chmod 700 "$remote_state_dir"
+copy_to_vm "$prepare_script" "$remote_prepare"
+copy_to_vm "$job_script" "$remote_job"
+copy_to_vm "$launch_script" "$remote_launcher"
+copy_to_vm "$inspect_script" "$remote_inspector"
+"$vers_bin" execute -t 60 "$vm_id" chmod 700 \
     "$remote_prepare" "$remote_job" "$remote_launcher" "$remote_inspector"
-"$vers_bin" exec -t 60 "$vm_id" "$remote_launcher" \
+"$vers_bin" execute -t 60 "$vm_id" sh "$remote_launcher" \
     "$remote_state_dir/prepare-launch.log" \
     "$remote_job" "$prepare_status" "$prepare_log" \
     env HOME=/root sh "$remote_prepare" \
@@ -350,7 +375,7 @@ printf '%s\n' \
 if [ "$prepare_only" = true ]; then
     printf '%s\n' \
         "Connect with: $vers_bin connect $vm_id" \
-        "Run Codex with: $vers_bin exec -t 0 $vm_id runuser -u jqagent -- env HOME=/home/jqagent sh -lc 'cd $repo_dir && codex'"
+        "Run Codex with: $vers_bin execute -t 0 $vm_id runuser -u jqagent -- env HOME=/home/jqagent sh -lc 'cd $repo_dir && codex'"
     exit 0
 fi
 
@@ -374,16 +399,16 @@ remote_prompt=/tmp/handle-task-prompt.txt
 remote_codex=/tmp/handle-task-run-codex.sh
 codex_status=$remote_state_dir/codex.status
 codex_log=$remote_state_dir/codex.log
-"$vers_bin" copy -t 120 "$vm_id" "$wrapped_prompt" "$remote_prompt"
-"$vers_bin" copy -t 120 "$vm_id" "$codex_script" "$remote_codex"
-"$vers_bin" exec -t 60 "$vm_id" chmod 755 "$remote_codex"
-"$vers_bin" exec -t 60 "$vm_id" chown jqagent:jqagent "$remote_prompt"
-"$vers_bin" exec -t 60 "$vm_id" chmod 600 "$remote_prompt"
-"$vers_bin" exec -t 60 "$vm_id" "$remote_launcher" \
+copy_to_vm "$wrapped_prompt" "$remote_prompt"
+copy_to_vm "$codex_script" "$remote_codex"
+"$vers_bin" execute -t 60 "$vm_id" chmod 755 "$remote_codex"
+"$vers_bin" execute -t 60 "$vm_id" chown jqagent:jqagent "$remote_prompt"
+"$vers_bin" execute -t 60 "$vm_id" chmod 600 "$remote_prompt"
+"$vers_bin" execute -t 60 "$vm_id" sh "$remote_launcher" \
     "$remote_state_dir/codex-launch.log" \
     "$remote_job" "$codex_status" "$codex_log" \
     runuser -u jqagent -- env HOME=/home/jqagent \
-    "$remote_codex" "$repo_dir" "$remote_prompt"
+    sh "$remote_codex" "$repo_dir" "$remote_prompt"
 if ! wait_for_remote_job "Codex task" "$codex_status" "$codex_log"; then
     echo "Codex task failed: $vm_id" >&2
     exit 1

@@ -38,8 +38,8 @@ scripts/handle-task.sh \
 
 The launcher:
 
-- requires Vers CLI v0.12.0 or newer; set `VERS_BIN` to an alternate binary
-  path when the system installation is older;
+- requires the current Vers CLI with `run-commit`, `execute`, and `copy`; set
+  `VERS_BIN` to an alternate verified binary path when needed;
 - boots the Vers commit named by `JQ_CODEX_VERS_COMMIT`, defaulting to the
   repository's approved authenticated snapshot;
 - synchronizes the restored clock before TLS or package operations;
@@ -75,17 +75,17 @@ Override the integration base with `--base <branch>` and the snapshot with
 
 ## Supervise and hand off
 
-The launcher deletes a VM after a successful non-interactive task. A failed or
-interrupted Codex task is paused so its disk can be inspected or checkpointed
-without consuming running-VM capacity. A VM that fails during preparation is
-deleted because it contains no author work. `--prepare-only` retains its
-interactive VM by design.
+The launcher deletes a VM only after a successful non-interactive task. Any
+failed or interrupted VM, including a preparation failure, is paused so its
+disk can be inspected or checkpointed without consuming running-VM capacity.
+If pausing fails, the launcher reports that the VM remains running and never
+silently deletes it. `--prepare-only` retains its interactive VM by design.
 
 Use `--keep-vm` only when the coordinator explicitly needs a running VM after
 the launcher exits. Capture its reported VM ID, branch, and PR URL. If an agent
 is paused after failure:
 
-- resume it before using `vers exec <vm-id> ...` or `vers connect <vm-id>`;
+- resume it before using `vers execute <vm-id> ...` or `vers connect <vm-id>`;
 - preserve it for diagnosis or checkpoint it with `vers commit create <vm-id>`;
 - never silently relaunch the same task on another branch;
 - delete it when its useful state is pushed or checkpointed.

@@ -9,6 +9,6 @@ shift 4
 
 rm -f "$status_file"
 rm -f "${status_file}.pid"
-nohup "$runner" "$status_file" "$job_log" "$@" \
+nohup sh "$runner" "$status_file" "$job_log" "$@" \
     </dev/null >"$launch_log" 2>&1 &
 printf '%s\n' "$!" >"${status_file}.pid"
