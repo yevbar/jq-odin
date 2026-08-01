@@ -46,6 +46,42 @@ expect_token :: proc(
 }
 
 @(private="package")
+expect_value_span :: proc(
+	t: ^testing.T,
+	source: diagnostic.Source,
+	token: Token,
+	start, end: int,
+) {
+	testing.expect(t, token.has_value_span)
+	expect_span(t, source, token.value_span, start, end)
+}
+
+@(private="package")
+expect_lexical_error :: proc(
+	t: ^testing.T,
+	scanner: ^Scanner,
+	source: diagnostic.Source,
+	start, end: int,
+) {
+	outcome := next_token(scanner)
+	testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.Lexical_Error)
+	testing.expect(t, outcome.has_error_span)
+	expect_span(t, source, outcome.error_span, start, end)
+}
+
+@(private="package")
+expect_repeated_eof :: proc(t: ^testing.T, scanner: ^Scanner) {
+	offset := scanner.offset
+	depth := len(scanner.states)
+	for _ in 0 ..< 2 {
+		outcome := next_token(scanner)
+		testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.End_Of_Input)
+		testing.expect_value(t, scanner.offset, offset)
+		testing.expect_value(t, len(scanner.states), depth)
+	}
+}
+
+@(private="package")
 init_test_scanner :: proc(
 	t: ^testing.T,
 	scanner: ^Scanner,
@@ -330,7 +366,7 @@ test_balanced_nesting_and_mismatched_closers :: proc(t: ^testing.T) {
 	for kind, index in kinds {
 		expect_token(t, &scanner, source, kind, index, index+1)
 	}
-	testing.expect_value(t, len(scanner.delimiters), 0)
+	testing.expect_value(t, len(scanner.states), 0)
 	destroy_scanner(&scanner)
 
 	unopened_closers := [?]string{")", "]", "}"}
@@ -378,10 +414,10 @@ test_balanced_nesting_and_mismatched_closers :: proc(t: ^testing.T) {
 		testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.Lexical_Error)
 		testing.expect(t, outcome.has_error_span)
 		expect_span(t, mismatch_source, outcome.error_span, 1, 2)
-		testing.expect_value(t, len(mismatch_scanner.delimiters), 1)
+		testing.expect_value(t, len(mismatch_scanner.states), 1)
 
 		expect_token(t, &mismatch_scanner, mismatch_source, test_case.closer_kind, 2, 3)
-		testing.expect_value(t, len(mismatch_scanner.delimiters), 0)
+		testing.expect_value(t, len(mismatch_scanner.states), 0)
 		testing.expect_value(
 			t,
 			next_token(&mismatch_scanner).kind,
@@ -402,18 +438,359 @@ delimiter_open_kind :: proc(byte: u8) -> Token_Kind {
 }
 
 @(test)
-test_embedded_nul_unmatched_bytes_and_exact_byte_spans :: proc(t: ^testing.T) {
-	source := diagnostic.borrow_source("<bytes>", "\x00\xffé .x")
+test_unmatched_bytes_and_exact_byte_spans :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<bytes>", "\xffé .x")
 	scanner: Scanner
 	init_test_scanner(t, &scanner, source)
-	for index in 0 ..< 4 {
-		outcome := next_token(&scanner)
-		testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.Lexical_Error)
-		expect_span(t, source, outcome.error_span, index, index+1)
+	for index in 0 ..< 3 {
+		expect_lexical_error(t, &scanner, source, index, index+1)
 	}
-	expect_token(t, &scanner, source, .Field, 5, 7)
+	expect_token(t, &scanner, source, .Field, 4, 6)
 	testing.expect_value(t, next_token(&scanner).kind, Scan_Outcome_Kind.End_Of_Input)
 	destroy_scanner(&scanner)
+}
+
+@(test)
+test_numeric_literal_boundaries_and_field_ambiguities :: proc(t: ^testing.T) {
+	Case :: struct {
+		text:  string,
+		kinds: []Token_Kind,
+		ends:  []int,
+	}
+	cases := [?]Case{
+		{"01", []Token_Kind{.Number}, []int{2}},
+		{"1.", []Token_Kind{.Number}, []int{2}},
+		{".1", []Token_Kind{.Number}, []int{2}},
+		{"1e2", []Token_Kind{.Number}, []int{3}},
+		{"1e-2", []Token_Kind{.Number}, []int{4}},
+		{".1E2", []Token_Kind{.Number}, []int{4}},
+		{".1e+2", []Token_Kind{.Number}, []int{5}},
+		{"-1", []Token_Kind{.Minus, .Number}, []int{1, 2}},
+		{"+1", []Token_Kind{.Plus, .Number}, []int{1, 2}},
+		{"1e", []Token_Kind{.Number, .Identifier}, []int{1, 2}},
+		{"1e+", []Token_Kind{.Number, .Identifier, .Plus}, []int{1, 2, 3}},
+		{"1e-", []Token_Kind{.Number, .Identifier, .Minus}, []int{1, 2, 3}},
+		{".1e+", []Token_Kind{.Number, .Identifier, .Plus}, []int{2, 3, 4}},
+		{"1..2", []Token_Kind{.Number, .Number}, []int{2, 4}},
+		{".E-1", []Token_Kind{.Field, .Minus, .Number}, []int{2, 3, 4}},
+		{".E+1", []Token_Kind{.Field, .Plus, .Number}, []int{2, 3, 4}},
+		{".e0", []Token_Kind{.Field}, []int{3}},
+		{".E1", []Token_Kind{.Field}, []int{3}},
+	}
+
+	for test_case in cases {
+		source := diagnostic.borrow_source(test_case.text, test_case.text)
+		scanner: Scanner
+		init_test_scanner(t, &scanner, source)
+		start := 0
+		for kind, index in test_case.kinds {
+			end := test_case.ends[index]
+			token := expect_token(t, &scanner, source, kind, start, end)
+			if kind == .Number {
+				expect_value_span(t, source, token, start, end)
+			}
+			start = end
+		}
+		testing.expect_value(t, next_token(&scanner).kind, Scan_Outcome_Kind.End_Of_Input)
+		destroy_scanner(&scanner)
+	}
+}
+
+@(test)
+test_interpolated_strings_use_exact_borrowed_lifo_spans :: proc(t: ^testing.T) {
+	text := "\"a\\(([\"b\\(2)c\"]))z\""
+	source := diagnostic.borrow_source("<nested-string>", text)
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	Case :: struct {
+		kind: Token_Kind,
+		start, end: int,
+		valued: bool,
+	}
+	cases := [?]Case{
+		{.String_Start, 0, 1, false},
+		{.String_Text, 1, 2, true},
+		{.String_Interpolation_Start, 2, 4, false},
+		{.Open_Paren, 4, 5, false},
+		{.Open_Bracket, 5, 6, false},
+		{.String_Start, 6, 7, false},
+		{.String_Text, 7, 8, true},
+		{.String_Interpolation_Start, 8, 10, false},
+		{.Number, 10, 11, true},
+		{.String_Interpolation_End, 11, 12, false},
+		{.String_Text, 12, 13, true},
+		{.String_End, 13, 14, false},
+		{.Close_Bracket, 14, 15, false},
+		{.Close_Paren, 15, 16, false},
+		{.String_Interpolation_End, 16, 17, false},
+		{.String_Text, 17, 18, true},
+		{.String_End, 18, 19, false},
+	}
+	for test_case in cases {
+		token := expect_token(t, &scanner, source, test_case.kind, test_case.start, test_case.end)
+		if test_case.valued {
+			expect_value_span(t, source, token, test_case.start, test_case.end)
+		}
+	}
+	testing.expect_value(t, len(scanner.states), 0)
+	testing.expect_value(t, next_token(&scanner).kind, Scan_Outcome_Kind.End_Of_Input)
+	destroy_scanner(&scanner)
+}
+
+@(test)
+test_string_escape_validation_uses_jq_candidate_boundaries :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		error_end: int,
+	}
+	cases := [?]Case{
+		{"\"\\q\"", 3},
+		{"\"\\v\"", 3},
+		{"\"\\u12!\"", 5},
+		{"\"\\uz\"", 4},
+		{"\"\\u12xz\"", 7},
+		{"\"\\uD800\"", 7},
+		{"\"\\uD800\\uD800\"", 13},
+		{"\"\\u12_\"", 5},
+		{"\"\\\n\"", 3},
+		{"\"\\n\\q\\tx\"", 7},
+		{"\"\\q\\uD834\\uDD1E\"", 15},
+		{"\"\\uD800\\q\"", 9},
+		{"\"\\uD834\\uDD1E\\q\"", 15},
+		{"\"\\uD800\\uDC00\\uD800\"", 19},
+	}
+	for test_case in cases {
+		source := diagnostic.borrow_source(test_case.text, test_case.text)
+		scanner: Scanner
+		init_test_scanner(t, &scanner, source)
+		expect_token(t, &scanner, source, .String_Start, 0, 1)
+		expect_lexical_error(t, &scanner, source, 1, test_case.error_end)
+		destroy_scanner(&scanner)
+	}
+
+	valid := "\"\\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041\\uDC00\\uD834\\uDD1E\""
+	valid_source := diagnostic.borrow_source("<valid-escapes>", valid)
+	valid_scanner: Scanner
+	init_test_scanner(t, &valid_scanner, valid_source)
+	expect_token(t, &valid_scanner, valid_source, .String_Start, 0, 1)
+	text_token := expect_token(t, &valid_scanner, valid_source, .String_Text, 1, len(valid)-1)
+	expect_value_span(t, valid_source, text_token, 1, len(valid)-1)
+	expect_token(t, &valid_scanner, valid_source, .String_End, len(valid)-1, len(valid))
+	destroy_scanner(&valid_scanner)
+}
+
+@(test)
+test_unfinished_string_interpolation_lone_escape_and_mismatch_outcomes :: proc(t: ^testing.T) {
+	string_source := diagnostic.borrow_source("<unfinished-string>", "\"abc")
+	string_scanner: Scanner
+	init_test_scanner(t, &string_scanner, string_source)
+	expect_token(t, &string_scanner, string_source, .String_Start, 0, 1)
+	expect_token(t, &string_scanner, string_source, .String_Text, 1, 4)
+	for _ in 0 ..< 2 {
+		testing.expect_value(t, next_token(&string_scanner).kind, Scan_Outcome_Kind.End_Of_Input)
+	}
+	testing.expect_value(t, len(string_scanner.states), 1)
+	destroy_scanner(&string_scanner)
+
+	interp_source := diagnostic.borrow_source("<unfinished-interp>", "\"a\\(1")
+	interp_scanner: Scanner
+	init_test_scanner(t, &interp_scanner, interp_source)
+	expect_token(t, &interp_scanner, interp_source, .String_Start, 0, 1)
+	expect_token(t, &interp_scanner, interp_source, .String_Text, 1, 2)
+	expect_token(t, &interp_scanner, interp_source, .String_Interpolation_Start, 2, 4)
+	expect_token(t, &interp_scanner, interp_source, .Number, 4, 5)
+	testing.expect_value(t, next_token(&interp_scanner).kind, Scan_Outcome_Kind.End_Of_Input)
+	testing.expect_value(t, len(interp_scanner.states), 2)
+	destroy_scanner(&interp_scanner)
+
+	escape_source := diagnostic.borrow_source("<lone-escape>", "\"a\\")
+	escape_scanner: Scanner
+	init_test_scanner(t, &escape_scanner, escape_source)
+	expect_token(t, &escape_scanner, escape_source, .String_Start, 0, 1)
+	expect_token(t, &escape_scanner, escape_source, .String_Text, 1, 2)
+	expect_lexical_error(t, &escape_scanner, escape_source, 2, 3)
+	testing.expect_value(t, next_token(&escape_scanner).kind, Scan_Outcome_Kind.End_Of_Input)
+	destroy_scanner(&escape_scanner)
+
+	mismatch_source := diagnostic.borrow_source("<mismatch>", "\"a\\([1)] )z\"")
+	mismatch_scanner: Scanner
+	init_test_scanner(t, &mismatch_scanner, mismatch_source)
+	expect_token(t, &mismatch_scanner, mismatch_source, .String_Start, 0, 1)
+	expect_token(t, &mismatch_scanner, mismatch_source, .String_Text, 1, 2)
+	expect_token(t, &mismatch_scanner, mismatch_source, .String_Interpolation_Start, 2, 4)
+	expect_token(t, &mismatch_scanner, mismatch_source, .Open_Bracket, 4, 5)
+	expect_token(t, &mismatch_scanner, mismatch_source, .Number, 5, 6)
+	expect_lexical_error(t, &mismatch_scanner, mismatch_source, 6, 7)
+	expect_token(t, &mismatch_scanner, mismatch_source, .Close_Bracket, 7, 8)
+	expect_token(t, &mismatch_scanner, mismatch_source, .String_Interpolation_End, 9, 10)
+	expect_token(t, &mismatch_scanner, mismatch_source, .String_Text, 10, 11)
+	expect_token(t, &mismatch_scanner, mismatch_source, .String_End, 11, 12)
+	destroy_scanner(&mismatch_scanner)
+}
+
+@(test)
+test_raw_string_bytes_and_no_temporary_token_text :: proc(t: ^testing.T) {
+	raw := "\"\x01\xff\xc3\xc0\x80\xed\xa0\x80\""
+	source := diagnostic.borrow_source("<raw-bytes>", raw)
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source, test_allocator(&allocator_data))
+	expect_token(t, &scanner, source, .String_Start, 0, 1)
+	requests_after_state_push := allocator_data.request_count
+	text_token := expect_token(t, &scanner, source, .String_Text, 1, len(raw)-1)
+	expect_value_span(t, source, text_token, 1, len(raw)-1)
+	testing.expect_value(t, allocator_data.request_count, requests_after_state_push)
+	expect_token(t, &scanner, source, .String_End, len(raw)-1, len(raw))
+	testing.expect_value(t, allocator_data.request_count, requests_after_state_push)
+	destroy_scanner(&scanner)
+	testing.expect(t, len(tracker.allocation_map) == 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_explicit_length_nul_is_invalid_outside_strings_and_splits_numbers :: proc(t: ^testing.T) {
+	punctuation := "\x00.\x00[\x00]\x00"
+	punctuation_source := diagnostic.borrow_source("<nul-punctuation>", punctuation)
+	punctuation_scanner: Scanner
+	init_test_scanner(t, &punctuation_scanner, punctuation_source)
+	expect_lexical_error(t, &punctuation_scanner, punctuation_source, 0, 1)
+	expect_token(t, &punctuation_scanner, punctuation_source, .Dot, 1, 2)
+	expect_lexical_error(t, &punctuation_scanner, punctuation_source, 2, 3)
+	expect_token(t, &punctuation_scanner, punctuation_source, .Open_Bracket, 3, 4)
+	expect_lexical_error(t, &punctuation_scanner, punctuation_source, 4, 5)
+	expect_token(t, &punctuation_scanner, punctuation_source, .Close_Bracket, 5, 6)
+	expect_lexical_error(t, &punctuation_scanner, punctuation_source, 6, 7)
+	expect_repeated_eof(t, &punctuation_scanner)
+	destroy_scanner(&punctuation_scanner)
+
+	number_source := diagnostic.borrow_source("<nul-number>", "12\x0034\x00.5")
+	number_scanner: Scanner
+	init_test_scanner(t, &number_scanner, number_source)
+	number := expect_token(t, &number_scanner, number_source, .Number, 0, 2)
+	expect_value_span(t, number_source, number, 0, 2)
+	expect_lexical_error(t, &number_scanner, number_source, 2, 3)
+	number = expect_token(t, &number_scanner, number_source, .Number, 3, 5)
+	expect_value_span(t, number_source, number, 3, 5)
+	expect_lexical_error(t, &number_scanner, number_source, 5, 6)
+	number = expect_token(t, &number_scanner, number_source, .Number, 6, 8)
+	expect_value_span(t, number_source, number, 6, 8)
+	expect_repeated_eof(t, &number_scanner)
+	destroy_scanner(&number_scanner)
+}
+
+@(test)
+test_explicit_length_nul_is_retained_in_raw_string_text :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<nul-raw-string>", "\"a\x00b\x00c\"")
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	expect_token(t, &scanner, source, .String_Start, 0, 1)
+	text := expect_token(t, &scanner, source, .String_Text, 1, 6)
+	expect_value_span(t, source, text, 1, 6)
+	expect_token(t, &scanner, source, .String_End, 6, 7)
+	expect_repeated_eof(t, &scanner)
+	destroy_scanner(&scanner)
+}
+
+@(test)
+test_explicit_length_nul_completes_escape_candidate_and_scanning_resumes :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<nul-escape>", "\"\\\x00x\\\x00\\n\"")
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	expect_token(t, &scanner, source, .String_Start, 0, 1)
+	expect_lexical_error(t, &scanner, source, 1, 3)
+	text := expect_token(t, &scanner, source, .String_Text, 3, 4)
+	expect_value_span(t, source, text, 3, 4)
+	expect_lexical_error(t, &scanner, source, 4, 8)
+	expect_token(t, &scanner, source, .String_End, 8, 9)
+	expect_repeated_eof(t, &scanner)
+	destroy_scanner(&scanner)
+}
+
+@(test)
+test_explicit_length_nul_is_comment_content_until_newline :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<nul-comment>", "#a\x00b\n.\x00+")
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	expect_token(t, &scanner, source, .Dot, 5, 6)
+	expect_lexical_error(t, &scanner, source, 6, 7)
+	expect_token(t, &scanner, source, .Plus, 7, 8)
+	expect_repeated_eof(t, &scanner)
+	destroy_scanner(&scanner)
+}
+
+@(test)
+test_explicit_length_nul_respects_nested_interpolation_states :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source(
+		"<nul-nested-interpolation>",
+		"\"a\\(\x00[\"b\x00c\"]\x00)\x00z\"",
+	)
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	expect_token(t, &scanner, source, .String_Start, 0, 1)
+	expect_token(t, &scanner, source, .String_Text, 1, 2)
+	expect_token(t, &scanner, source, .String_Interpolation_Start, 2, 4)
+	expect_lexical_error(t, &scanner, source, 4, 5)
+	expect_token(t, &scanner, source, .Open_Bracket, 5, 6)
+	expect_token(t, &scanner, source, .String_Start, 6, 7)
+	inner_text := expect_token(t, &scanner, source, .String_Text, 7, 10)
+	expect_value_span(t, source, inner_text, 7, 10)
+	expect_token(t, &scanner, source, .String_End, 10, 11)
+	expect_token(t, &scanner, source, .Close_Bracket, 11, 12)
+	expect_lexical_error(t, &scanner, source, 12, 13)
+	expect_token(t, &scanner, source, .String_Interpolation_End, 13, 14)
+	outer_text := expect_token(t, &scanner, source, .String_Text, 14, 16)
+	expect_value_span(t, source, outer_text, 14, 16)
+	expect_token(t, &scanner, source, .String_End, 16, 17)
+	testing.expect_value(t, len(scanner.states), 0)
+	expect_repeated_eof(t, &scanner)
+	destroy_scanner(&scanner)
+}
+
+@(test)
+test_repeated_lexical_error_recovery_preserves_state_boundaries :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source(
+		"<recovery>",
+		"\"\\qtext\" )]} .",
+	)
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	expect_token(t, &scanner, source, .String_Start, 0, 1)
+	expect_lexical_error(t, &scanner, source, 1, 3)
+	text := expect_token(t, &scanner, source, .String_Text, 3, 7)
+	expect_value_span(t, source, text, 3, 7)
+	expect_token(t, &scanner, source, .String_End, 7, 8)
+	expect_lexical_error(t, &scanner, source, 9, 10)
+	expect_lexical_error(t, &scanner, source, 10, 11)
+	expect_lexical_error(t, &scanner, source, 11, 12)
+	expect_token(t, &scanner, source, .Dot, 13, 14)
+	testing.expect_value(t, next_token(&scanner).kind, Scan_Outcome_Kind.End_Of_Input)
+	destroy_scanner(&scanner)
+}
+
+@(test)
+test_literal_value_spans_outlive_scanner_but_borrow_source :: proc(t: ^testing.T) {
+	owned, clone_error := strings.clone("123 \"raw\"", context.allocator)
+	testing.expect(t, clone_error == nil)
+	defer delete(owned)
+	source := diagnostic.borrow_source("<literal-owner>", owned)
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	number := expect_token(t, &scanner, source, .Number, 0, 3)
+	expect_token(t, &scanner, source, .String_Start, 4, 5)
+	text := expect_token(t, &scanner, source, .String_Text, 5, 8)
+	destroy_scanner(&scanner)
+
+	tokens := [?]Token{number, text}
+	for token in tokens {
+		start, end, ok := diagnostic.span_offsets(source, token.value_span)
+		testing.expect(t, ok)
+		testing.expect_value(t, diagnostic.source_bytes(source)[start:end], owned[start:end])
+	}
 }
 
 @(test)
@@ -461,6 +838,7 @@ Test_Allocator :: struct {
 	free_count:           int,
 	alive:                bool,
 	calls_after_retirement: int,
+	free_failures_remaining: int,
 }
 
 @(private="package")
@@ -496,6 +874,10 @@ test_allocator_proc :: proc(
 	}
 	if mode == .Free {
 		data.free_count += 1
+		if data.free_failures_remaining > 0 {
+			data.free_failures_remaining -= 1
+			return nil, .Invalid_Pointer
+		}
 	}
 	return data.backing.procedure(
 		data.backing.data,
@@ -506,6 +888,52 @@ test_allocator_proc :: proc(
 		old_size,
 		location,
 	)
+}
+
+@(test)
+test_string_and_interpolation_push_allocation_failures_are_atomic :: proc(t: ^testing.T) {
+	string_data := Test_Allocator{
+		backing = context.allocator,
+		fail_at = 1,
+		alive = true,
+	}
+	string_source := diagnostic.borrow_source("<string-push-failure>", "\"")
+	string_scanner: Scanner
+	init_test_scanner(t, &string_scanner, string_source, test_allocator(&string_data))
+	string_failure := next_token(&string_scanner)
+	testing.expect_value(t, string_failure.kind, Scan_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, string_scanner.offset, 0)
+	testing.expect_value(t, len(string_scanner.states), 0)
+	testing.expect_value(t, string_scanner.state, Scanner_State.Resource_Failed)
+	testing.expect_value(t, destroy_scanner(&string_scanner), runtime.Allocator_Error.None)
+
+	interp_data := Test_Allocator{
+		backing = context.allocator,
+		alive = true,
+	}
+	interp_source := diagnostic.borrow_source("<interp-push-failure>", "\"\\(")
+	interp_scanner: Scanner
+	init_test_scanner(t, &interp_scanner, interp_source, test_allocator(&interp_data))
+	_, setup_error := append_elem(&interp_scanner.states, Lexer_State.Paren)
+	testing.expect(t, setup_error == nil)
+	for len(interp_scanner.states) < cap(interp_scanner.states)-1 {
+		_, append_error := append_elem(&interp_scanner.states, Lexer_State.Paren)
+		testing.expect(t, append_error == nil)
+	}
+	interp_data.fail_at = interp_data.request_count + 1
+	expect_token(t, &interp_scanner, interp_source, .String_Start, 0, 1)
+	depth_before_failure := len(interp_scanner.states)
+	interp_failure := next_token(&interp_scanner)
+	testing.expect_value(t, interp_failure.kind, Scan_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, interp_scanner.offset, 1)
+	testing.expect_value(t, len(interp_scanner.states), depth_before_failure)
+	testing.expect_value(
+		t,
+		interp_scanner.states[len(interp_scanner.states)-1],
+		Lexer_State.String,
+	)
+	testing.expect_value(t, interp_scanner.state, Scanner_State.Resource_Failed)
+	testing.expect_value(t, destroy_scanner(&interp_scanner), runtime.Allocator_Error.None)
 }
 
 DEEP_NESTING :: "(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((("
@@ -549,11 +977,11 @@ test_every_reachable_allocator_failure_is_terminal_atomic_repeatable :: proc(t: 
 
 		for {
 			before_offset := scanner.offset
-			before_depth := len(scanner.delimiters)
+			before_depth := len(scanner.states)
 			outcome := next_token(&scanner)
 			if outcome.kind == .Resource_Failure {
 				testing.expect_value(t, scanner.offset, before_offset)
-				testing.expect_value(t, len(scanner.delimiters), before_depth)
+				testing.expect_value(t, len(scanner.states), before_depth)
 				break
 			}
 			testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.Token)
@@ -561,13 +989,13 @@ test_every_reachable_allocator_failure_is_terminal_atomic_repeatable :: proc(t: 
 
 		requests_at_failure := allocator_data.request_count
 		offset_at_failure := scanner.offset
-		depth_at_failure := len(scanner.delimiters)
+		depth_at_failure := len(scanner.states)
 		for _ in 0 ..< 3 {
 			repeated := next_token(&scanner)
 			testing.expect_value(t, repeated.kind, Scan_Outcome_Kind.Resource_Failure)
 			testing.expect_value(t, allocator_data.request_count, requests_at_failure)
 			testing.expect_value(t, scanner.offset, offset_at_failure)
-			testing.expect_value(t, len(scanner.delimiters), depth_at_failure)
+			testing.expect_value(t, len(scanner.states), depth_at_failure)
 		}
 		destroy_scanner(&scanner)
 		testing.expect(t, len(tracker.allocation_map) == 0)
@@ -602,6 +1030,66 @@ test_allocator_provenance_and_destruction :: proc(t: ^testing.T) {
 	testing.expect(t, len(tracker.allocation_map) == 0)
 	allocator_data.alive = false
 	destroy_scanner(&scanner)
+	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_bulk_lifetime_scanner_destruction_retires_handle :: proc(t: ^testing.T) {
+	arena: runtime.Arena
+	init_error := runtime.arena_init(&arena, 4096, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error.None)
+	if init_error != nil {
+		return
+	}
+
+	allocator_data := Test_Allocator{
+		backing = runtime.arena_allocator(&arena),
+		alive = true,
+	}
+	source := diagnostic.borrow_source("<bulk-destroy>", "(")
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source, test_allocator(&allocator_data))
+	expect_token(t, &scanner, source, .Open_Paren, 0, 1)
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+	testing.expect_value(t, scanner.state, Scanner_State.Destroyed)
+	testing.expect_value(t, allocator_data.free_count, 1)
+
+	allocator_data.alive = false
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
+	runtime.arena_destroy(&arena)
+}
+
+@(test)
+test_failed_scanner_destruction_preserves_owner_for_retry :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+		free_failures_remaining = 1,
+	}
+	source := diagnostic.borrow_source("<destroy-retry>", "(")
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source, test_allocator(&allocator_data))
+	expect_token(t, &scanner, source, .Open_Paren, 0, 1)
+	allocation_count := len(tracker.allocation_map)
+	testing.expect(t, allocation_count > 0)
+
+	first_error := destroy_scanner(&scanner)
+	testing.expect_value(t, first_error, runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, len(tracker.allocation_map), allocation_count)
+	testing.expect_value(t, scanner.state, Scanner_State.Active)
+	testing.expect(t, scanner.self == &scanner)
+	testing.expect_value(t, len(scanner.states), 1)
+	testing.expect_value(t, scanner.states[0], Lexer_State.Paren)
+	testing.expect_value(t, diagnostic.source_bytes(scanner.source), "(")
+
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+	testing.expect(t, len(tracker.allocation_map) == 0)
+	allocator_data.alive = false
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
 	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
 	mem.tracking_allocator_destroy(&tracker)
 }

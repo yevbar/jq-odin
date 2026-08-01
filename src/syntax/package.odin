@@ -71,10 +71,12 @@ Token_Kind :: enum {
 	Format,
 	Field,
 
-	// Reserved for later evidence-backed literal scanning. This milestone does
-	// not emit these disputed token kinds.
-	Number_Placeholder,
-	String_Placeholder,
+	Number,
+	String_Start,
+	String_Text,
+	String_Interpolation_Start,
+	String_Interpolation_End,
+	String_End,
 }
 
 // Token is a non-owning description of bytes in the scanner's borrowed Source.
@@ -104,10 +106,12 @@ Scan_Outcome :: struct {
 	has_error_span: bool,
 }
 
-Delimiter :: enum u8 {
+Lexer_State :: enum u8 {
 	Paren,
 	Bracket,
 	Brace,
+	String,
+	Interpolation,
 }
 
 Scanner_State :: enum u8 {
@@ -119,7 +123,7 @@ Scanner_State :: enum u8 {
 
 // Scanner incrementally scans one borrowed Source.
 //
-// delimiters is owned by the scanner and allocated with allocator. The
+// states is owned by the scanner and allocated with allocator. The
 // allocator and all of its backing state must remain valid until
 // destroy_scanner. A live Scanner must stay at the address passed to
 // init_scanner: copying it with Odin `=` is forbidden. Operations assert this
@@ -128,7 +132,7 @@ Scanner_State :: enum u8 {
 Scanner :: struct {
 	source:     diagnostic.Source,
 	offset:     int,
-	delimiters: [dynamic]Delimiter,
+	states:     [dynamic]Lexer_State,
 	allocator:  runtime.Allocator,
 	state:      Scanner_State,
 	self:       ^Scanner,
@@ -153,33 +157,41 @@ init_scanner :: proc(
 	scanner^ = {}
 	scanner.source = source
 	scanner.allocator = allocator
-	scanner.delimiters.allocator = allocator
+	scanner.states.allocator = allocator
 	scanner.state = .Active
 	scanner.self = scanner
 	return true
 }
 
-// destroy_scanner releases scanner-owned delimiter storage with the allocator
-// recorded by init_scanner. It is idempotent for the original Scanner value.
-destroy_scanner :: proc(scanner: ^Scanner) {
+// destroy_scanner releases scanner-owned state storage with the allocator
+// recorded by init_scanner. A genuine allocator error leaves the scanner and
+// its sole owning state handle unchanged so destruction can be retried.
+// Mode_Not_Implemented retires the handle under the allocator's documented
+// bulk lifetime. Successful destruction is idempotent for the original value.
+destroy_scanner :: proc(scanner: ^Scanner) -> runtime.Allocator_Error {
 	if scanner == nil || scanner.state == .Destroyed ||
 	   scanner.state == .Uninitialized {
-		return
+		return nil
 	}
 	assert(scanner.self == scanner, "a live syntax.Scanner was copied")
-	delete(scanner.delimiters)
-	scanner.delimiters = nil
+	free_error := delete(scanner.states)
+	if free_error != nil && free_error != .Mode_Not_Implemented {
+		return free_error
+	}
+	scanner.states = nil
 	scanner.source = {}
 	scanner.offset = 0
 	scanner.allocator = {}
 	scanner.state = .Destroyed
 	scanner.self = nil
+	return nil
 }
 
 // next_token advances exactly once. Resource failure is terminal, atomic, and
 // repeatable: later calls return .Resource_Failure without consuming input or
-// allocating. Lexical errors consume the one-byte offending input, except that
-// a mismatched closer consumes that closer as one complete offending token.
+// allocating. Lexical errors consume the complete offending lexical unit:
+// normally one byte, one mismatched closer, or one grouped string-escape
+// candidate.
 next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 	assert(scanner != nil && scanner.self == scanner,
 	       "syntax.Scanner must be initialized and must not be copied")
@@ -188,8 +200,10 @@ next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 	if scanner.state == .Resource_Failed {
 		return Scan_Outcome{kind = .Resource_Failure}
 	}
-
 	bytes := diagnostic.source_bytes(scanner.source)
+	if in_string(scanner) {
+		return next_string_token(scanner, bytes)
+	}
 	for scanner.offset < len(bytes) {
 		byte := bytes[scanner.offset]
 		if is_whitespace(byte) {
@@ -208,6 +222,20 @@ next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 	}
 
 	start := scanner.offset
+	if is_digit(bytes[start]) ||
+	   bytes[start] == '.' && start + 1 < len(bytes) && is_digit(bytes[start+1]) {
+		end := scan_number(bytes, start)
+		scanner.offset = end
+		return valued_token_outcome(scanner.source, .Number, start, end, start, end)
+	}
+
+	if bytes[start] == '"' {
+		if !push_state(scanner, .String) {
+			return Scan_Outcome{kind = .Resource_Failure}
+		}
+		scanner.offset += 1
+		return token_outcome(scanner.source, .String_Start, start, start+1)
+	}
 
 	if bytes[start] == '@' && start + 1 < len(bytes) &&
 	   is_format_byte(bytes[start+1]) {
@@ -253,20 +281,30 @@ next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 
 	if kind, width, matched := match_fixed(bytes, start); matched {
 		if is_opener(kind) {
-			delimiter := delimiter_for_opener(kind)
-			_, append_error := append_elem(&scanner.delimiters, delimiter)
-			if append_error != nil {
-				scanner.state = .Resource_Failed
+			if !push_state(scanner, state_for_opener(kind)) {
 				return Scan_Outcome{kind = .Resource_Failure}
 			}
 		} else if is_closer(kind) {
-			expected := delimiter_for_closer(kind)
-			if len(scanner.delimiters) == 0 ||
-			   scanner.delimiters[len(scanner.delimiters)-1] != expected {
+			expected := state_for_closer(kind)
+			if kind == .Close_Paren && len(scanner.states) > 0 &&
+			   scanner.states[len(scanner.states)-1] == .Interpolation {
+				expected = .Interpolation
+			}
+			if len(scanner.states) == 0 ||
+			   scanner.states[len(scanner.states)-1] != expected {
 				scanner.offset += width
 				return lexical_error(scanner.source, start, start + width)
 			}
-			pop(&scanner.delimiters)
+			pop(&scanner.states)
+			if expected == .Interpolation {
+				scanner.offset += width
+				return token_outcome(
+					scanner.source,
+					.String_Interpolation_End,
+					start,
+					start+width,
+				)
+			}
 		}
 
 		scanner.offset += width
@@ -275,6 +313,200 @@ next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 
 	scanner.offset += 1
 	return lexical_error(scanner.source, start, start + 1)
+}
+
+@(private="package")
+next_string_token :: proc(scanner: ^Scanner, bytes: string) -> Scan_Outcome {
+	if scanner.offset == len(bytes) {
+		return Scan_Outcome{kind = .End_Of_Input}
+	}
+	start := scanner.offset
+	if bytes[start] == '"' {
+		pop(&scanner.states)
+		scanner.offset += 1
+		return token_outcome(scanner.source, .String_End, start, start+1)
+	}
+	if bytes[start] == '\\' {
+		if start + 1 < len(bytes) && bytes[start+1] == '(' {
+			if !push_state(scanner, .Interpolation) {
+				return Scan_Outcome{kind = .Resource_Failure}
+			}
+			scanner.offset += 2
+			return token_outcome(
+				scanner.source,
+				.String_Interpolation_Start,
+				start,
+				start+2,
+			)
+		}
+
+		end := scan_escape_candidate(bytes, start)
+		if end == start {
+			scanner.offset += 1
+			return lexical_error(scanner.source, start, start+1)
+		}
+		scanner.offset = end
+		if !valid_escape_candidate(bytes[start:end]) {
+			return lexical_error(scanner.source, start, end)
+		}
+		return valued_token_outcome(
+			scanner.source,
+			.String_Text,
+			start,
+			end,
+			start,
+			end,
+		)
+	}
+
+	end := start
+	for end < len(bytes) && bytes[end] != '\\' && bytes[end] != '"' {
+		end += 1
+	}
+	assert(end > start)
+	scanner.offset = end
+	return valued_token_outcome(
+		scanner.source,
+		.String_Text,
+		start,
+		end,
+		start,
+		end,
+	)
+}
+
+@(private="package")
+scan_number :: proc(bytes: string, start: int) -> int {
+	end := start
+	if bytes[end] == '.' {
+		end += 1
+		for end < len(bytes) && is_digit(bytes[end]) {
+			end += 1
+		}
+	} else {
+		for end < len(bytes) && is_digit(bytes[end]) {
+			end += 1
+		}
+		if end < len(bytes) && bytes[end] == '.' {
+			end += 1
+			for end < len(bytes) && is_digit(bytes[end]) {
+				end += 1
+			}
+		}
+	}
+
+	if end < len(bytes) && (bytes[end] == 'e' || bytes[end] == 'E') {
+		exponent_end := end + 1
+		if exponent_end < len(bytes) &&
+		   (bytes[exponent_end] == '+' || bytes[exponent_end] == '-') {
+			exponent_end += 1
+		}
+		digit_start := exponent_end
+		for exponent_end < len(bytes) && is_digit(bytes[exponent_end]) {
+			exponent_end += 1
+		}
+		if exponent_end > digit_start {
+			end = exponent_end
+		}
+	}
+	return end
+}
+
+@(private="package")
+scan_escape_candidate :: proc(bytes: string, start: int) -> int {
+	end := start
+	for end < len(bytes) && bytes[end] == '\\' {
+		if end + 1 >= len(bytes) || bytes[end+1] == '(' {
+			break
+		}
+		if bytes[end+1] != 'u' {
+			end += 2
+			continue
+		}
+		end += 2
+		count := 0
+		for end < len(bytes) && count < 4 && is_ascii_alphanumeric(bytes[end]) {
+			end += 1
+			count += 1
+		}
+	}
+	return end
+}
+
+@(private="package")
+valid_escape_candidate :: proc(candidate: string) -> bool {
+	index := 0
+	for index < len(candidate) {
+		assert(candidate[index] == '\\' && index + 1 < len(candidate))
+		escape := candidate[index+1]
+		switch escape {
+		case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+			index += 2
+		case 'u':
+			code, ok := parse_unicode_escape(candidate, index)
+			if !ok {
+				return false
+			}
+			index += 6
+			if code >= 0xd800 && code <= 0xdbff {
+				low, low_ok := parse_unicode_escape(candidate, index)
+				if !low_ok || low < 0xdc00 || low > 0xdfff {
+					return false
+				}
+				index += 6
+			}
+		case:
+			return false
+		}
+	}
+	return true
+}
+
+@(private="package")
+parse_unicode_escape :: proc(candidate: string, start: int) -> (u32, bool) {
+	if start + 6 > len(candidate) || candidate[start] != '\\' ||
+	   candidate[start+1] != 'u' {
+		return 0, false
+	}
+	value: u32
+	for index in start+2 ..< start+6 {
+		digit, ok := hex_value(candidate[index])
+		if !ok {
+			return 0, false
+		}
+		value = value * 16 + digit
+	}
+	return value, true
+}
+
+@(private="package")
+hex_value :: proc(byte: u8) -> (u32, bool) {
+	if byte >= '0' && byte <= '9' {
+		return u32(byte - '0'), true
+	}
+	if byte >= 'a' && byte <= 'f' {
+		return u32(byte - 'a' + 10), true
+	}
+	if byte >= 'A' && byte <= 'F' {
+		return u32(byte - 'A' + 10), true
+	}
+	return 0, false
+}
+
+@(private="package")
+push_state :: proc(scanner: ^Scanner, state: Lexer_State) -> bool {
+	_, append_error := append_elem(&scanner.states, state)
+	if append_error != nil {
+		scanner.state = .Resource_Failed
+		return false
+	}
+	return true
+}
+
+@(private="package")
+in_string :: proc(scanner: ^Scanner) -> bool {
+	return len(scanner.states) > 0 &&
+	       scanner.states[len(scanner.states)-1] == .String
 }
 
 @(private="package")
@@ -486,6 +718,18 @@ is_format_byte :: proc(byte: u8) -> bool {
 }
 
 @(private="package")
+is_digit :: proc(byte: u8) -> bool {
+	return byte >= '0' && byte <= '9'
+}
+
+@(private="package")
+is_ascii_alphanumeric :: proc(byte: u8) -> bool {
+	return is_digit(byte) ||
+	       byte >= 'a' && byte <= 'z' ||
+	       byte >= 'A' && byte <= 'Z'
+}
+
+@(private="package")
 is_opener :: proc(kind: Token_Kind) -> bool {
 	return kind == .Open_Paren || kind == .Open_Bracket || kind == .Open_Brace
 }
@@ -496,7 +740,7 @@ is_closer :: proc(kind: Token_Kind) -> bool {
 }
 
 @(private="package")
-delimiter_for_opener :: proc(kind: Token_Kind) -> Delimiter {
+state_for_opener :: proc(kind: Token_Kind) -> Lexer_State {
 	#partial switch kind {
 	case .Open_Paren:   return .Paren
 	case .Open_Bracket: return .Bracket
@@ -506,7 +750,7 @@ delimiter_for_opener :: proc(kind: Token_Kind) -> Delimiter {
 }
 
 @(private="package")
-delimiter_for_closer :: proc(kind: Token_Kind) -> Delimiter {
+state_for_closer :: proc(kind: Token_Kind) -> Lexer_State {
 	#partial switch kind {
 	case .Close_Paren:   return .Paren
 	case .Close_Bracket: return .Bracket
