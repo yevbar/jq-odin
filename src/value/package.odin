@@ -110,6 +110,7 @@ payload_kind :: enum u8 {
 	String,
 	Literal_Number,
 	Array,
+	Object,
 }
 
 @(private)
@@ -129,6 +130,12 @@ payload :: struct {
 	array_retired_count:      int,
 	array_cleanup_at:         int,
 	array_retiring:           bool,
+	object_capacity:          int,
+	object_next_free:         int,
+	object_length:            int,
+	object_cleanup_at:        int,
+	object_cleanup_key_done:  bool,
+	object_retiring:          bool,
 }
 
 @(private)
@@ -788,9 +795,12 @@ clone_value :: proc(value: ^Value) -> Value {
 	if storage.kind == .Invalid {
 		return {}
 	}
-	if storage.owned_payload != nil && storage.owned_payload.kind == .Array &&
-	   storage.owned_payload.array_retiring {
-		return {}
+	if storage.owned_payload != nil {
+		p := storage.owned_payload
+		if (p.kind == .Array && p.array_retiring) ||
+		   (p.kind == .Object && p.object_retiring) {
+			return {}
+		}
 	}
 	result := value^
 	result_storage := value_storage_of(&result)
@@ -800,6 +810,16 @@ clone_value :: proc(value: ^Value) -> Value {
 		result_storage.owned_payload.references += 1
 	}
 	return result
+}
+
+@(private)
+value_is_retiring :: proc(value: ^Value) -> bool {
+	if value == nil || value^ == nil do return false
+	storage := value_storage_of(value)
+	p := storage.owned_payload
+	if p == nil do return false
+	return (p.kind == .Array && p.array_retiring) ||
+	       (p.kind == .Object && p.object_retiring)
 }
 
 take_value :: proc(source: ^Value) -> Value {
@@ -848,6 +868,27 @@ destroy_value :: proc(value: ^Value) -> runtime.Allocator_Error {
 				return element_error
 			}
 			p.array_cleanup_at += 1
+		}
+	} else if p.kind == .Object {
+		p.object_retiring = true
+		slots := object_payload_slots(p)
+		for p.object_cleanup_at < p.object_next_free {
+			slot := &slots[p.object_cleanup_at]
+			if p.object_cleanup_key_done || kind_of(&slot.key) == .String {
+				if !p.object_cleanup_key_done {
+					key_error := destroy_value(&slot.key)
+					if key_error != nil {
+						return key_error
+					}
+					p.object_cleanup_key_done = true
+				}
+				value_error := destroy_value(&slot.value)
+				if value_error != nil {
+					return value_error
+				}
+			}
+			p.object_cleanup_key_done = false
+			p.object_cleanup_at += 1
 		}
 	}
 	allocator := p.allocator
@@ -1018,7 +1059,7 @@ values_equal :: proc(a, b: ^Value) -> bool {
 		return false
 	}
 	switch a_storage.kind {
-	case .Invalid, .Object:
+	case .Invalid:
 		return false
 	case .Null:
 		return true
@@ -1033,6 +1074,8 @@ values_equal :: proc(a, b: ^Value) -> bool {
 		return left_ok && right_ok && left == right
 	case .Array:
 		return arrays_equal(a, b)
+	case .Object:
+		return objects_equal(a, b)
 	}
 	return false
 }

@@ -378,10 +378,7 @@ array_set_take :: proc(
 	if element == nil || element^ == nil {
 		return {}, make_array_operation_error(.Wrong_Kind)
 	}
-	element_storage := value_storage_of(element)
-	if element_storage.owned_payload != nil &&
-	   element_storage.owned_payload.kind == .Array &&
-	   element_storage.owned_payload.array_retiring {
+	if value_is_retiring(element) {
 		return {}, make_array_operation_error(.Wrong_Kind)
 	}
 	array_storage, p, array_ok := array_storage_of(array)
