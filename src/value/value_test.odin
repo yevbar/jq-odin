@@ -141,6 +141,9 @@ allocator_probe :: struct {
 	free_failures_remaining: int,
 	nil_success:   bool,
 	short_success: bool,
+	tracked_pointers: [128]rawptr,
+	tracked_sizes:    [128]int,
+	tracked_count:    int,
 }
 
 allocator_probe_proc :: proc(
@@ -182,11 +185,43 @@ allocator_probe_proc :: proc(
 		if err == nil && len(result) > 0 {
 			probe.live += 1
 			probe.last_size = len(result)
+			assert(probe.tracked_count < len(probe.tracked_pointers))
+			probe.tracked_pointers[probe.tracked_count] = raw_data(result)
+			probe.tracked_sizes[probe.tracked_count] = len(result)
+			probe.tracked_count += 1
+		}
+		return result, err
+	case .Resize, .Resize_Non_Zeroed:
+		result, err := probe.backing.procedure(
+			probe.backing.data,
+			mode,
+			size,
+			alignment,
+			old_memory,
+			old_size,
+			location,
+		)
+		if err == nil && len(result) == size {
+			probe.last_size = len(result)
+			for i in 0..<probe.tracked_count {
+				if probe.tracked_pointers[i] == old_memory {
+					probe.tracked_pointers[i] = raw_data(result)
+					probe.tracked_sizes[i] = len(result)
+					break
+				}
+			}
 		}
 		return result, err
 	case .Free:
 		probe.frees += 1
-		if old_size != probe.last_size {
+		tracked_at := -1
+		for i in 0..<probe.tracked_count {
+			if probe.tracked_pointers[i] == old_memory {
+				tracked_at = i
+				break
+			}
+		}
+		if tracked_at < 0 || old_size != probe.tracked_sizes[tracked_at] {
 			probe.wrong_free_size = true
 		}
 		if probe.free_failures_remaining > 0 {
@@ -204,6 +239,12 @@ allocator_probe_proc :: proc(
 		)
 		if err == nil {
 			probe.live -= 1
+			if tracked_at >= 0 {
+				last := probe.tracked_count - 1
+				probe.tracked_pointers[tracked_at] = probe.tracked_pointers[last]
+				probe.tracked_sizes[tracked_at] = probe.tracked_sizes[last]
+				probe.tracked_count = last
+			}
 		}
 		return result, err
 	}

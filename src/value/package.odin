@@ -5,8 +5,8 @@ import "base:runtime"
 import "core:math"
 import "core:strconv"
 
-// Kind reserves the complete runtime value kind space. Array and Object are
-// intentionally not constructible in this scalar implementation slice.
+// Kind reserves the complete runtime value kind space. Object remains
+// intentionally unconstructible in this implementation slice.
 Kind :: enum u8 {
 	Invalid,
 	Null,
@@ -109,6 +109,7 @@ destroy_constructor_error :: proc(err: ^Constructor_Error) -> runtime.Allocator_
 payload_kind :: enum u8 {
 	String,
 	Literal_Number,
+	Array,
 }
 
 @(private)
@@ -123,6 +124,11 @@ payload :: struct {
 	negative:        bool,
 	infinite:        bool,
 	native_cache:    f64,
+	array_initialized_length: int,
+	array_capacity:           int,
+	array_retired_count:      int,
+	array_cleanup_at:         int,
+	array_retiring:           bool,
 }
 
 @(private)
@@ -131,6 +137,8 @@ value_storage :: struct {
 	boolean:        bool,
 	native_number:  f64,
 	owned_payload:  ^payload,
+	array_length:   int,
+	array_offset:   u16,
 }
 
 // Value is an owning tagged handle whose only union variant is package-private.
@@ -780,6 +788,10 @@ clone_value :: proc(value: ^Value) -> Value {
 	if storage.kind == .Invalid {
 		return {}
 	}
+	if storage.owned_payload != nil && storage.owned_payload.kind == .Array &&
+	   storage.owned_payload.array_retiring {
+		return {}
+	}
 	result := value^
 	result_storage := value_storage_of(&result)
 	if result_storage.owned_payload != nil {
@@ -821,6 +833,22 @@ destroy_value :: proc(value: ^Value) -> runtime.Allocator_Error {
 		p.references -= 1
 		value^ = {}
 		return nil
+	}
+	if p.kind == .Array {
+		p.array_retiring = true
+		elements := array_payload_values(p)
+		total_owned := p.array_initialized_length + p.array_retired_count
+		for p.array_cleanup_at < total_owned {
+			index := p.array_cleanup_at
+			if index >= p.array_initialized_length {
+				index = p.array_capacity + index - p.array_initialized_length
+			}
+			element_error := destroy_value(&elements[index])
+			if element_error != nil {
+				return element_error
+			}
+			p.array_cleanup_at += 1
+		}
 	}
 	allocator := p.allocator
 	allocation_size := p.allocation_size
@@ -990,7 +1018,7 @@ values_equal :: proc(a, b: ^Value) -> bool {
 		return false
 	}
 	switch a_storage.kind {
-	case .Invalid, .Array, .Object:
+	case .Invalid, .Object:
 		return false
 	case .Null:
 		return true
@@ -1003,6 +1031,8 @@ values_equal :: proc(a, b: ^Value) -> bool {
 		left, left_ok := string_borrowed(a)
 		right, right_ok := string_borrowed(b)
 		return left_ok && right_ok && left == right
+	case .Array:
+		return arrays_equal(a, b)
 	}
 	return false
 }
