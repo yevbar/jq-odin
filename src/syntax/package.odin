@@ -98,12 +98,14 @@ Scan_Outcome_Kind :: enum {
 }
 
 // Scan_Outcome contains token only for .Token. error_span is present only for
-// .Lexical_Error. Resource failure is deliberately not an input diagnostic.
+// .Lexical_Error. resource_error is present only for .Resource_Failure, which
+// is deliberately not an input diagnostic.
 Scan_Outcome :: struct {
 	kind:           Scan_Outcome_Kind,
 	token:          Token,
 	error_span:     diagnostic.Span,
 	has_error_span: bool,
+	resource_error: runtime.Allocator_Error,
 }
 
 Lexer_State :: enum u8 {
@@ -132,10 +134,11 @@ Scanner_State :: enum u8 {
 Scanner :: struct {
 	source:     diagnostic.Source,
 	offset:     int,
-	states:     [dynamic]Lexer_State,
+	states:     Fallible_Buffer(Lexer_State),
 	allocator:  runtime.Allocator,
 	state:      Scanner_State,
 	self:       ^Scanner,
+	resource_error: runtime.Allocator_Error,
 }
 
 // init_scanner initializes scanner without allocating. It rejects an invalid
@@ -157,15 +160,15 @@ init_scanner :: proc(
 	scanner^ = {}
 	scanner.source = source
 	scanner.allocator = allocator
-	scanner.states.allocator = allocator
+	init_fallible_buffer(&scanner.states, allocator)
 	scanner.state = .Active
 	scanner.self = scanner
 	return true
 }
 
 // destroy_scanner releases scanner-owned state storage with the allocator
-// recorded by init_scanner. A genuine allocator error leaves the scanner and
-// its sole owning state handle unchanged so destruction can be retried.
+// recorded by init_scanner. A genuine allocator error leaves every explicit
+// state-buffer owner unchanged so destruction can be retried.
 // Mode_Not_Implemented retires the handle under the allocator's documented
 // bulk lifetime. Successful destruction is idempotent for the original value.
 destroy_scanner :: proc(scanner: ^Scanner) -> runtime.Allocator_Error {
@@ -174,14 +177,14 @@ destroy_scanner :: proc(scanner: ^Scanner) -> runtime.Allocator_Error {
 		return nil
 	}
 	assert(scanner.self == scanner, "a live syntax.Scanner was copied")
-	free_error := delete(scanner.states)
-	if free_error != nil && free_error != .Mode_Not_Implemented {
+	free_error := destroy_fallible_buffer(&scanner.states)
+	if free_error != nil {
 		return free_error
 	}
-	scanner.states = nil
 	scanner.source = {}
 	scanner.offset = 0
 	scanner.allocator = {}
+	scanner.resource_error = nil
 	scanner.state = .Destroyed
 	scanner.self = nil
 	return nil
@@ -198,7 +201,7 @@ next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 	assert(scanner.state != .Destroyed, "syntax.Scanner was destroyed")
 
 	if scanner.state == .Resource_Failed {
-		return Scan_Outcome{kind = .Resource_Failure}
+		return scanner_resource_failure(scanner)
 	}
 	bytes := diagnostic.source_bytes(scanner.source)
 	if in_string(scanner) {
@@ -231,7 +234,7 @@ next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 
 	if bytes[start] == '"' {
 		if !push_state(scanner, .String) {
-			return Scan_Outcome{kind = .Resource_Failure}
+			return scanner_resource_failure(scanner)
 		}
 		scanner.offset += 1
 		return token_outcome(scanner.source, .String_Start, start, start+1)
@@ -282,20 +285,20 @@ next_token :: proc(scanner: ^Scanner) -> Scan_Outcome {
 	if kind, width, matched := match_fixed(bytes, start); matched {
 		if is_opener(kind) {
 			if !push_state(scanner, state_for_opener(kind)) {
-				return Scan_Outcome{kind = .Resource_Failure}
+				return scanner_resource_failure(scanner)
 			}
 		} else if is_closer(kind) {
 			expected := state_for_closer(kind)
-			if kind == .Close_Paren && len(scanner.states) > 0 &&
-			   scanner.states[len(scanner.states)-1] == .Interpolation {
+			if kind == .Close_Paren && scanner.states.count > 0 &&
+			   scanner.states.storage[scanner.states.count-1] == .Interpolation {
 				expected = .Interpolation
 			}
-			if len(scanner.states) == 0 ||
-			   scanner.states[len(scanner.states)-1] != expected {
+			if scanner.states.count == 0 ||
+			   scanner.states.storage[scanner.states.count-1] != expected {
 				scanner.offset += width
 				return lexical_error(scanner.source, start, start + width)
 			}
-			pop(&scanner.states)
+			pop_state(scanner)
 			if expected == .Interpolation {
 				scanner.offset += width
 				return token_outcome(
@@ -322,14 +325,14 @@ next_string_token :: proc(scanner: ^Scanner, bytes: string) -> Scan_Outcome {
 	}
 	start := scanner.offset
 	if bytes[start] == '"' {
-		pop(&scanner.states)
+		pop_state(scanner)
 		scanner.offset += 1
 		return token_outcome(scanner.source, .String_End, start, start+1)
 	}
 	if bytes[start] == '\\' {
 		if start + 1 < len(bytes) && bytes[start+1] == '(' {
 			if !push_state(scanner, .Interpolation) {
-				return Scan_Outcome{kind = .Resource_Failure}
+				return scanner_resource_failure(scanner)
 			}
 			scanner.offset += 2
 			return token_outcome(
@@ -495,18 +498,35 @@ hex_value :: proc(byte: u8) -> (u32, bool) {
 
 @(private="package")
 push_state :: proc(scanner: ^Scanner, state: Lexer_State) -> bool {
-	_, append_error := append_elem(&scanner.states, state)
+	append_error := append_fallible_buffer(&scanner.states, state)
 	if append_error != nil {
 		scanner.state = .Resource_Failed
+		scanner.resource_error = append_error
 		return false
 	}
 	return true
 }
 
 @(private="package")
+scanner_resource_failure :: proc(scanner: ^Scanner) -> Scan_Outcome {
+	assert(scanner.resource_error != nil)
+	return Scan_Outcome{
+		kind = .Resource_Failure,
+		resource_error = scanner.resource_error,
+	}
+}
+
+@(private="package")
+pop_state :: proc(scanner: ^Scanner) {
+	assert(scanner.states.count > 0)
+	scanner.states.count -= 1
+	scanner.states.storage[scanner.states.count] = {}
+}
+
+@(private="package")
 in_string :: proc(scanner: ^Scanner) -> bool {
-	return len(scanner.states) > 0 &&
-	       scanner.states[len(scanner.states)-1] == .String
+	return scanner.states.count > 0 &&
+	       scanner.states.storage[scanner.states.count-1] == .String
 }
 
 @(private="package")

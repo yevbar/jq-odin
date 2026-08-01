@@ -72,12 +72,12 @@ expect_lexical_error :: proc(
 @(private="package")
 expect_repeated_eof :: proc(t: ^testing.T, scanner: ^Scanner) {
 	offset := scanner.offset
-	depth := len(scanner.states)
+	depth := scanner.states.count
 	for _ in 0 ..< 2 {
 		outcome := next_token(scanner)
 		testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.End_Of_Input)
 		testing.expect_value(t, scanner.offset, offset)
-		testing.expect_value(t, len(scanner.states), depth)
+		testing.expect_value(t, scanner.states.count, depth)
 	}
 }
 
@@ -366,7 +366,7 @@ test_balanced_nesting_and_mismatched_closers :: proc(t: ^testing.T) {
 	for kind, index in kinds {
 		expect_token(t, &scanner, source, kind, index, index+1)
 	}
-	testing.expect_value(t, len(scanner.states), 0)
+	testing.expect_value(t, scanner.states.count, 0)
 	destroy_scanner(&scanner)
 
 	unopened_closers := [?]string{")", "]", "}"}
@@ -414,10 +414,10 @@ test_balanced_nesting_and_mismatched_closers :: proc(t: ^testing.T) {
 		testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.Lexical_Error)
 		testing.expect(t, outcome.has_error_span)
 		expect_span(t, mismatch_source, outcome.error_span, 1, 2)
-		testing.expect_value(t, len(mismatch_scanner.states), 1)
+		testing.expect_value(t, mismatch_scanner.states.count, 1)
 
 		expect_token(t, &mismatch_scanner, mismatch_source, test_case.closer_kind, 2, 3)
-		testing.expect_value(t, len(mismatch_scanner.states), 0)
+		testing.expect_value(t, mismatch_scanner.states.count, 0)
 		testing.expect_value(
 			t,
 			next_token(&mismatch_scanner).kind,
@@ -532,7 +532,7 @@ test_interpolated_strings_use_exact_borrowed_lifo_spans :: proc(t: ^testing.T) {
 			expect_value_span(t, source, token, test_case.start, test_case.end)
 		}
 	}
-	testing.expect_value(t, len(scanner.states), 0)
+	testing.expect_value(t, scanner.states.count, 0)
 	testing.expect_value(t, next_token(&scanner).kind, Scan_Outcome_Kind.End_Of_Input)
 	destroy_scanner(&scanner)
 }
@@ -589,7 +589,7 @@ test_unfinished_string_interpolation_lone_escape_and_mismatch_outcomes :: proc(t
 	for _ in 0 ..< 2 {
 		testing.expect_value(t, next_token(&string_scanner).kind, Scan_Outcome_Kind.End_Of_Input)
 	}
-	testing.expect_value(t, len(string_scanner.states), 1)
+	testing.expect_value(t, string_scanner.states.count, 1)
 	destroy_scanner(&string_scanner)
 
 	interp_source := diagnostic.borrow_source("<unfinished-interp>", "\"a\\(1")
@@ -600,7 +600,7 @@ test_unfinished_string_interpolation_lone_escape_and_mismatch_outcomes :: proc(t
 	expect_token(t, &interp_scanner, interp_source, .String_Interpolation_Start, 2, 4)
 	expect_token(t, &interp_scanner, interp_source, .Number, 4, 5)
 	testing.expect_value(t, next_token(&interp_scanner).kind, Scan_Outcome_Kind.End_Of_Input)
-	testing.expect_value(t, len(interp_scanner.states), 2)
+	testing.expect_value(t, interp_scanner.states.count, 2)
 	destroy_scanner(&interp_scanner)
 
 	escape_source := diagnostic.borrow_source("<lone-escape>", "\"a\\")
@@ -746,7 +746,7 @@ test_explicit_length_nul_respects_nested_interpolation_states :: proc(t: ^testin
 	outer_text := expect_token(t, &scanner, source, .String_Text, 14, 16)
 	expect_value_span(t, source, outer_text, 14, 16)
 	expect_token(t, &scanner, source, .String_End, 16, 17)
-	testing.expect_value(t, len(scanner.states), 0)
+	testing.expect_value(t, scanner.states.count, 0)
 	expect_repeated_eof(t, &scanner)
 	destroy_scanner(&scanner)
 }
@@ -839,6 +839,8 @@ Test_Allocator :: struct {
 	alive:                bool,
 	calls_after_retirement: int,
 	free_failures_remaining: int,
+	resize_unsupported:      bool,
+	resize_call_count:       int,
 }
 
 @(private="package")
@@ -862,6 +864,11 @@ test_allocator_proc :: proc(
 	if !data.alive {
 		data.calls_after_retirement += 1
 		return nil, .Out_Of_Memory
+	}
+	if data.resize_unsupported &&
+	   (mode == .Resize || mode == .Resize_Non_Zeroed) {
+		data.resize_call_count += 1
+		return nil, .Mode_Not_Implemented
 	}
 	if mode == .Alloc ||
 	   mode == .Alloc_Non_Zeroed ||
@@ -891,6 +898,102 @@ test_allocator_proc :: proc(
 }
 
 @(test)
+test_scanner_growth_free_failure_retains_replacement_for_retry :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+		free_failures_remaining = 1,
+		resize_unsupported = true,
+	}
+	source := diagnostic.borrow_source("<scanner-growth-release>", "((((((((((")
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source, test_allocator(&allocator_data))
+
+	for index in 0 ..< 8 {
+		expect_token(t, &scanner, source, .Open_Paren, index, index+1)
+	}
+	active_pointer := raw_data(scanner.states.storage)
+	failure := next_token(&scanner)
+	testing.expect_value(t, failure.kind, Scan_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, failure.resource_error, runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, scanner.offset, 8)
+	testing.expect_value(t, scanner.states.count, 8)
+	testing.expect_value(t, scanner.states.state, Fallible_Buffer_State.Transfer_Pending)
+	testing.expect(t, raw_data(scanner.states.storage) == active_pointer)
+	testing.expect(t, raw_data(scanner.states.replacement) != nil)
+	testing.expect(t, raw_data(scanner.states.replacement) != active_pointer)
+	testing.expect_value(t, len(tracker.allocation_map), 2)
+	testing.expect_value(t, allocator_data.resize_call_count, 0)
+
+	replacement_pointer := raw_data(scanner.states.replacement)
+	testing.expect_value(
+		t,
+		retry_fallible_buffer_transfer(&scanner.states),
+		runtime.Allocator_Error.None,
+	)
+	testing.expect_value(t, scanner.states.state, Fallible_Buffer_State.Owned)
+	testing.expect(t, raw_data(scanner.states.storage) == replacement_pointer)
+	testing.expect(t, scanner.states.replacement == nil)
+	testing.expect_value(t, scanner.states.count, 8)
+	testing.expect_value(t, len(tracker.allocation_map), 1)
+
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	allocator_data.alive = false
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_fallible_buffer_append_retry_transfers_exact_owner :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+		free_failures_remaining = 1,
+		resize_unsupported = true,
+	}
+	buffer: Fallible_Buffer(u8)
+	init_fallible_buffer(&buffer, test_allocator(&allocator_data))
+	for value in u8(0) ..< u8(8) {
+		testing.expect_value(
+			t,
+			append_fallible_buffer(&buffer, value),
+			runtime.Allocator_Error.None,
+		)
+	}
+	active_pointer := raw_data(buffer.storage)
+	first_error := append_fallible_buffer(&buffer, 8)
+	testing.expect_value(t, first_error, runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, buffer.state, Fallible_Buffer_State.Transfer_Pending)
+	testing.expect_value(t, buffer.count, 8)
+	testing.expect(t, raw_data(buffer.storage) == active_pointer)
+	testing.expect_value(t, len(tracker.allocation_map), 2)
+
+	replacement_pointer := raw_data(buffer.replacement)
+	testing.expect_value(
+		t,
+		append_fallible_buffer(&buffer, 8),
+		runtime.Allocator_Error.None,
+	)
+	testing.expect_value(t, buffer.state, Fallible_Buffer_State.Owned)
+	testing.expect(t, raw_data(buffer.storage) == replacement_pointer)
+	testing.expect(t, buffer.replacement == nil)
+	testing.expect_value(t, buffer.count, 9)
+	testing.expect_value(t, buffer.storage[8], u8(8))
+	testing.expect_value(t, len(tracker.allocation_map), 1)
+	testing.expect_value(t, allocator_data.resize_call_count, 0)
+
+	testing.expect_value(t, destroy_fallible_buffer(&buffer), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
 test_string_and_interpolation_push_allocation_failures_are_atomic :: proc(t: ^testing.T) {
 	string_data := Test_Allocator{
 		backing = context.allocator,
@@ -903,7 +1006,7 @@ test_string_and_interpolation_push_allocation_failures_are_atomic :: proc(t: ^te
 	string_failure := next_token(&string_scanner)
 	testing.expect_value(t, string_failure.kind, Scan_Outcome_Kind.Resource_Failure)
 	testing.expect_value(t, string_scanner.offset, 0)
-	testing.expect_value(t, len(string_scanner.states), 0)
+	testing.expect_value(t, string_scanner.states.count, 0)
 	testing.expect_value(t, string_scanner.state, Scanner_State.Resource_Failed)
 	testing.expect_value(t, destroy_scanner(&string_scanner), runtime.Allocator_Error.None)
 
@@ -914,22 +1017,22 @@ test_string_and_interpolation_push_allocation_failures_are_atomic :: proc(t: ^te
 	interp_source := diagnostic.borrow_source("<interp-push-failure>", "\"\\(")
 	interp_scanner: Scanner
 	init_test_scanner(t, &interp_scanner, interp_source, test_allocator(&interp_data))
-	_, setup_error := append_elem(&interp_scanner.states, Lexer_State.Paren)
+	setup_error := append_fallible_buffer(&interp_scanner.states, Lexer_State.Paren)
 	testing.expect(t, setup_error == nil)
-	for len(interp_scanner.states) < cap(interp_scanner.states)-1 {
-		_, append_error := append_elem(&interp_scanner.states, Lexer_State.Paren)
+	for interp_scanner.states.count < len(interp_scanner.states.storage)-1 {
+		append_error := append_fallible_buffer(&interp_scanner.states, Lexer_State.Paren)
 		testing.expect(t, append_error == nil)
 	}
 	interp_data.fail_at = interp_data.request_count + 1
 	expect_token(t, &interp_scanner, interp_source, .String_Start, 0, 1)
-	depth_before_failure := len(interp_scanner.states)
+	depth_before_failure := interp_scanner.states.count
 	interp_failure := next_token(&interp_scanner)
 	testing.expect_value(t, interp_failure.kind, Scan_Outcome_Kind.Resource_Failure)
 	testing.expect_value(t, interp_scanner.offset, 1)
-	testing.expect_value(t, len(interp_scanner.states), depth_before_failure)
+	testing.expect_value(t, interp_scanner.states.count, depth_before_failure)
 	testing.expect_value(
 		t,
-		interp_scanner.states[len(interp_scanner.states)-1],
+		interp_scanner.states.storage[interp_scanner.states.count-1],
 		Lexer_State.String,
 	)
 	testing.expect_value(t, interp_scanner.state, Scanner_State.Resource_Failed)
@@ -977,11 +1080,11 @@ test_every_reachable_allocator_failure_is_terminal_atomic_repeatable :: proc(t: 
 
 		for {
 			before_offset := scanner.offset
-			before_depth := len(scanner.states)
+			before_depth := scanner.states.count
 			outcome := next_token(&scanner)
 			if outcome.kind == .Resource_Failure {
 				testing.expect_value(t, scanner.offset, before_offset)
-				testing.expect_value(t, len(scanner.states), before_depth)
+				testing.expect_value(t, scanner.states.count, before_depth)
 				break
 			}
 			testing.expect_value(t, outcome.kind, Scan_Outcome_Kind.Token)
@@ -989,13 +1092,13 @@ test_every_reachable_allocator_failure_is_terminal_atomic_repeatable :: proc(t: 
 
 		requests_at_failure := allocator_data.request_count
 		offset_at_failure := scanner.offset
-		depth_at_failure := len(scanner.states)
+		depth_at_failure := scanner.states.count
 		for _ in 0 ..< 3 {
 			repeated := next_token(&scanner)
 			testing.expect_value(t, repeated.kind, Scan_Outcome_Kind.Resource_Failure)
 			testing.expect_value(t, allocator_data.request_count, requests_at_failure)
 			testing.expect_value(t, scanner.offset, offset_at_failure)
-			testing.expect_value(t, len(scanner.states), depth_at_failure)
+			testing.expect_value(t, scanner.states.count, depth_at_failure)
 		}
 		destroy_scanner(&scanner)
 		testing.expect(t, len(tracker.allocation_map) == 0)
@@ -1082,8 +1185,8 @@ test_failed_scanner_destruction_preserves_owner_for_retry :: proc(t: ^testing.T)
 	testing.expect_value(t, len(tracker.allocation_map), allocation_count)
 	testing.expect_value(t, scanner.state, Scanner_State.Active)
 	testing.expect(t, scanner.self == &scanner)
-	testing.expect_value(t, len(scanner.states), 1)
-	testing.expect_value(t, scanner.states[0], Lexer_State.Paren)
+	testing.expect_value(t, scanner.states.count, 1)
+	testing.expect_value(t, scanner.states.storage[0], Lexer_State.Paren)
 	testing.expect_value(t, diagnostic.source_bytes(scanner.source), "(")
 
 	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
@@ -1138,6 +1241,11 @@ test_scanner_copy_destroy_death_child :: proc(t: ^testing.T) {
 
 @(test)
 test_shallow_scanner_copy_is_rejected_before_shared_storage_use :: proc(t: ^testing.T) {
+	when ODIN_DISABLE_ASSERT {
+		// This death test verifies the scanner's assertion-based copy guard.
+		// There is deliberately no assertion to observe in this build mode.
+		return
+	}
 	// docs/decisions/0004-syntax-token-contract.md:45-65 forbids Odin `=`
 	// copies of a live Scanner owner.
 	// Run both hazardous operations in isolated test-runner subprocesses so
