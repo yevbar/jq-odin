@@ -40,6 +40,8 @@ The launcher:
 
 - requires the current Vers CLI with `run-commit`, `execute`, and `copy`; set
   `VERS_BIN` to an alternate verified binary path when needed;
+- deliberately targets the Linux Vers runtime and requires util-linux
+  `flock(1)` in addition to Linux `/proc` process identities;
 - boots the Vers commit named by `JQ_CODEX_VERS_COMMIT`, defaulting to the
   repository's approved authenticated snapshot;
 - synchronizes the restored clock before TLS or package operations;
@@ -53,8 +55,21 @@ The launcher:
 
 VM preparation and Codex run as durable in-VM jobs with polled status files.
 This prevents a local API request deadline or transient client disconnect from
-terminating a long-running author task. The launcher also tracks each runner
-PID and fails closed if a runner disappears before recording its status.
+terminating a long-running author task. Each status file has a recoverable
+launch claim. The durable child atomically publishes its reuse-safe identity
+(PID plus Linux process start time) before it runs the job; retries preserve
+completed or committed launches and recognize a live initial launcher without
+reclaiming it. A launch is acknowledged only when a completed status or
+committed runner identity exists; bounded observation of a live but uncommitted
+owner fails closed so the controller retries. If an initial launcher dies
+before identity publication, retries observe the claim for a bounded interval
+and then replace its generation under a kernel-managed advisory lock on a
+stable file. Contenders bound acquisition and never unlink or recreate the
+lock path; process/FD teardown releases the lock after interruption. A delayed
+child must validate its generation under the same lock, so it cannot run after
+a replacement has been authorized. The launcher closes the lock FD before
+durable fork and runner exec, and fails closed if a committed runner disappears
+before recording its status.
 Preparation runs as root, but Codex and repository commands run as the
 unprivileged `jqagent` user. Root-owned status files live under
 `/run/handle-task`, so reviewed code cannot forge task completion.

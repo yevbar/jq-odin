@@ -16,6 +16,24 @@ The launcher requires the current Vers CLI with `run-commit`, `execute`, and
 Long preparation and author commands run as durable in-VM jobs so local API
 deadlines do not terminate them. A detached runner that exits without writing
 its status is detected and reported rather than polled forever.
+Each status path has a recoverable launch claim. The durable child publishes
+its reuse-safe identity (PID plus Linux process start time) atomically before
+running the job. Only completed status or that committed identity acknowledges
+launch success. Every liveness check compares the full identity, so PID reuse
+cannot make an unrelated process authoritative. A retry does not reclaim a
+live, uncommitted owner; if bounded observation finds neither commit nor owner
+death, it fails closed and lets the controller retry. If the initial launcher
+dies before commit, a retry observes the old claim for a bounded interval and
+then replaces its generation under a kernel-managed advisory lock. A child
+that was forked but scheduled late validates its generation under the same
+lock, so it either becomes the one committed runner or exits after recovery
+chose a replacement. All contenders open one stable lock file and never unlink
+or recreate it. Acquisition is bounded, and Linux releases the lock when an
+interrupted process closes its FD or exits, so there is no stale-lock reaper.
+The launcher explicitly releases and closes the FD before the durable fork;
+the child does the same before runner exec.
+Completed status and committed runners remain authoritative across lost
+acknowledgements.
 Uploaded runners are retried and byte-counted before use, then invoked through
 the POSIX shell to tolerate a brief `Text file busy` window after SFTP.
 Codex itself runs as an unprivileged `jqagent` account. Its repository and
@@ -51,6 +69,10 @@ in the image or repository.
 Create one clean Linux VM, install the pinned toolchain, clone the repository
 with submodules, and run `make validate`. Run
 `scripts/vers/bootstrap-vm.sh` inside the VM for host prerequisites and Odin.
+The durable launcher is intentionally Linux-specific: it uses `/proc` process
+start times and util-linux `flock(1)`. Bootstrap installs `util-linux` and
+fails if `flock` is unavailable. This launcher is not supported on macOS even
+though the jq/Odin development toolchain itself supports macOS.
 
 Before making a Vers commit:
 
@@ -130,6 +152,14 @@ For each review lane:
 4. Run tests and create additional adversarial cases without editing the
    author's branch.
 5. Submit a GitHub pull-request review with evidence and reproduction commands.
+
+For a manually dispatched reviewer, put a trusted prefix before the review
+prompt stating that the reviewer is already inside the prepared VM and must
+not invoke `handle-task`, Vers, another agent, or another VM. Start it through
+the standard `/tmp/handle-task-run-codex.sh` wrapper, passing only the checkout
+and prompt-file paths. The wrapper derives `GH_TOKEN` inside the VM from the
+injected `GITHUB_API_KEY`; never place a credential value in the prompt or the
+launch command.
 
 Required lanes:
 

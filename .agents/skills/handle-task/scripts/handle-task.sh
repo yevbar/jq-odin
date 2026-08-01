@@ -246,17 +246,39 @@ copy_to_vm() (
     return 1
 )
 
+launch_remote_job() (
+    launch_job_name=$1
+    shift
+    launch_attempt=1
+
+    while [ "$launch_attempt" -le 3 ]; do
+        if "$vers_bin" execute -t 60 "$vm_id" sh "$remote_launcher" "$@"; then
+            return 0
+        fi
+
+        printf '%s launch acknowledgement failed (attempt %s/3)\n' \
+            "$launch_job_name" "$launch_attempt" >&2
+        launch_attempt=$((launch_attempt + 1))
+        if [ "$launch_attempt" -le 3 ]; then
+            sleep "${HANDLE_TASK_LAUNCH_RETRY_DELAY:-2}"
+        fi
+    done
+
+    echo "Unable to acknowledge $launch_job_name launch after 3 attempts" >&2
+    return 1
+)
+
 wait_for_remote_job() {
     job_name=$1
     status_file=$2
     log_file=$3
-    pid_file="${status_file}.pid"
+    runner_identity_file="${status_file}.pid"
     inspection_failures=0
 
     while :; do
         if inspection_output=$(
             "$vers_bin" execute -t 60 "$vm_id" sh "$remote_inspector" \
-                "$status_file" "$pid_file"
+                "$status_file" "$runner_identity_file"
         ); then
             state=$(
                 printf '%s\n' "$inspection_output" |
@@ -355,7 +377,7 @@ copy_to_vm "$launch_script" "$remote_launcher"
 copy_to_vm "$inspect_script" "$remote_inspector"
 "$vers_bin" execute -t 60 "$vm_id" chmod 700 \
     "$remote_prepare" "$remote_job" "$remote_launcher" "$remote_inspector"
-"$vers_bin" execute -t 60 "$vm_id" sh "$remote_launcher" \
+launch_remote_job "VM preparation" \
     "$remote_state_dir/prepare-launch.log" \
     "$remote_job" "$prepare_status" "$prepare_log" \
     env HOME=/root sh "$remote_prepare" \
@@ -404,7 +426,7 @@ copy_to_vm "$codex_script" "$remote_codex"
 "$vers_bin" execute -t 60 "$vm_id" chmod 755 "$remote_codex"
 "$vers_bin" execute -t 60 "$vm_id" chown jqagent:jqagent "$remote_prompt"
 "$vers_bin" execute -t 60 "$vm_id" chmod 600 "$remote_prompt"
-"$vers_bin" execute -t 60 "$vm_id" sh "$remote_launcher" \
+launch_remote_job "Codex task" \
     "$remote_state_dir/codex-launch.log" \
     "$remote_job" "$codex_status" "$codex_log" \
     runuser -u jqagent -- env HOME=/home/jqagent \
