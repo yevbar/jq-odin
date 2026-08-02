@@ -123,6 +123,7 @@ payload :: struct {
 	coefficient_len: int,
 	exponent:        i64,
 	negative:        bool,
+	explicit_positive_sign: bool,
 	infinite:        bool,
 	native_cache:    f64,
 	array_initialized_length: int,
@@ -693,6 +694,7 @@ literal_number_value_with_context :: proc(
 	raw := payload_bytes(p)
 	copy(raw, transmute([]byte)literal)
 	p.negative = special_negative || scan.negative
+	p.explicit_positive_sign = len(literal) > 0 && literal[0] == '+'
 	p.infinite = special_infinite
 	if special_infinite {
 		p.native_cache = decimal_to_binary64(p)
@@ -786,6 +788,197 @@ literal_spelling_borrowed :: proc(value: ^Value) -> (result: string, ok: bool) {
 	}
 	bytes := payload_bytes(storage.owned_payload)
 	return transmute(string)bytes, true
+}
+
+@(private)
+toggle_f64_sign :: proc(value: f64) -> f64 {
+	return transmute(f64)((transmute(u64)value) ~ (u64(1) << 63))
+}
+
+// number_negate borrows source for the complete call and returns an
+// independent number. Native numbers remain inline. Literal numbers use one
+// exact destination allocation through allocator and preserve their decimal
+// identity. Their retained spelling is freshly generated in decNumberToString
+// form; it never aliases or recovers the source lexeme.
+@(private)
+decimal_i64_digit_count :: proc(value: i64) -> int {
+	magnitude := value
+	if magnitude < 0 do magnitude = -magnitude
+	digits := 1
+	for magnitude >= 10 {
+		magnitude /= 10
+		digits += 1
+	}
+	return digits
+}
+
+@(private)
+canonical_literal_size :: proc(p: ^payload, negative: bool) -> (int, bool) {
+	if p == nil || p.kind != .Literal_Number {
+		return 0, false
+	}
+	sign_size := 1 if negative && !coefficient_is_zero(payload_coefficient(p)) else 0
+	if p.infinite {
+		return sign_size + len("Infinity"), true
+	}
+
+	digits := p.coefficient_len
+	if digits <= 0 {
+		return 0, false
+	}
+	if p.exponent == 0 {
+		if digits > max(int) - sign_size {
+			return 0, false
+		}
+		return sign_size + digits, true
+	}
+	pre := i64(digits) + p.exponent
+	if p.exponent > 0 || pre < -5 {
+		adjusted := p.exponent + i64(digits) - 1
+		// coefficient, optional point, E, exponent sign, exponent digits
+		extra := 2 + decimal_i64_digit_count(adjusted)
+		if digits > 1 do extra += 1
+		if digits > max(int) - sign_size - extra {
+			return 0, false
+		}
+		return sign_size + digits + extra, true
+	}
+	if pre > 0 {
+		extra := 1 if pre < i64(digits) else 0
+		if digits > max(int) - sign_size - extra {
+			return 0, false
+		}
+		return sign_size + digits + extra, true
+	}
+	leading_zeroes := int(-pre)
+	extra := 2 + leading_zeroes
+	if digits > max(int) - sign_size - extra {
+		return 0, false
+	}
+	return sign_size + extra + digits, true
+}
+
+@(private)
+write_canonical_literal :: proc(destination: []byte, p: ^payload, negative: bool) {
+	at := 0
+	coefficient := payload_coefficient(p)
+	if negative && !coefficient_is_zero(coefficient) {
+		destination[at] = '-'
+		at += 1
+	}
+	if p.infinite {
+		copy(destination[at:], "Infinity")
+		at += len("Infinity")
+		assert(at == len(destination))
+		return
+	}
+	if p.exponent == 0 {
+		copy(destination[at:], coefficient)
+		at += len(coefficient)
+		assert(at == len(destination))
+		return
+	}
+
+	digits := len(coefficient)
+	pre := i64(digits) + p.exponent
+	if p.exponent > 0 || pre < -5 {
+		adjusted := p.exponent + i64(digits) - 1
+		destination[at] = coefficient[0]
+		at += 1
+		if digits > 1 {
+			destination[at] = '.'
+			at += 1
+			copy(destination[at:], coefficient[1:])
+			at += digits - 1
+		}
+		destination[at] = 'E'
+		at += 1
+		if adjusted >= 0 {
+			destination[at] = '+'
+			at += 1
+		}
+		append_i64_decimal(destination, &at, adjusted)
+		assert(at == len(destination))
+		return
+	}
+	if pre > 0 {
+		before_point := int(pre)
+		copy(destination[at:], coefficient[:before_point])
+		at += before_point
+		if before_point < digits {
+			destination[at] = '.'
+			at += 1
+			copy(destination[at:], coefficient[before_point:])
+			at += digits - before_point
+		}
+		assert(at == len(destination))
+		return
+	}
+	destination[at] = '0'
+	destination[at + 1] = '.'
+	at += 2
+	for _ in i64(0)..<-pre {
+		destination[at] = '0'
+		at += 1
+	}
+	copy(destination[at:], coefficient)
+	at += digits
+	assert(at == len(destination))
+}
+
+number_negate :: proc(
+	source: ^Value,
+	allocator: runtime.Allocator,
+) -> (result: Value, err: Constructor_Error, ok: bool) {
+	if source == nil || source^ == nil {
+		return {}, nil, false
+	}
+	storage := value_storage_of(source)
+	if storage.kind != .Number {
+		return {}, nil, false
+	}
+	if storage.owned_payload == nil {
+		return number_value(toggle_f64_sign(storage.native_number)), nil, true
+	}
+
+	source_payload := storage.owned_payload
+	literal_zero := coefficient_is_zero(payload_coefficient(source_payload))
+	destination_negative := !literal_zero && !source_payload.negative
+	destination_byte_count, size_ok := canonical_literal_size(
+		source_payload,
+		destination_negative,
+	)
+	if !size_ok {
+		return {}, make_constructor_error(.Size_Overflow), false
+	}
+
+	destination_payload, payload_error := allocate_payload(
+		.Literal_Number,
+		destination_byte_count,
+		source_payload.coefficient_len,
+		allocator,
+	)
+	if payload_error != nil {
+		return {}, payload_error, false
+	}
+
+	write_canonical_literal(
+		payload_bytes(destination_payload),
+		source_payload,
+		destination_negative,
+	)
+	destination_payload.coefficient_len = source_payload.coefficient_len
+	destination_payload.exponent = source_payload.exponent
+	destination_payload.negative = destination_negative
+	destination_payload.explicit_positive_sign = false
+	destination_payload.infinite = source_payload.infinite
+	if literal_zero {
+		destination_payload.native_cache = 0.0
+	} else {
+		destination_payload.native_cache = toggle_f64_sign(source_payload.native_cache)
+	}
+	copy(payload_coefficient(destination_payload), payload_coefficient(source_payload))
+	return value_from_storage({kind = .Number, owned_payload = destination_payload}), nil, true
 }
 
 clone_value :: proc(value: ^Value) -> Value {
