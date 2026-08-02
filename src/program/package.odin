@@ -1,2 +1,501 @@
 // Package program owns the evaluator-neutral compiled representation.
 package program
+
+import "base:runtime"
+
+// Every serialized quantity has an intentional fixed width. Storage_Count also
+// caps one Program's contiguous allocation at 2^32-1 bytes.
+Instruction_Index :: distinct u32
+Operand_Index :: distinct u32
+Byte_Offset :: distinct u32
+Count :: distinct u32
+Source_Offset :: distinct u32
+Storage_Count :: distinct u32
+
+Source_Span :: struct {
+	start: Source_Offset,
+	end:   Source_Offset,
+}
+
+Opcode :: enum u8 {
+	Identity,
+	Field,
+	Parenthesized,
+	Sequence,
+	Fork,
+	Optional,
+}
+
+Operand_Kind :: enum u8 {
+	Instruction,
+	Text,
+}
+
+// Instruction operands are stored consecutively beginning at operands_start.
+// Sequence operands are ordered left then right. Fork operands are likewise
+// left then right, but describe independently resumable generator branches.
+// Field has an optional leading Instruction operand followed by one Text
+// operand. Parenthesized and Optional have one Instruction operand.
+Instruction :: struct {
+	opcode:         Opcode,
+	operands_start: Operand_Index,
+	operands_count: Count,
+	span:           Source_Span,
+}
+
+// Exactly one payload is meaningful according to kind. Text selects a
+// half-open range in Program's owned text storage.
+Operand :: struct {
+	kind:        Operand_Kind,
+	instruction: Instruction_Index,
+	text_start:  Byte_Offset,
+	text_count:  Count,
+}
+
+Program_State :: enum u8 {
+	Uninitialized,
+	Building,
+	Active,
+	Cleanup_Failed,
+	Destroyed,
+}
+
+Init_Error_Kind :: enum u8 {
+	None,
+	Size_Overflow,
+	Resource_Failure,
+}
+
+Init_Error :: struct {
+	kind:           Init_Error_Kind,
+	resource_error: runtime.Allocator_Error,
+}
+
+@(private="package")
+Validation_State :: enum u8 {
+	Unseen,
+	Visiting,
+	Done,
+}
+
+@(private="package")
+Validation_Record :: struct {
+	state:      Validation_State,
+	next_child: u8,
+	parent:     Instruction_Index,
+	has_parent: bool,
+}
+
+// Program owns one allocation containing its instruction, operand, private
+// graph-validation, and text storage. It borrows no source or syntax storage.
+// allocator and its backing state must remain valid until destroy_program
+// succeeds. A live Program is
+// address-stable and must not be copied with Odin `=`. Odin cannot hide fields
+// of a public struct; direct field rewriting is outside the valid API.
+Program :: struct {
+	instructions: []Instruction,
+	operands:     []Operand,
+	text:         []u8,
+	root:         Instruction_Index,
+	has_root:     bool,
+	instructions_written: Count,
+	operands_written:     Count,
+	text_written:         Count,
+	validation_records: []Validation_Record,
+	memory:       []byte,
+	allocator:    runtime.Allocator,
+	state:        Program_State,
+	self:         ^Program,
+}
+
+@(private="package")
+align_up :: proc(value, alignment: u64) -> (u64, bool) {
+	assert(alignment > 0)
+	padding := alignment - 1
+	if value > max(u64) - padding {
+		return 0, false
+	}
+	return (value + padding) & ~padding, true
+}
+
+// init_program allocates exact storage and initializes an address-stable owner.
+// Counts or layout arithmetic exceeding u32 are rejected before allocation.
+// Zero counts form a valid allocation-free Program. program must be inert.
+init_program :: proc(
+	program: ^Program,
+	instruction_count, operand_count, text_count: Count,
+	allocator: runtime.Allocator,
+) -> Init_Error {
+	if program == nil || program.state == .Building || program.state == .Active ||
+	   program.state == .Cleanup_Failed {
+		return Init_Error{kind = .Resource_Failure, resource_error = .Invalid_Argument}
+	}
+
+	ic := u64(instruction_count)
+	oc := u64(operand_count)
+	tc := u64(text_count)
+	instruction_bytes := ic * u64(size_of(Instruction))
+	operand_start, aligned := align_up(instruction_bytes, u64(align_of(Operand)))
+	if !aligned {
+		return Init_Error{kind = .Size_Overflow}
+	}
+	operand_bytes := oc * u64(size_of(Operand))
+	if operand_start > max(u64) - operand_bytes {
+		return Init_Error{kind = .Size_Overflow}
+	}
+	validation_unaligned := operand_start + operand_bytes
+	validation_start, validation_aligned := align_up(
+		validation_unaligned,
+		u64(align_of(Validation_Record)),
+	)
+	if !validation_aligned {
+		return Init_Error{kind = .Size_Overflow}
+	}
+	validation_bytes := ic * u64(size_of(Validation_Record))
+	if validation_start > max(u64) - validation_bytes {
+		return Init_Error{kind = .Size_Overflow}
+	}
+	text_start := validation_start + validation_bytes
+	if text_start > max(u64) - tc {
+		return Init_Error{kind = .Size_Overflow}
+	}
+	total := text_start + tc
+	if total > u64(max(Storage_Count)) || total > u64(max(int)) {
+		return Init_Error{kind = .Size_Overflow}
+	}
+
+	program^ = {}
+	program.allocator = allocator
+	program.state = .Building
+	program.self = program
+	if total == 0 {
+		return {}
+	}
+
+	memory, allocation_error := runtime.mem_alloc_bytes(
+		int(total),
+		max(align_of(Instruction), align_of(Operand), align_of(Validation_Record)),
+		allocator,
+	)
+	if allocation_error != nil || len(memory) != int(total) {
+		if len(memory) > 0 {
+			free_error := runtime.mem_free_bytes(memory, allocator)
+			if free_error != nil && free_error != .Mode_Not_Implemented {
+				program.memory = memory
+				program.state = .Cleanup_Failed
+				return Init_Error{kind = .Resource_Failure, resource_error = free_error}
+			}
+		}
+		program^ = {}
+		return Init_Error{
+			kind = .Resource_Failure,
+			resource_error = allocation_error if allocation_error != nil else .Out_Of_Memory,
+		}
+	}
+
+	program.memory = memory
+	base := uintptr(raw_data(memory))
+	if ic > 0 {
+		program.instructions = (cast([^]Instruction)rawptr(base))[:int(ic)]
+	}
+	if oc > 0 {
+		program.operands = (cast([^]Operand)rawptr(base + uintptr(operand_start)))[:int(oc)]
+	}
+	if ic > 0 {
+		program.validation_records = (
+			cast([^]Validation_Record)rawptr(base + uintptr(validation_start))
+		)[:int(ic)]
+		for index in 0..<len(program.validation_records) {
+			program.validation_records[index] = {}
+		}
+	}
+	if tc > 0 {
+		program.text = (cast([^]u8)rawptr(base + uintptr(text_start)))[:int(tc)]
+	}
+	return {}
+}
+
+// Construction setters form an intentionally narrow ordered builder surface.
+// They reject writes outside Building, repeated/skipped slots, and ranges that
+// exceed the exact allocation. They do not allocate.
+set_instruction :: proc(program: ^Program, index: Instruction_Index, value: Instruction) -> bool {
+	if !program_is_building(program) || u64(index) != u64(program.instructions_written) ||
+	   u64(index) >= u64(len(program.instructions)) {
+		return false
+	}
+	program.instructions[int(index)] = value
+	program.instructions_written += 1
+	return true
+}
+
+set_operand :: proc(program: ^Program, index: Operand_Index, value: Operand) -> bool {
+	if !program_is_building(program) || u64(index) != u64(program.operands_written) ||
+	   u64(index) >= u64(len(program.operands)) {
+		return false
+	}
+	program.operands[int(index)] = value
+	program.operands_written += 1
+	return true
+}
+
+set_text :: proc(program: ^Program, start: Byte_Offset, value: string) -> bool {
+	start_u64 := u64(start)
+	text_len := u64(len(program.text))
+	if !program_is_building(program) || start_u64 != u64(program.text_written) ||
+	   start_u64 > text_len || u64(len(value)) > text_len-start_u64 {
+		return false
+	}
+	copy(program.text[int(start):int(start)+len(value)], transmute([]u8)value)
+	program.text_written += Count(len(value))
+	return true
+}
+
+set_root :: proc(program: ^Program, root: Instruction_Index) -> bool {
+	if !program_is_building(program) || program.has_root {
+		return false
+	}
+	program.root = root
+	program.has_root = true
+	return true
+}
+
+@(private="package")
+instruction_structure_valid :: proc(program: ^Program, instruction: Instruction, next_text: ^u64) -> bool {
+	if instruction.span.start > instruction.span.end {
+		return false
+	}
+	start := u64(instruction.operands_start)
+	count := u64(instruction.operands_count)
+	if start > u64(len(program.operands)) || count > u64(len(program.operands))-start {
+		return false
+	}
+
+	expected_count: u64
+	switch instruction.opcode {
+	case .Identity:
+		expected_count = 0
+	case .Field:
+		if count != 1 && count != 2 {
+			return false
+		}
+		expected_count = count
+	case .Parenthesized, .Optional:
+		expected_count = 1
+	case .Sequence, .Fork:
+		expected_count = 2
+	case:
+		return false
+	}
+	if count != expected_count {
+		return false
+	}
+
+	for offset in 0..<count {
+		operand := program.operands[int(start+offset)]
+		expected_kind := Operand_Kind.Instruction
+		if instruction.opcode == .Field && offset == count-1 {
+			expected_kind = .Text
+		}
+		if operand.kind != expected_kind {
+			return false
+		}
+		if operand.kind == .Instruction {
+			if u64(operand.instruction) >= u64(len(program.instructions)) {
+				return false
+			}
+		} else {
+			text_start := u64(operand.text_start)
+			text_count := u64(operand.text_count)
+			if text_start != next_text^ || text_start > u64(len(program.text)) ||
+			   text_count > u64(len(program.text))-text_start {
+				return false
+			}
+			next_text^ += text_count
+		}
+	}
+	return true
+}
+
+@(private="package")
+instruction_child_count :: proc(instruction: Instruction) -> u8 {
+	switch instruction.opcode {
+	case .Identity:
+		return 0
+	case .Field:
+		return 1 if instruction.operands_count == 2 else 0
+	case .Parenthesized, .Optional:
+		return 1
+	case .Sequence, .Fork:
+		return 2
+	}
+	return 0
+}
+
+@(private="package")
+instruction_child_at :: proc(program: ^Program, instruction: Instruction, offset: u8) -> Instruction_Index {
+	assert(offset < instruction_child_count(instruction))
+	operand_offset := u32(offset)
+	return program.operands[int(u32(instruction.operands_start)+operand_offset)].instruction
+}
+
+@(private="package")
+validate_instruction_graph :: proc(program: ^Program) -> bool {
+	records := program.validation_records
+	for index in 0..<len(records) {
+		records[index] = {}
+	}
+	acyclic := true
+	for _, start in program.instructions {
+		if records[start].state != .Unseen {
+			continue
+		}
+		records[start].state = .Visiting
+		current := Instruction_Index(start)
+		for {
+			record := &records[int(current)]
+			instruction := program.instructions[int(current)]
+			child_count := instruction_child_count(instruction)
+			if record.next_child < child_count {
+				child := instruction_child_at(program, instruction, record.next_child)
+				record.next_child += 1
+				switch records[int(child)].state {
+				case .Unseen:
+					records[int(child)].state = .Visiting
+					records[int(child)].parent = current
+					records[int(child)].has_parent = true
+					current = child
+				case .Visiting:
+					acyclic = false
+				case .Done:
+				}
+				if !acyclic {
+					break
+				}
+				continue
+			}
+			record.state = .Done
+			if !record.has_parent {
+				break
+			}
+			current = record.parent
+		}
+		if !acyclic {
+			break
+		}
+	}
+
+	return acyclic
+}
+
+// finalize_program validates complete owned storage, the complete acyclic
+// instruction graph, and its explicit entry instruction. Success seals Building
+// exactly once and makes it Active. Failure leaves it unreadable in Building
+// for destruction. Iterative graph scratch is private storage inside Program's
+// one allocation, so finalization performs no allocation or native recursion.
+finalize_program :: proc(program: ^Program) -> bool {
+	if !program_is_building(program) || !program.has_root ||
+	   u64(program.root) >= u64(len(program.instructions)) ||
+	   u64(program.instructions_written) != u64(len(program.instructions)) ||
+	   u64(program.operands_written) != u64(len(program.operands)) ||
+	   u64(program.text_written) != u64(len(program.text)) {
+		return false
+	}
+
+	next_operand: u64
+	next_text: u64
+	for instruction in program.instructions {
+		if u64(instruction.operands_start) != next_operand ||
+		   !instruction_structure_valid(program, instruction, &next_text) {
+			return false
+		}
+		next_operand += u64(instruction.operands_count)
+	}
+	if next_operand != u64(len(program.operands)) || next_text != u64(len(program.text)) {
+		return false
+	}
+	if !validate_instruction_graph(program) {
+		return false
+	}
+	program.state = .Active
+	return true
+}
+
+program_root :: proc(program: ^Program) -> (Instruction_Index, bool) {
+	if !program_is_active(program) {
+		return {}, false
+	}
+	return program.root, true
+}
+
+// Runtime storage access is read-only by value and unavailable while Building.
+program_instruction_count :: proc(program: ^Program) -> (Count, bool) {
+	if !program_is_active(program) {
+		return {}, false
+	}
+	return Count(len(program.instructions)), true
+}
+
+program_operand_count :: proc(program: ^Program) -> (Count, bool) {
+	if !program_is_active(program) {
+		return {}, false
+	}
+	return Count(len(program.operands)), true
+}
+
+program_instruction :: proc(program: ^Program, index: Instruction_Index) -> (Instruction, bool) {
+	if !program_is_active(program) || u64(index) >= u64(len(program.instructions)) {
+		return {}, false
+	}
+	return program.instructions[int(index)], true
+}
+
+program_operand :: proc(program: ^Program, index: Operand_Index) -> (Operand, bool) {
+	if !program_is_active(program) || u64(index) >= u64(len(program.operands)) {
+		return {}, false
+	}
+	return program.operands[int(index)], true
+}
+
+// The returned immutable string borrows Program-owned text backing. It remains
+// valid only while this Program is live and expires when destruction begins.
+operand_text :: proc(program: ^Program, operand: Operand) -> (string, bool) {
+	if !program_is_active(program) || operand.kind != .Text {
+		return "", false
+	}
+	start := u64(operand.text_start)
+	end := start + u64(operand.text_count)
+	if end > u64(len(program.text)) {
+		return "", false
+	}
+	return string(program.text[int(start):int(end)]), true
+}
+
+program_is_active :: proc(program: ^Program) -> bool {
+	return program != nil && program.state == .Active && program.self == program
+}
+
+program_is_building :: proc(program: ^Program) -> bool {
+	return program != nil && program.state == .Building && program.self == program
+}
+
+// destroy_program releases the single owned allocation. Genuine allocator
+// errors preserve ownership for retry; Mode_Not_Implemented retires storage
+// under a bulk allocator. A shallow copy of a live owner is rejected before
+// any backing or allocator access. Successful destruction is idempotent.
+destroy_program :: proc(program: ^Program) -> runtime.Allocator_Error {
+	if program == nil || program.state == .Uninitialized || program.state == .Destroyed {
+		return nil
+	}
+	if program.self != program {
+		return .Invalid_Pointer
+	}
+	if len(program.memory) > 0 {
+		free_error := runtime.mem_free_bytes(program.memory, program.allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			program.state = .Cleanup_Failed
+			return free_error
+		}
+	}
+	program^ = Program{state = .Destroyed}
+	return nil
+}
