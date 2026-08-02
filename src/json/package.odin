@@ -4,9 +4,9 @@ package json
 import "base:runtime"
 import "jq:value"
 
-// Scalar_Parse_Error_Kind is deliberately specific to the one-shot scalar
-// parser. Container and streaming implementations may extend the package
-// without changing this API into a partial container parser.
+// Scalar_Parse_Error_Kind serves the compatible scalar API and the one-shot
+// complete-value API. Streaming implementations may extend the package without
+// turning either API into an incremental parser.
 Scalar_Parse_Error_Kind :: enum u8 {
 	None,
 	Expected_Value,
@@ -27,6 +27,29 @@ Scalar_Parse_Error_Kind :: enum u8 {
 	Size_Overflow,
 	Value_Construction_Failure,
 	Scratch_Cleanup_Failure,
+	Unfinished_Array,
+	Expected_Array_Element,
+	Expected_Value_Before_Separator,
+	Expected_Separator,
+	Mismatched_Closer,
+	Unmatched_Array_Closer,
+	Unmatched_Object_Closer,
+	Object_Key_Value_Pairs_Required,
+	Expected_String_Key_Before_Colon,
+	Unexpected_Colon,
+	Unexpected_Extra_Values,
+	Depth_Limit,
+	Array_Operation_Failure,
+}
+
+MAX_PARSING_DEPTH :: 10_000
+
+@(private)
+array_parse_frame :: struct {
+	array:        value.Value,
+	open_offset:  int,
+	expect_value: bool,
+	after_comma:  bool,
 }
 
 // Scalar_Parse_Error contains no view into the input. It is non-owning except
@@ -42,15 +65,19 @@ Scalar_Parse_Error_Kind :: enum u8 {
 // has_cause_offset is true. Keeping both avoids conflating a useful local cause
 // with the cursor used by jq-facing diagnostics.
 Scalar_Parse_Error :: struct {
-	kind:              Scalar_Parse_Error_Kind,
-	detection_offset:  int,
-	cause_offset:      int,
-	has_cause_offset:  bool,
-	cause_kind:        Scalar_Parse_Error_Kind,
-	cleanup_scratch:   []byte,
-	cleanup_allocator: runtime.Allocator,
+	kind:                      Scalar_Parse_Error_Kind,
+	detection_offset:          int,
+	cause_offset:              int,
+	has_cause_offset:          bool,
+	cause_kind:                Scalar_Parse_Error_Kind,
+	cleanup_scratch:           []byte,
+	cleanup_allocator:         runtime.Allocator,
 	cleanup_constructor_error: value.Constructor_Error,
-	cleanup_value:     value.Value,
+	cleanup_array_error:       value.Array_Operation_Error,
+	cleanup_value:             value.Value,
+	cleanup_frames:            []array_parse_frame,
+	cleanup_frame_memory:      []byte,
+	cleanup_frame_allocator:  runtime.Allocator,
 }
 
 // destroy_scalar_parse_error retires storage retained by a scratch-cleanup
@@ -74,9 +101,36 @@ destroy_scalar_parse_error :: proc(err: ^Scalar_Parse_Error) -> runtime.Allocato
 	if first_error == nil && constructor_error != nil {
 		first_error = constructor_error
 	}
+	array_error := value.destroy_array_error(&err.cleanup_array_error)
+	if first_error == nil && array_error != nil {
+		first_error = array_error
+	}
 	value_error := value.destroy_value(&err.cleanup_value)
 	if first_error == nil && value_error != nil {
 		first_error = value_error
+	}
+	frames_retired := true
+	for i := len(err.cleanup_frames) - 1; i >= 0; i -= 1 {
+		frame_error := value.destroy_value(&err.cleanup_frames[i].array)
+		if frame_error != nil {
+			frames_retired = false
+			if first_error == nil {
+				first_error = frame_error
+			}
+		}
+	}
+	if frames_retired && len(err.cleanup_frame_memory) > 0 {
+		frame_free_error := runtime.mem_free_bytes(
+			err.cleanup_frame_memory,
+			err.cleanup_frame_allocator,
+		)
+		if frame_free_error == nil || frame_free_error == .Mode_Not_Implemented {
+			err.cleanup_frames = nil
+			err.cleanup_frame_memory = nil
+			err.cleanup_frame_allocator = {}
+		} else if first_error == nil {
+			first_error = frame_free_error
+		}
 	}
 	if first_error == nil {
 		err^ = {}
@@ -708,6 +762,105 @@ scalar_form :: enum u8 {
 	String,
 }
 
+// parse_scalar_at parses one scalar token beginning exactly at value_at. It
+// does not skip leading whitespace or classify following input as trailing;
+// the one-shot scalar and array parsers apply those document/container rules.
+@(private)
+parse_scalar_at :: proc(input: string, value_at: int, allocator: runtime.Allocator) -> (
+	result: value.Value,
+	next: int,
+	err: Scalar_Parse_Error,
+) {
+	i := value_at
+	form: scalar_form
+	token: string
+	numeric_token: string
+	switch input[i] {
+	case '[':
+		result, err = parse_failure(.Array_Not_Supported, i)
+		return result, i, err
+	case '{':
+		result, err = parse_failure(.Object_Not_Supported, i)
+		return result, i, err
+	case '"':
+		form = .String
+		next, err = scan_string_end(input, i)
+		if err.kind != nil {
+			return value.invalid_value(), next, err
+		}
+	case:
+		next = i
+		for next < len(input) && !is_token_delimiter(input[next]) {
+			next += 1
+		}
+		token = input[i:next]
+		if len(token) == 0 {
+			result, err = parse_failure(.Invalid_Literal, i)
+			return result, next, err
+		}
+		pattern: string
+		switch token[0] {
+		case 't': pattern, form = "true", .True
+		case 'f': pattern, form = "false", .False
+		case '\'':
+			detection_offset := literal_detection_offset(input, next)
+			result, err = parse_detected_failure(.Invalid_Literal, detection_offset, value_at)
+			return result, next, err
+		case 'n':
+			if len(token) > 1 && token[1] == 'u' {
+				pattern, form = "null", .Null
+			} else {
+				form = .Number
+			}
+		case:
+			form = .Number
+		}
+		if len(pattern) > 0 && token != pattern {
+			detection_offset := literal_detection_offset(input, next)
+			cause_offset := value_at + keyword_cause_offset(token, pattern)
+			result, err = parse_detected_failure(.Invalid_Literal, detection_offset, cause_offset)
+			return result, next, err
+		}
+		if form == .Number {
+			numeric_end := 0
+			for numeric_end < len(token) && token[numeric_end] != 0 {
+				numeric_end += 1
+			}
+			numeric_token = token[:numeric_end]
+		}
+	}
+
+	if form == .Number {
+		construction_error: value.Constructor_Error
+		result, construction_error = value.literal_number_value(numeric_token, allocator)
+		if value.constructor_error_kind(&construction_error) == .Invalid_Number_Literal {
+			detection_offset := literal_detection_offset(input, next)
+			cause_offset := value_at + number_cause_offset(numeric_token)
+			result, err = parse_detected_failure(.Invalid_Number, detection_offset, cause_offset)
+			return result, next, err
+		}
+		if construction_error != nil {
+			result, err = constructor_failure(&construction_error, value_at)
+			return result, next, err
+		}
+	}
+
+	switch form {
+	case .Null:
+		return value.null_value(), next, {}
+	case .True:
+		return value.boolean_value(true), next, {}
+	case .False:
+		return value.boolean_value(false), next, {}
+	case .Number:
+		return result, next, {}
+	case .String:
+		return parse_string(input, value_at, next, allocator)
+	}
+	result, err = parse_failure(.Value_Construction_Failure, value_at)
+	return result, next, err
+}
+
 // parse_scalar parses exactly one top-level JSON scalar from a length-delimited
 // input. input is borrowed only for this call. On success the returned Value is
 // complete owning storage allocated from allocator; on failure it is inert.
@@ -746,107 +899,555 @@ parse_scalar :: proc(input: string, allocator: runtime.Allocator) -> (
 	}
 	value_at := i
 	next := i
-	form: scalar_form
-	token: string
-	numeric_token: string
-	switch input[i] {
-	case '[':
-		return parse_failure(.Array_Not_Supported, i)
-	case '{':
-		return parse_failure(.Object_Not_Supported, i)
-	case '"':
-		form = .String
+	is_string := input[i] == '"'
+	if is_string {
 		next, err = scan_string_end(input, i)
 		if err.kind != nil {
 			return value.invalid_value(), err
 		}
-	case:
-		for next < len(input) && !is_token_delimiter(input[next]) {
-			next += 1
-		}
-		token = input[i:next]
-		if len(token) == 0 {
-			return parse_failure(.Invalid_Literal, i)
-		}
-		pattern: string
-		switch token[0] {
-		case 't': pattern, form = "true", .True
-		case 'f': pattern, form = "false", .False
-		case '\'':
-			detection_offset := literal_detection_offset(input, next)
-			return parse_detected_failure(.Invalid_Literal, detection_offset, value_at)
-		case 'n':
-			if len(token) > 1 && token[1] == 'u' {
-				pattern, form = "null", .Null
-			} else {
-				form = .Number
-			}
-		case:
-			form = .Number
-		}
-		if len(pattern) > 0 && token != pattern {
-			detection_offset := literal_detection_offset(input, next)
-			cause_offset := value_at + keyword_cause_offset(token, pattern)
-			return parse_detected_failure(.Invalid_Literal, detection_offset, cause_offset)
-		}
-		if form == .Number {
-			numeric_end := 0
-			for numeric_end < len(token) && token[numeric_end] != 0 {
-				numeric_end += 1
-			}
-			numeric_token = token[:numeric_end]
+	} else {
+		result, next, err = parse_scalar_at(input, value_at, allocator)
+		if err.kind != nil {
+			return value.invalid_value(), err
 		}
 	}
-
 	value_end := next
-	if form == .Number {
-		construction_error: value.Constructor_Error
-		result, construction_error = value.literal_number_value(numeric_token, allocator)
-		if value.constructor_error_kind(&construction_error) == .Invalid_Number_Literal {
-			detection_offset := literal_detection_offset(input, value_end)
-			cause_offset := value_at + number_cause_offset(numeric_token)
-			return parse_detected_failure(.Invalid_Number, detection_offset, cause_offset)
-		}
-		if construction_error != nil {
-			return constructor_failure(&construction_error, value_at)
-		}
-	}
 	for next < len(input) && is_whitespace(input[next]) {
 		next += 1
 	}
 	if next != len(input) {
-		if form == .Number {
-			cleanup_error := value.destroy_value(&result)
-			if cleanup_error != nil {
-				return value.invalid_value(), {
-					kind = .Scratch_Cleanup_Failure,
-					detection_offset = next,
-					cause_offset = next,
-					has_cause_offset = true,
-					cause_kind = .Trailing_Input,
-					cleanup_value = value.take_value(&result),
-				}
+		cleanup_error := value.destroy_value(&result)
+		if cleanup_error != nil {
+			return value.invalid_value(), {
+				kind = .Scratch_Cleanup_Failure,
+				detection_offset = next,
+				cause_offset = next,
+				has_cause_offset = true,
+				cause_kind = .Trailing_Input,
+				cleanup_value = value.take_value(&result),
 			}
 		}
 		return parse_failure(.Trailing_Input, next)
 	}
-
-	switch form {
-	case .Null:
-		return value.null_value(), {}
-	case .True:
-		return value.boolean_value(true), {}
-	case .False:
-		return value.boolean_value(false), {}
-	case .Number:
-		return result, {}
-	case .String:
-		parsed: value.Value
-		parsed, _, err = parse_string(input, value_at, value_end, allocator)
+	if is_string {
+		result, _, err = parse_string(input, value_at, value_end, allocator)
 		if err.kind != nil {
 			return value.invalid_value(), err
 		}
-		return parsed, {}
 	}
-	return parse_failure(.Value_Construction_Failure, value_at)
+	return result, {}
+}
+
+@(private)
+array_failure_kind :: proc(err: ^value.Array_Operation_Error) -> Scalar_Parse_Error_Kind {
+	switch value.array_error_kind(err) {
+	case .Out_Of_Memory, .Allocator_Unsupported:
+		return .Allocation_Failure
+	case .Size_Overflow, .Index_Too_Large:
+		return .Size_Overflow
+	case .None:
+		return .None
+	case .Wrong_Kind, .Invalid_Index, .Aliased_Operand, .Cleanup_Failed:
+		return .Array_Operation_Failure
+	}
+	return .Array_Operation_Failure
+}
+
+@(private)
+promote_cleanup_error :: proc(err: ^Scalar_Parse_Error) {
+	if err.kind != .Scratch_Cleanup_Failure {
+		err.cause_kind = err.kind
+		err.kind = .Scratch_Cleanup_Failure
+	}
+}
+
+@(private)
+take_scalar_parse_error :: proc(source: ^Scalar_Parse_Error) -> Scalar_Parse_Error {
+	if source == nil {
+		return {}
+	}
+	result := source^
+	source^ = {}
+	return result
+}
+
+// retire_array_parse_state releases every independent owner in the active
+// frame stack. A failed release transfers the typed frame allocation into err
+// so retries can resume without copying Value handles.
+@(private)
+retire_array_parse_state :: proc(
+	frames: []array_parse_frame,
+	frame_memory: []byte,
+	frame_allocator: runtime.Allocator,
+	active_count: int,
+	err: ^Scalar_Parse_Error,
+) {
+	all_values_retired := true
+	for i := active_count - 1; i >= 0; i -= 1 {
+		cleanup_error := value.destroy_value(&frames[i].array)
+		if cleanup_error != nil {
+			all_values_retired = false
+		}
+	}
+	if !all_values_retired {
+		promote_cleanup_error(err)
+		err.cleanup_frames = frames[:active_count]
+		err.cleanup_frame_memory = frame_memory
+		err.cleanup_frame_allocator = frame_allocator
+		return
+	}
+	free_error := runtime.mem_free_bytes(frame_memory, frame_allocator)
+	if free_error != nil && free_error != .Mode_Not_Implemented {
+		promote_cleanup_error(err)
+		err.cleanup_frames = frames[:active_count]
+		err.cleanup_frame_memory = frame_memory
+		err.cleanup_frame_allocator = frame_allocator
+	}
+}
+
+@(private)
+retain_failed_value :: proc(owner: ^value.Value, err: ^Scalar_Parse_Error) {
+	cleanup_error := value.destroy_value(owner)
+	if cleanup_error != nil {
+		promote_cleanup_error(err)
+		err.cleanup_value = value.take_value(owner)
+	}
+}
+
+@(private)
+retain_array_error :: proc(
+	array_error: ^value.Array_Operation_Error,
+	err: ^Scalar_Parse_Error,
+) {
+	if value.array_error_needs_cleanup(array_error) {
+		promote_cleanup_error(err)
+		err.cleanup_array_error = value.take_array_error(array_error)
+	} else {
+		_ = value.destroy_array_error(array_error)
+	}
+}
+
+@(private)
+append_array_element :: proc(
+	array: ^value.Value,
+	element: ^value.Value,
+	offset: int,
+) -> Scalar_Parse_Error {
+	displaced, append_error := value.array_append_take(array, element)
+	if value.array_error_kind(&append_error) != .None {
+		err := Scalar_Parse_Error{
+			kind = array_failure_kind(&append_error),
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+		}
+		retain_array_error(&append_error, &err)
+		retain_failed_value(element, &err)
+		return err
+	}
+	if value.kind_of(&displaced) != .Invalid {
+		err := Scalar_Parse_Error{
+			kind = .Array_Operation_Failure,
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+		}
+		retain_failed_value(&displaced, &err)
+		return err
+	}
+	return {}
+}
+
+// max_syntactic_array_depth counts only container tokens outside strings. It
+// is an allocation bound; parse_array_at independently enforces jq's active
+// container limit while consuming the document.
+@(private)
+max_syntactic_array_depth :: proc(input: string, start: int) -> int {
+	depth := 0
+	maximum := 0
+	in_string := false
+	escaped := false
+	for i in start..<len(input) {
+		c := input[i]
+		if in_string {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				in_string = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			in_string = true
+		case '[':
+			depth += 1
+			maximum = max(maximum, depth)
+		case ']':
+			if depth > 0 {
+				depth -= 1
+			}
+		}
+	}
+	return maximum
+}
+
+// parse_array_at parses one array beginning exactly at start and returns the
+// first byte after its matching closer. It does not classify later input.
+@(private)
+parse_array_at :: proc(input: string, start: int, allocator: runtime.Allocator) -> (
+	result: value.Value,
+	next: int,
+	err: Scalar_Parse_Error,
+) {
+	i := start
+	frame_capacity := min(max_syntactic_array_depth(input, start), MAX_PARSING_DEPTH)
+	if frame_capacity <= 0 || frame_capacity > max(int) / int(size_of(array_parse_frame)) {
+		result, err = parse_failure(.Size_Overflow, i)
+		return result, i, err
+	}
+	frame_bytes := frame_capacity * int(size_of(array_parse_frame))
+	frame_allocator := context.temp_allocator
+	frame_memory, frame_alloc_error := runtime.mem_alloc(
+		frame_bytes,
+		align_of(array_parse_frame),
+		frame_allocator,
+	)
+	if frame_alloc_error != nil || len(frame_memory) != frame_bytes {
+		err = {
+			kind = .Allocation_Failure,
+			detection_offset = i,
+			cause_offset = i,
+			has_cause_offset = true,
+		}
+		if len(frame_memory) > 0 {
+			free_error := runtime.mem_free_bytes(frame_memory, frame_allocator)
+			if free_error != nil && free_error != .Mode_Not_Implemented {
+				promote_cleanup_error(&err)
+				err.cleanup_frame_memory = frame_memory
+				err.cleanup_frame_allocator = frame_allocator
+			}
+		}
+		return value.invalid_value(), i, err
+	}
+	frame_data := cast([^]array_parse_frame)(raw_data(frame_memory))
+	frames := frame_data[:frame_capacity]
+	root, root_error := value.array_value(allocator)
+	if value.array_error_kind(&root_error) != .None {
+		err = {
+			kind = array_failure_kind(&root_error),
+			detection_offset = i,
+			cause_offset = i,
+			has_cause_offset = true,
+		}
+		retain_array_error(&root_error, &err)
+		retire_array_parse_state(frames, frame_memory, frame_allocator, 0, &err)
+		return value.invalid_value(), i, err
+	}
+	frames[0] = {array = value.take_value(&root), open_offset = i, expect_value = true}
+	active := 1
+	i += 1
+
+	for {
+		for i < len(input) && is_whitespace(input[i]) {
+			i += 1
+		}
+		if i == len(input) {
+			err = {
+				kind = .Unfinished_Array,
+				detection_offset = detection_before_eof(len(input)),
+				cause_offset = len(input),
+				has_cause_offset = true,
+			}
+			retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+			return value.invalid_value(), i, err
+		}
+
+		frame := &frames[active - 1]
+		c := input[i]
+		if frame.expect_value {
+			switch c {
+			case ']':
+				length, _ := value.array_length(&frame.array)
+				if frame.after_comma || length != 0 {
+					err = {
+						kind = .Expected_Array_Element,
+						detection_offset = i,
+						cause_offset = i,
+						has_cause_offset = true,
+					}
+					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+					return value.invalid_value(), i, err
+				}
+			case ',':
+				err = {
+					kind = .Expected_Value_Before_Separator,
+					detection_offset = i,
+					cause_offset = i,
+					has_cause_offset = true,
+				}
+				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+				return value.invalid_value(), i, err
+			case '}':
+				err = {
+					kind = .Unmatched_Object_Closer,
+					detection_offset = i,
+					cause_offset = i,
+					has_cause_offset = true,
+				}
+				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+				return value.invalid_value(), i, err
+			case ':':
+				err = {
+					kind = .Expected_String_Key_Before_Colon,
+					detection_offset = i,
+					cause_offset = i,
+					has_cause_offset = true,
+				}
+				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+				return value.invalid_value(), i, err
+			case '{':
+				if active >= MAX_PARSING_DEPTH {
+					err = {
+						kind = .Depth_Limit,
+						detection_offset = i,
+						cause_offset = i,
+						has_cause_offset = true,
+					}
+					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+					return value.invalid_value(), i, err
+				}
+				err = {
+					kind = .Object_Not_Supported,
+					detection_offset = i,
+					cause_offset = i,
+					has_cause_offset = true,
+				}
+				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+				return value.invalid_value(), i, err
+			case '[':
+				if active >= MAX_PARSING_DEPTH {
+					err = {
+						kind = .Depth_Limit,
+						detection_offset = i,
+						cause_offset = i,
+						has_cause_offset = true,
+					}
+					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+					return value.invalid_value(), i, err
+				}
+				child, child_error := value.array_value(allocator)
+				if value.array_error_kind(&child_error) != .None {
+					err = {
+						kind = array_failure_kind(&child_error),
+						detection_offset = i,
+						cause_offset = i,
+						has_cause_offset = true,
+					}
+					retain_array_error(&child_error, &err)
+					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+					return value.invalid_value(), i, err
+				}
+				frames[active] = {
+					array = value.take_value(&child),
+					open_offset = i,
+					expect_value = true,
+				}
+				active += 1
+				i += 1
+				continue
+			case:
+				element_at := i
+				element: value.Value
+				element, i, err = parse_scalar_at(input, i, allocator)
+				if err.kind != .None {
+					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+					return value.invalid_value(), i, err
+				}
+				append_error := append_array_element(&frame.array, &element, element_at)
+				if append_error.kind != .None {
+					err = take_scalar_parse_error(&append_error)
+					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+					return value.invalid_value(), i, err
+				}
+				frame.expect_value = false
+				frame.after_comma = false
+				continue
+			}
+		}
+
+		// A closing bracket completes this frame. Empty arrays arrive here from
+		// the expect-value branch; nonempty arrays arrive in separator state.
+		if c == ']' {
+			i += 1
+			completed_open := frame.open_offset
+			completed := value.take_value(&frame.array)
+			active -= 1
+			if active == 0 {
+				retire_array_parse_state(frames, frame_memory, frame_allocator, 0, &err)
+				if err.kind != .None {
+					err.cleanup_value = value.take_value(&completed)
+					return value.invalid_value(), i, err
+				}
+				return completed, i, {}
+			}
+			parent := &frames[active - 1]
+			append_error := append_array_element(&parent.array, &completed, completed_open)
+			if append_error.kind != .None {
+				err = take_scalar_parse_error(&append_error)
+				frames[active].array = value.take_value(&completed)
+				retire_array_parse_state(frames, frame_memory, frame_allocator, active + 1, &err)
+				return value.invalid_value(), i, err
+			}
+			parent.expect_value = false
+			parent.after_comma = false
+			continue
+		}
+
+		switch c {
+		case ',':
+			frame.expect_value = true
+			frame.after_comma = true
+			i += 1
+			continue
+		case '}':
+			err = {
+				kind = .Object_Key_Value_Pairs_Required,
+				detection_offset = i,
+				cause_offset = i,
+				has_cause_offset = true,
+			}
+		case ':':
+			err = {
+				kind = .Unexpected_Colon,
+				detection_offset = i,
+				cause_offset = i,
+				has_cause_offset = true,
+			}
+		case:
+			second_at := i
+			if c != '[' && c != '{' {
+				second: value.Value
+				second, i, err = parse_scalar_at(input, second_at, allocator)
+				if err.kind != .None {
+					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+					return value.invalid_value(), i, err
+				}
+				detection := literal_detection_offset(input, i)
+				if input[second_at] == '"' {
+					detection = i - 1
+				}
+				err = {
+					kind = .Expected_Separator,
+					detection_offset = detection,
+					cause_offset = second_at,
+					has_cause_offset = true,
+				}
+				retain_failed_value(&second, &err)
+			} else {
+				err = {
+					kind = .Expected_Separator,
+					detection_offset = i,
+					cause_offset = i,
+					has_cause_offset = true,
+				}
+			}
+		}
+		retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+		return value.invalid_value(), i, err
+	}
+}
+
+@(private)
+parse_one_value_at :: proc(input: string, start: int, allocator: runtime.Allocator) -> (
+	result: value.Value,
+	next: int,
+	err: Scalar_Parse_Error,
+) {
+	switch input[start] {
+	case '[':
+		return parse_array_at(input, start, allocator)
+	case '{':
+		result, err = parse_failure(.Object_Not_Supported, start)
+	case ']':
+		result, err = parse_failure(.Unmatched_Array_Closer, start)
+	case '}':
+		result, err = parse_failure(.Unmatched_Object_Closer, start)
+	case ',':
+		result, err = parse_failure(.Expected_Value_Before_Separator, start)
+	case ':':
+		result, err = parse_failure(.Expected_String_Key_Before_Colon, start)
+	case:
+		return parse_scalar_at(input, start, allocator)
+	}
+	return result, start, err
+}
+
+// parse_value is jq's one-shot wrapper above the single-result parser. A
+// second valid result is an extra-value error, while a later syntax or
+// unsupported-object error supersedes the already completed first value.
+parse_value :: proc(input: string, allocator: runtime.Allocator) -> (
+	result: value.Value,
+	err: Scalar_Parse_Error,
+) {
+	i := 0
+	if len(input) > 0 && input[0] == 0xef {
+		bom := [3]byte{0xef, 0xbb, 0xbf}
+		matched := 1
+		for matched < len(bom) && matched < len(input) && input[matched] == bom[matched] {
+			matched += 1
+		}
+		if matched != len(bom) {
+			return parse_scalar(input, allocator)
+		}
+		i = len(bom)
+	}
+	for i < len(input) && is_whitespace(input[i]) {
+		i += 1
+	}
+	if i == len(input) {
+		return parse_detected_failure(
+			.Expected_Value,
+			detection_before_eof(len(input)),
+			len(input),
+		)
+	}
+	result, i, err = parse_one_value_at(input, i, allocator)
+	if err.kind != .None {
+		return value.invalid_value(), err
+	}
+	for i < len(input) && is_whitespace(input[i]) {
+		i += 1
+	}
+	if i == len(input) {
+		return result, {}
+	}
+
+	second_at := i
+	cleanup_error := value.destroy_value(&result)
+	if cleanup_error != nil {
+		return value.invalid_value(), {
+			kind = .Scratch_Cleanup_Failure,
+			detection_offset = second_at,
+			cause_offset = second_at,
+			has_cause_offset = true,
+			cause_kind = .Unexpected_Extra_Values,
+			cleanup_value = value.take_value(&result),
+		}
+	}
+	second: value.Value
+	second, _, err = parse_one_value_at(input, second_at, allocator)
+	if err.kind != .None {
+		return value.invalid_value(), err
+	}
+	err = {
+		kind = .Unexpected_Extra_Values,
+		detection_offset = second_at,
+		cause_offset = second_at,
+		has_cause_offset = true,
+	}
+	retain_failed_value(&second, &err)
+	return value.invalid_value(), err
 }
