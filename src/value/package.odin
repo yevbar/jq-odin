@@ -136,6 +136,7 @@ payload :: struct {
 	object_cleanup_at:        int,
 	object_cleanup_key_done:  bool,
 	object_retiring:          bool,
+	teardown_parent:          ^payload,
 }
 
 @(private)
@@ -831,77 +832,127 @@ take_value :: proc(source: ^Value) -> Value {
 	return result
 }
 
-// destroy_value retires one owning handle. A genuine allocator error while
-// freeing the final reference is returned with the handle left owning and
-// retryable. Mode_Not_Implemented is successful retirement for allocators
-// whose storage is released in bulk.
-destroy_value :: proc(value: ^Value) -> runtime.Allocator_Error {
-	if value == nil || value^ == nil {
-		return nil
-	}
-	storage := value_storage_of(value)
-	if storage.kind == .Invalid {
-		return nil
-	}
-	p := storage.owned_payload
-	if p == nil {
-		value^ = {}
-		return nil
-	}
-	assert(p.references > 0)
-	if p.references > 1 {
-		p.references -= 1
-		value^ = {}
-		return nil
-	}
+@(private)
+teardown_next_owner :: proc(p: ^payload) -> (^Value, bool) {
 	if p.kind == .Array {
-		p.array_retiring = true
-		elements := array_payload_values(p)
 		total_owned := p.array_initialized_length + p.array_retired_count
-		for p.array_cleanup_at < total_owned {
-			index := p.array_cleanup_at
-			if index >= p.array_initialized_length {
-				index = p.array_capacity + index - p.array_initialized_length
-			}
-			element_error := destroy_value(&elements[index])
-			if element_error != nil {
-				return element_error
-			}
-			p.array_cleanup_at += 1
+		if p.array_cleanup_at >= total_owned do return nil, false
+		index := p.array_cleanup_at
+		if index >= p.array_initialized_length {
+			index = p.array_capacity + index - p.array_initialized_length
 		}
-	} else if p.kind == .Object {
-		p.object_retiring = true
+		return &array_payload_values(p)[index], true
+	}
+	if p.kind == .Object {
 		slots := object_payload_slots(p)
 		for p.object_cleanup_at < p.object_next_free {
 			slot := &slots[p.object_cleanup_at]
-			if p.object_cleanup_key_done || kind_of(&slot.key) == .String {
-				if !p.object_cleanup_key_done {
-					key_error := destroy_value(&slot.key)
-					if key_error != nil {
-						return key_error
-					}
-					p.object_cleanup_key_done = true
-				}
-				value_error := destroy_value(&slot.value)
-				if value_error != nil {
-					return value_error
-				}
+			if p.object_cleanup_key_done {
+				return &slot.value, true
 			}
+			if kind_of(&slot.key) == .String {
+				return &slot.key, true
+			}
+			p.object_cleanup_at += 1
+		}
+	}
+	return nil, false
+}
+
+@(private)
+teardown_advance :: proc(p: ^payload) {
+	if p.kind == .Array {
+		p.array_cleanup_at += 1
+		return
+	}
+	if p.kind == .Object {
+		if !p.object_cleanup_key_done {
+			p.object_cleanup_key_done = true
+		} else {
 			p.object_cleanup_key_done = false
 			p.object_cleanup_at += 1
 		}
 	}
-	allocator := p.allocator
-	allocation_size := p.allocation_size
-	free_error := runtime.mem_free_with_size(p, allocation_size, allocator)
-	if free_error != nil && free_error != .Mode_Not_Implemented {
-		return free_error
+}
+
+// destroy_value retires one owning handle with an intrusive iterative walk.
+// Final containers carry their parent continuation while retiring, so depth
+// consumes heap payload state rather than process call stack or a separately
+// allocated worklist. A failed Free leaves every cursor and owner reachable
+// from the supplied root for an allocation-free retry.
+destroy_value :: proc(value: ^Value) -> runtime.Allocator_Error {
+	if value == nil || value^ == nil do return nil
+
+	current_owner := value
+	current_parent: ^payload
+	for {
+		if current_owner^ == nil || kind_of(current_owner) == .Invalid {
+			if current_parent == nil do return nil
+			teardown_advance(current_parent)
+		} else {
+			storage := value_storage_of(current_owner)
+			p := storage.owned_payload
+			if p == nil {
+				current_owner^ = {}
+				if current_parent == nil do return nil
+				teardown_advance(current_parent)
+			} else if p.references > 1 {
+				p.references -= 1
+				current_owner^ = {}
+				if current_parent == nil do return nil
+				teardown_advance(current_parent)
+			} else if p.kind == .Array || p.kind == .Object {
+				if p.kind == .Array {
+					p.array_retiring = true
+				} else {
+					p.object_retiring = true
+				}
+				p.teardown_parent = current_parent
+				nested_owner, has_nested := teardown_next_owner(p)
+				if has_nested {
+					current_parent = p
+					current_owner = nested_owner
+					continue
+				}
+
+				parent := p.teardown_parent
+				free_error := runtime.mem_free_with_size(p, p.allocation_size, p.allocator)
+				if free_error != nil && free_error != .Mode_Not_Implemented {
+					return free_error
+				}
+				if free_error == .Mode_Not_Implemented do p.references = 0
+				current_owner^ = {}
+				if parent == nil do return nil
+				current_parent = parent
+				teardown_advance(parent)
+			} else {
+				free_error := runtime.mem_free_with_size(p, p.allocation_size, p.allocator)
+				if free_error != nil && free_error != .Mode_Not_Implemented {
+					return free_error
+				}
+				if free_error == .Mode_Not_Implemented do p.references = 0
+				current_owner^ = {}
+				if current_parent == nil do return nil
+				teardown_advance(current_parent)
+			}
+		}
+
+		next_owner, has_next := teardown_next_owner(current_parent)
+		if has_next {
+			current_owner = next_owner
+			continue
+		}
+		current_owner = nil
+		// The next iteration completes and frees current_parent. Use the Value
+		// slot that owns it: the root or its unchanged parent cleanup cursor.
+		parent := current_parent.teardown_parent
+		current_parent = parent
+		if parent == nil {
+			current_owner = value
+		} else {
+			current_owner, _ = teardown_next_owner(parent)
+		}
 	}
-	if free_error == .Mode_Not_Implemented {
-		p.references = 0
-	}
-	value^ = {}
-	return nil
 }
 
 @(private)
