@@ -40,17 +40,67 @@ Scalar_Parse_Error_Kind :: enum u8 {
 	Unexpected_Extra_Values,
 	Depth_Limit,
 	Array_Operation_Failure,
+	Object_Keys_Must_Be_Strings,
+	Expected_Object_Member,
+	Unfinished_Object,
+	Object_Operation_Failure,
 }
 
+// jq's ordinary JSON parser reports "Exceeds depth limit for parsing" when a
+// reachable container opener sees this many live parser stack entries. A
+// validated colon is intentionally not guarded and may temporarily move the
+// live count from 10,000 to 10,001.
+@(private)
 MAX_PARSING_DEPTH :: 10_000
 
 @(private)
-array_parse_frame :: struct {
-	array:        value.Value,
-	open_offset:  int,
-	expect_value: bool,
-	after_comma:  bool,
+container_kind :: enum u8 {
+	Array,
+	Object,
 }
+
+@(private)
+object_parse_phase :: enum u8 {
+	Key,
+	Colon,
+	Value,
+	Separator,
+}
+
+@(private)
+array_parse_frame :: struct {
+	array:         value.Value,
+	pending_key:   value.Value,
+	pending_value: value.Value,
+	open_offset:   int,
+	kind:          container_kind,
+	expect_value:  bool,
+	after_comma:   bool,
+	object_phase:  object_parse_phase,
+}
+
+@(private)
+frame_stack_block :: struct {
+	previous:   ^frame_stack_block,
+	next:       ^frame_stack_block,
+	byte_count: int,
+	capacity:   int,
+	count:      int,
+}
+
+@(private)
+frame_stack :: struct {
+	blocks:      ^frame_stack_block,
+	current:     ^frame_stack_block,
+	active_count: int,
+	allocator:   runtime.Allocator,
+}
+
+@(private)
+INITIAL_FRAME_CAPACITY :: 1
+
+#assert(size_of(frame_stack_block) % align_of(array_parse_frame) == 0)
+#assert(align_of(frame_stack_block) >= align_of(array_parse_frame))
 
 // Scalar_Parse_Error contains no view into the input. It is non-owning except
 // when kind is Scratch_Cleanup_Failure. That exceptional error retains every
@@ -74,9 +124,11 @@ Scalar_Parse_Error :: struct {
 	cleanup_allocator:         runtime.Allocator,
 	cleanup_constructor_error: value.Constructor_Error,
 	cleanup_array_error:       value.Array_Operation_Error,
+	cleanup_object_error:      value.Object_Operation_Error,
 	cleanup_value:             value.Value,
-	cleanup_frames:            []array_parse_frame,
-	cleanup_frame_memory:      []byte,
+	cleanup_frame_blocks:      ^frame_stack_block,
+	cleanup_frame_current:     ^frame_stack_block,
+	cleanup_frame_count:       int,
 	cleanup_frame_allocator:  runtime.Allocator,
 }
 
@@ -105,31 +157,50 @@ destroy_scalar_parse_error :: proc(err: ^Scalar_Parse_Error) -> runtime.Allocato
 	if first_error == nil && array_error != nil {
 		first_error = array_error
 	}
+	object_error := value.destroy_object_error(&err.cleanup_object_error)
+	if first_error == nil && object_error != nil {
+		first_error = object_error
+	}
 	value_error := value.destroy_value(&err.cleanup_value)
 	if first_error == nil && value_error != nil {
 		first_error = value_error
 	}
 	frames_retired := true
-	for i := len(err.cleanup_frames) - 1; i >= 0; i -= 1 {
-		frame_error := value.destroy_value(&err.cleanup_frames[i].array)
-		if frame_error != nil {
-			frames_retired = false
-			if first_error == nil {
-				first_error = frame_error
+	remaining := err.cleanup_frame_count
+	block := err.cleanup_frame_current
+	for block != nil && remaining > 0 {
+		frame_data := cast([^]array_parse_frame)(uintptr(block) + size_of(frame_stack_block))
+		frames := frame_data[:block.capacity]
+		limit := min(block.count, remaining)
+		for i := limit - 1; i >= 0; i -= 1 {
+			frame_error := value.destroy_value(&frames[i].pending_value)
+			if frame_error == nil do frame_error = value.destroy_value(&frames[i].pending_key)
+			if frame_error == nil do frame_error = value.destroy_value(&frames[i].array)
+			if frame_error != nil {
+				frames_retired = false
+				if first_error == nil do first_error = frame_error
 			}
 		}
+		remaining -= limit
+		block = block.previous
 	}
-	if frames_retired && len(err.cleanup_frame_memory) > 0 {
-		frame_free_error := runtime.mem_free_bytes(
-			err.cleanup_frame_memory,
-			err.cleanup_frame_allocator,
-		)
-		if frame_free_error == nil || frame_free_error == .Mode_Not_Implemented {
-			err.cleanup_frames = nil
-			err.cleanup_frame_memory = nil
+	if frames_retired {
+		err.cleanup_frame_current = nil
+		err.cleanup_frame_count = 0
+		for err.cleanup_frame_blocks != nil {
+			release_block := err.cleanup_frame_blocks
+			previous := release_block.previous
+			byte_data := cast([^]byte)(rawptr(release_block))
+			memory := byte_data[:release_block.byte_count]
+			frame_free_error := runtime.mem_free_bytes(memory, err.cleanup_frame_allocator)
+			if frame_free_error != nil && frame_free_error != .Mode_Not_Implemented {
+				if first_error == nil do first_error = frame_free_error
+				break
+			}
+			err.cleanup_frame_blocks = previous
+		}
+		if err.cleanup_frame_blocks == nil {
 			err.cleanup_frame_allocator = {}
-		} else if first_error == nil {
-			first_error = frame_free_error
 		}
 	}
 	if first_error == nil {
@@ -971,38 +1042,174 @@ take_scalar_parse_error :: proc(source: ^Scalar_Parse_Error) -> Scalar_Parse_Err
 	return result
 }
 
-// retire_array_parse_state releases every independent owner in the active
-// frame stack. A failed release transfers the typed frame allocation into err
-// so retries can resume without copying Value handles.
 @(private)
-retire_array_parse_state :: proc(
-	frames: []array_parse_frame,
-	frame_memory: []byte,
-	frame_allocator: runtime.Allocator,
-	active_count: int,
-	err: ^Scalar_Parse_Error,
-) {
-	all_values_retired := true
-	for i := active_count - 1; i >= 0; i -= 1 {
-		cleanup_error := value.destroy_value(&frames[i].array)
-		if cleanup_error != nil {
-			all_values_retired = false
+frame_block_frames :: proc(block: ^frame_stack_block) -> []array_parse_frame {
+	if block == nil do return nil
+	data := cast([^]array_parse_frame)(uintptr(block) + size_of(frame_stack_block))
+	return data[:block.capacity]
+}
+
+@(private)
+frame_stack_top :: proc(stack: ^frame_stack) -> ^array_parse_frame {
+	if stack == nil || stack.current == nil || stack.current.count <= 0 do return nil
+	return &frame_block_frames(stack.current)[stack.current.count - 1]
+}
+
+@(private)
+frame_stack_pop :: proc(stack: ^frame_stack) {
+	if stack == nil || stack.current == nil || stack.current.count <= 0 do return
+	stack.current.count -= 1
+	stack.active_count -= 1
+	if stack.current.count == 0 && stack.current.previous != nil {
+		stack.current = stack.current.previous
+	}
+}
+
+@(private)
+frame_stack_allocation_size :: proc(capacity: int) -> (int, bool) {
+	header_size := int(size_of(frame_stack_block))
+	frame_size := int(size_of(array_parse_frame))
+	if capacity <= 0 || capacity > (max(int) - header_size) / frame_size {
+		return 0, false
+	}
+	return header_size + capacity * frame_size, true
+}
+
+// grow_frame_stack allocates a separate linked owner. It never resizes or
+// copies an existing owner, so allocation and retirement failures cannot lose
+// the only representation of any live block.
+@(private)
+grow_frame_stack :: proc(stack: ^frame_stack, offset: int) -> Scalar_Parse_Error {
+	capacity := INITIAL_FRAME_CAPACITY
+	if stack.blocks != nil {
+		if stack.blocks.capacity > max(int) / 2 {
+			return {
+				kind = .Size_Overflow,
+				detection_offset = offset,
+				cause_offset = offset,
+				has_cause_offset = true,
+			}
 		}
+		capacity = stack.blocks.capacity * 2
+	}
+	byte_count, size_ok := frame_stack_allocation_size(capacity)
+	if !size_ok {
+		return {
+			kind = .Size_Overflow,
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+		}
+	}
+	memory, allocation_error := runtime.mem_alloc(
+		byte_count,
+		align_of(frame_stack_block),
+		stack.allocator,
+	)
+	if allocation_error != nil || len(memory) != byte_count {
+		err := Scalar_Parse_Error{
+			kind = .Allocation_Failure,
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+		}
+		if len(memory) > 0 {
+			free_error := runtime.mem_free_bytes(memory, stack.allocator)
+			if free_error != nil && free_error != .Mode_Not_Implemented {
+				promote_cleanup_error(&err)
+				err.cleanup_scratch = memory
+				err.cleanup_allocator = stack.allocator
+			}
+		}
+		return err
+	}
+	block := cast(^frame_stack_block)(raw_data(memory))
+	block^ = {
+		previous = stack.blocks,
+		byte_count = byte_count,
+		capacity = capacity,
+	}
+	if stack.blocks != nil do stack.blocks.next = block
+	stack.blocks = block
+	stack.current = block
+	return {}
+}
+
+@(private)
+push_container_frame :: proc(
+	stack: ^frame_stack,
+	owner: ^value.Value,
+	offset: int,
+	kind: container_kind,
+) -> Scalar_Parse_Error {
+	if stack.current == nil || stack.current.count == stack.current.capacity {
+		if stack.current != nil && stack.current.next != nil {
+			stack.current = stack.current.next
+		} else {
+			err := grow_frame_stack(stack, offset)
+			if err.kind != .None do return err
+		}
+	}
+	frame := &frame_block_frames(stack.current)[stack.current.count]
+	frame^ = {
+		array = value.take_value(owner),
+		open_offset = offset,
+		kind = kind,
+		expect_value = true,
+		object_phase = .Key,
+	}
+	stack.current.count += 1
+	stack.active_count += 1
+	return {}
+}
+
+// retire_frame_stack releases active frame owners before retiring every linked
+// block from newest to oldest. A failed Free leaves that block and its entire
+// predecessor chain represented for a later retry.
+@(private)
+retire_frame_stack :: proc(stack: ^frame_stack, err: ^Scalar_Parse_Error) {
+	all_values_retired := true
+	remaining := stack.active_count
+	block := stack.current
+	for block != nil && remaining > 0 {
+		frames := frame_block_frames(block)
+		limit := min(block.count, remaining)
+		for i := limit - 1; i >= 0; i -= 1 {
+			cleanup_error := value.destroy_value(&frames[i].pending_value)
+			if cleanup_error == nil do cleanup_error = value.destroy_value(&frames[i].pending_key)
+			if cleanup_error == nil do cleanup_error = value.destroy_value(&frames[i].array)
+			if cleanup_error != nil do all_values_retired = false
+		}
+		remaining -= limit
+		block = block.previous
 	}
 	if !all_values_retired {
 		promote_cleanup_error(err)
-		err.cleanup_frames = frames[:active_count]
-		err.cleanup_frame_memory = frame_memory
-		err.cleanup_frame_allocator = frame_allocator
+		err.cleanup_frame_blocks = stack.blocks
+		err.cleanup_frame_current = stack.current
+		err.cleanup_frame_count = stack.active_count
+		err.cleanup_frame_allocator = stack.allocator
+		stack^ = {}
 		return
 	}
-	free_error := runtime.mem_free_bytes(frame_memory, frame_allocator)
-	if free_error != nil && free_error != .Mode_Not_Implemented {
-		promote_cleanup_error(err)
-		err.cleanup_frames = frames[:active_count]
-		err.cleanup_frame_memory = frame_memory
-		err.cleanup_frame_allocator = frame_allocator
+	stack.current = nil
+	stack.active_count = 0
+	for stack.blocks != nil {
+		release_block := stack.blocks
+		previous := release_block.previous
+		byte_data := cast([^]byte)(rawptr(release_block))
+		memory := byte_data[:release_block.byte_count]
+		free_error := runtime.mem_free_bytes(memory, stack.allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			promote_cleanup_error(err)
+			err.cleanup_frame_blocks = release_block
+			err.cleanup_frame_allocator = stack.allocator
+			stack^ = {}
+			return
+		}
+		stack.blocks = previous
 	}
+	stack^ = {}
 }
 
 @(private)
@@ -1025,6 +1232,68 @@ retain_array_error :: proc(
 	} else {
 		_ = value.destroy_array_error(array_error)
 	}
+}
+
+@(private)
+object_failure_kind :: proc(err: ^value.Object_Operation_Error) -> Scalar_Parse_Error_Kind {
+	switch value.object_error_kind(err) {
+	case .Out_Of_Memory, .Allocator_Unsupported:
+		return .Allocation_Failure
+	case .Size_Overflow:
+		return .Size_Overflow
+	case .None:
+		return .None
+	case .Wrong_Kind, .Aliased_Operand, .Cleanup_Failed:
+		return .Object_Operation_Failure
+	}
+	return .Object_Operation_Failure
+}
+
+@(private)
+retain_object_error :: proc(
+	object_error: ^value.Object_Operation_Error,
+	err: ^Scalar_Parse_Error,
+) {
+	if value.object_error_needs_cleanup(object_error) {
+		promote_cleanup_error(err)
+		err.cleanup_object_error = value.take_object_error(object_error)
+	} else {
+		_ = value.destroy_object_error(object_error)
+	}
+}
+
+@(private)
+set_object_member :: proc(frame: ^array_parse_frame, offset: int) -> Scalar_Parse_Error {
+	duplicate_key, displaced, object_error := value.object_set_take(
+		&frame.array,
+		&frame.pending_key,
+		&frame.pending_value,
+	)
+	if value.object_error_kind(&object_error) != .None {
+		err := Scalar_Parse_Error{
+			kind = object_failure_kind(&object_error),
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+		}
+		retain_object_error(&object_error, &err)
+		return err
+	}
+	frame.pending_key = value.take_value(&duplicate_key)
+	frame.pending_value = value.take_value(&displaced)
+	err := Scalar_Parse_Error{}
+	key_cleanup := value.destroy_value(&frame.pending_key)
+	value_cleanup := value.destroy_value(&frame.pending_value)
+	if key_cleanup != nil || value_cleanup != nil {
+		err = {
+			kind = .Scratch_Cleanup_Failure,
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+			cause_kind = .Object_Operation_Failure,
+		}
+	}
+	return err
 }
 
 @(private)
@@ -1058,305 +1327,322 @@ append_array_element :: proc(
 	return {}
 }
 
-// max_syntactic_array_depth counts only container tokens outside strings. It
-// is an allocation bound; parse_array_at independently enforces jq's active
-// container limit while consuming the document.
 @(private)
-max_syntactic_array_depth :: proc(input: string, start: int) -> int {
-	depth := 0
-	maximum := 0
-	in_string := false
-	escaped := false
-	for i in start..<len(input) {
-		c := input[i]
-		if in_string {
-			if escaped {
-				escaped = false
-			} else if c == '\\' {
-				escaped = true
-			} else if c == '"' {
-				in_string = false
-			}
-			continue
+new_container :: proc(kind: container_kind, allocator: runtime.Allocator) -> (
+	result: value.Value,
+	err: Scalar_Parse_Error,
+) {
+	switch kind {
+	case .Array:
+		array_error: value.Array_Operation_Error
+		result, array_error = value.array_value(allocator)
+		if value.array_error_kind(&array_error) != .None {
+			err.kind = array_failure_kind(&array_error)
+			retain_array_error(&array_error, &err)
 		}
-		switch c {
-		case '"':
-			in_string = true
-		case '[':
-			depth += 1
-			maximum = max(maximum, depth)
-		case ']':
-			if depth > 0 {
-				depth -= 1
-			}
+	case .Object:
+		object_error: value.Object_Operation_Error
+		result, object_error = value.object_value(allocator)
+		if value.object_error_kind(&object_error) != .None {
+			err.kind = object_failure_kind(&object_error)
+			retain_object_error(&object_error, &err)
 		}
 	}
-	return maximum
+	return
 }
 
-// parse_array_at parses one array beginning exactly at start and returns the
-// first byte after its matching closer. It does not classify later input.
 @(private)
-parse_array_at :: proc(input: string, start: int, allocator: runtime.Allocator) -> (
+attach_container_value :: proc(
+	frame: ^array_parse_frame,
+	member: ^value.Value,
+	offset: int,
+) -> Scalar_Parse_Error {
+	if frame.kind == .Array {
+		err := append_array_element(&frame.array, member, offset)
+		if err.kind == .None {
+			frame.expect_value = false
+			frame.after_comma = false
+		}
+		return err
+	}
+	switch frame.object_phase {
+	case .Key:
+		frame.pending_key = value.take_value(member)
+		frame.object_phase = .Colon
+		frame.after_comma = false
+		return {}
+	case .Value:
+		frame.pending_value = value.take_value(member)
+		frame.object_phase = .Separator
+		return {}
+	case .Colon, .Separator:
+		return {
+			kind = .Expected_Separator,
+			detection_offset = offset,
+			cause_offset = offset,
+			has_cause_offset = true,
+		}
+	}
+	return {}
+}
+
+// parse_container_at uses one Odin frame per active array or object, while
+// syntactic_entries mirrors jq's ordinary-parser stackpos. A consumed opener
+// charges one entry and is the only transition guarded by MAX_PARSING_DEPTH.
+// A validated object key charges a second entry when its colon is consumed,
+// even when that moves the count from 10,000 to 10,001. That key entry is
+// released when comma or close transfers it into the object. Closing then
+// releases the container entry. This live syntactic counter is not the count
+// or capacity of the linked frame blocks.
+//
+// Frame blocks still grow only when an actually reachable, budgeted opener
+// needs another frame. The depth failure is selected before constructing the
+// offending Value, growing a block, or transferring it into a frame. Bytes
+// beyond a completed root or decisive grammar error are never inspected for
+// either budget or capacity; checked block arithmetic and allocator failures
+// remain independent safeguards.
+@(private)
+parse_container_at :: proc(input: string, start: int, allocator: runtime.Allocator) -> (
 	result: value.Value,
 	next: int,
 	err: Scalar_Parse_Error,
 ) {
-	i := start
-	frame_capacity := min(max_syntactic_array_depth(input, start), MAX_PARSING_DEPTH)
-	if frame_capacity <= 0 || frame_capacity > max(int) / int(size_of(array_parse_frame)) {
-		result, err = parse_failure(.Size_Overflow, i)
-		return result, i, err
-	}
-	frame_bytes := frame_capacity * int(size_of(array_parse_frame))
-	frame_allocator := context.temp_allocator
-	frame_memory, frame_alloc_error := runtime.mem_alloc(
-		frame_bytes,
-		align_of(array_parse_frame),
-		frame_allocator,
-	)
-	if frame_alloc_error != nil || len(frame_memory) != frame_bytes {
-		err = {
-			kind = .Allocation_Failure,
-			detection_offset = i,
-			cause_offset = i,
-			has_cause_offset = true,
-		}
-		if len(frame_memory) > 0 {
-			free_error := runtime.mem_free_bytes(frame_memory, frame_allocator)
-			if free_error != nil && free_error != .Mode_Not_Implemented {
-				promote_cleanup_error(&err)
-				err.cleanup_frame_memory = frame_memory
-				err.cleanup_frame_allocator = frame_allocator
-			}
-		}
-		return value.invalid_value(), i, err
-	}
-	frame_data := cast([^]array_parse_frame)(raw_data(frame_memory))
-	frames := frame_data[:frame_capacity]
-	root, root_error := value.array_value(allocator)
-	if value.array_error_kind(&root_error) != .None {
-		err = {
-			kind = array_failure_kind(&root_error),
-			detection_offset = i,
-			cause_offset = i,
-			has_cause_offset = true,
-		}
-		retain_array_error(&root_error, &err)
-		retire_array_parse_state(frames, frame_memory, frame_allocator, 0, &err)
-		return value.invalid_value(), i, err
-	}
-	frames[0] = {array = value.take_value(&root), open_offset = i, expect_value = true}
-	active := 1
-	i += 1
+	frames := frame_stack{allocator = context.temp_allocator}
+	syntactic_entries := 1 // The reachable root opener consumes one jq entry.
+	root_kind := container_kind.Array
+	if input[start] == '{' do root_kind = .Object
 
+	err = grow_frame_stack(&frames, start)
+	if err.kind != .None {
+		return value.invalid_value(), start, err
+	}
+	root, root_error := new_container(root_kind, allocator)
+	if root_error.kind != .None {
+		err = take_scalar_parse_error(&root_error)
+		err.detection_offset = start
+		err.cause_offset = start
+		err.has_cause_offset = true
+		retire_frame_stack(&frames, &err)
+		return value.invalid_value(), start, err
+	}
+	push_error := push_container_frame(&frames, &root, start, root_kind)
+	if push_error.kind != .None {
+		err = take_scalar_parse_error(&push_error)
+		retain_failed_value(&root, &err)
+		retire_frame_stack(&frames, &err)
+		return value.invalid_value(), start, err
+	}
+
+	i := start + 1
 	for {
-		for i < len(input) && is_whitespace(input[i]) {
-			i += 1
-		}
+		for i < len(input) && is_whitespace(input[i]) do i += 1
+		frame := frame_stack_top(&frames)
 		if i == len(input) {
+			kind := Scalar_Parse_Error_Kind.Unfinished_Array
+			if frame.kind == .Object do kind = .Unfinished_Object
 			err = {
-				kind = .Unfinished_Array,
+				kind = kind,
 				detection_offset = detection_before_eof(len(input)),
 				cause_offset = len(input),
 				has_cause_offset = true,
 			}
-			retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
+			retire_frame_stack(&frames, &err)
 			return value.invalid_value(), i, err
 		}
 
-		frame := &frames[active - 1]
 		c := input[i]
-		if frame.expect_value {
-			switch c {
-			case ']':
-				length, _ := value.array_length(&frame.array)
-				if frame.after_comma || length != 0 {
-					err = {
-						kind = .Expected_Array_Element,
-						detection_offset = i,
-						cause_offset = i,
-						has_cause_offset = true,
+		// jq checks its parser-stack limit on an opener before checking whether
+		// a pending value instead requires a separator (jv_parse.c:156-168).
+		if (c == '[' || c == '{') && syntactic_entries >= MAX_PARSING_DEPTH {
+			err = {
+				kind = .Depth_Limit,
+				detection_offset = i,
+				cause_offset = i,
+				has_cause_offset = true,
+			}
+			retire_frame_stack(&frames, &err)
+			return value.invalid_value(), i, err
+		}
+		close_frame := false
+		if frame.kind == .Array {
+			if frame.expect_value {
+				switch c {
+				case ']':
+					length, _ := value.array_length(&frame.array)
+					if frame.after_comma || length != 0 {
+						err = {kind = .Expected_Array_Element, detection_offset = i, cause_offset = i, has_cause_offset = true}
 					}
-					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-					return value.invalid_value(), i, err
+					close_frame = err.kind == .None
+				case ',': err = {kind = .Expected_Value_Before_Separator, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case '}': err = {kind = .Unmatched_Object_Closer, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ':': err = {kind = .Expected_String_Key_Before_Colon, detection_offset = i, cause_offset = i, has_cause_offset = true}
 				}
-			case ',':
-				err = {
-					kind = .Expected_Value_Before_Separator,
-					detection_offset = i,
-					cause_offset = i,
-					has_cause_offset = true,
+			} else {
+				switch c {
+				case ']': close_frame = true
+				case ',':
+					frame.expect_value = true
+					frame.after_comma = true
+					i += 1
+					continue
+				case '}': err = {kind = .Object_Key_Value_Pairs_Required, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ':': err = {kind = .Unexpected_Colon, detection_offset = i, cause_offset = i, has_cause_offset = true}
 				}
-				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-				return value.invalid_value(), i, err
-			case '}':
-				err = {
-					kind = .Unmatched_Object_Closer,
-					detection_offset = i,
-					cause_offset = i,
-					has_cause_offset = true,
-				}
-				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-				return value.invalid_value(), i, err
-			case ':':
-				err = {
-					kind = .Expected_String_Key_Before_Colon,
-					detection_offset = i,
-					cause_offset = i,
-					has_cause_offset = true,
-				}
-				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-				return value.invalid_value(), i, err
-			case '{':
-				if active >= MAX_PARSING_DEPTH {
-					err = {
-						kind = .Depth_Limit,
-						detection_offset = i,
-						cause_offset = i,
-						has_cause_offset = true,
+			}
+		} else {
+			switch frame.object_phase {
+			case .Key:
+				switch c {
+				case '}':
+					length, _ := value.object_length(&frame.array)
+					if frame.after_comma || length != 0 {
+						err = {kind = .Expected_Object_Member, detection_offset = i, cause_offset = i, has_cause_offset = true}
+					} else {
+						close_frame = true
 					}
-					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-					return value.invalid_value(), i, err
+				case ']': err = {kind = .Unmatched_Array_Closer, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ',': err = {kind = .Expected_Value_Before_Separator, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ':': err = {kind = .Expected_String_Key_Before_Colon, detection_offset = i, cause_offset = i, has_cause_offset = true}
 				}
-				err = {
-					kind = .Object_Not_Supported,
-					detection_offset = i,
-					cause_offset = i,
-					has_cause_offset = true,
-				}
-				retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-				return value.invalid_value(), i, err
-			case '[':
-				if active >= MAX_PARSING_DEPTH {
-					err = {
-						kind = .Depth_Limit,
-						detection_offset = i,
-						cause_offset = i,
-						has_cause_offset = true,
+			case .Colon:
+				switch c {
+				case ':':
+					if value.kind_of(&frame.pending_key) != .String {
+						err = {kind = .Object_Keys_Must_Be_Strings, detection_offset = i, cause_offset = i, has_cause_offset = true}
+					} else {
+						// jq does not depth-check this push. A colon can move
+						// stackpos from 10,000 to 10,001 (jv_parse.c:170-179).
+						syntactic_entries += 1
+						frame.object_phase = .Value
+						i += 1
+						continue
 					}
-					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-					return value.invalid_value(), i, err
+				case '}', ',': err = {kind = .Object_Key_Value_Pairs_Required, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ']': err = {kind = .Unmatched_Array_Closer, detection_offset = i, cause_offset = i, has_cause_offset = true}
 				}
-				child, child_error := value.array_value(allocator)
-				if value.array_error_kind(&child_error) != .None {
-					err = {
-						kind = array_failure_kind(&child_error),
-						detection_offset = i,
-						cause_offset = i,
-						has_cause_offset = true,
+			case .Value:
+				switch c {
+				case '}': err = {kind = .Unmatched_Object_Closer, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ']': err = {kind = .Unmatched_Array_Closer, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ',': err = {kind = .Expected_Value_Before_Separator, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ':': err = {kind = .Expected_String_Key_Before_Colon, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				}
+			case .Separator:
+				switch c {
+				case '}':
+					err = set_object_member(frame, i)
+					close_frame = err.kind == .None
+				case ']': err = {kind = .Unmatched_Array_Closer, detection_offset = i, cause_offset = i, has_cause_offset = true}
+				case ',':
+					err = set_object_member(frame, i)
+					if err.kind == .None {
+						syntactic_entries -= 1 // pending key transferred
+						frame.object_phase = .Key
+						frame.after_comma = true
+						i += 1
+						continue
 					}
-					retain_array_error(&child_error, &err)
-					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-					return value.invalid_value(), i, err
+				case ':': err = {kind = .Unexpected_Colon, detection_offset = i, cause_offset = i, has_cause_offset = true}
 				}
-				frames[active] = {
-					array = value.take_value(&child),
-					open_offset = i,
-					expect_value = true,
-				}
-				active += 1
-				i += 1
-				continue
-			case:
-				element_at := i
-				element: value.Value
-				element, i, err = parse_scalar_at(input, i, allocator)
-				if err.kind != .None {
-					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-					return value.invalid_value(), i, err
-				}
-				append_error := append_array_element(&frame.array, &element, element_at)
-				if append_error.kind != .None {
-					err = take_scalar_parse_error(&append_error)
-					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-					return value.invalid_value(), i, err
-				}
-				frame.expect_value = false
-				frame.after_comma = false
-				continue
 			}
 		}
 
-		// A closing bracket completes this frame. Empty arrays arrive here from
-		// the expect-value branch; nonempty arrays arrive in separator state.
-		if c == ']' {
+		if err.kind != .None {
+			retire_frame_stack(&frames, &err)
+			return value.invalid_value(), i, err
+		}
+		if close_frame {
 			i += 1
 			completed_open := frame.open_offset
+			if frame.kind == .Object && frame.object_phase == .Separator {
+				syntactic_entries -= 1 // pending key transferred on close
+			}
+			syntactic_entries -= 1 // completed container
 			completed := value.take_value(&frame.array)
-			active -= 1
-			if active == 0 {
-				retire_array_parse_state(frames, frame_memory, frame_allocator, 0, &err)
+			frame_stack_pop(&frames)
+			if frames.active_count == 0 {
+				retire_frame_stack(&frames, &err)
 				if err.kind != .None {
 					err.cleanup_value = value.take_value(&completed)
 					return value.invalid_value(), i, err
 				}
 				return completed, i, {}
 			}
-			parent := &frames[active - 1]
-			append_error := append_array_element(&parent.array, &completed, completed_open)
-			if append_error.kind != .None {
-				err = take_scalar_parse_error(&append_error)
-				frames[active].array = value.take_value(&completed)
-				retire_array_parse_state(frames, frame_memory, frame_allocator, active + 1, &err)
+			attach_error := attach_container_value(frame_stack_top(&frames), &completed, completed_open)
+			if attach_error.kind != .None {
+				err = take_scalar_parse_error(&attach_error)
+				restore_error := push_container_frame(&frames, &completed, completed_open, frame.kind)
+				if restore_error.kind != .None {
+					retain_failed_value(&completed, &err)
+				}
+				retire_frame_stack(&frames, &err)
 				return value.invalid_value(), i, err
 			}
-			parent.expect_value = false
-			parent.after_comma = false
 			continue
 		}
 
-		switch c {
-		case ',':
-			frame.expect_value = true
-			frame.after_comma = true
-			i += 1
-			continue
-		case '}':
-			err = {
-				kind = .Object_Key_Value_Pairs_Required,
-				detection_offset = i,
-				cause_offset = i,
-				has_cause_offset = true,
-			}
-		case ':':
-			err = {
-				kind = .Unexpected_Colon,
-				detection_offset = i,
-				cause_offset = i,
-				has_cause_offset = true,
-			}
-		case:
+		// Any unhandled structural byte is either a new nested value or a
+		// separator conflict. Scalars are fully scanned before that conflict is
+		// reported, matching jq's detection cursor.
+		expecting_member := frame.kind == .Array && frame.expect_value ||
+			frame.kind == .Object && (frame.object_phase == .Key || frame.object_phase == .Value)
+		if !expecting_member {
 			second_at := i
-			if c != '[' && c != '{' {
+			if c == '[' || c == '{' {
+				err = {kind = .Expected_Separator, detection_offset = i, cause_offset = i, has_cause_offset = true}
+			} else {
 				second: value.Value
 				second, i, err = parse_scalar_at(input, second_at, allocator)
-				if err.kind != .None {
-					retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-					return value.invalid_value(), i, err
-				}
-				detection := literal_detection_offset(input, i)
-				if input[second_at] == '"' {
-					detection = i - 1
-				}
-				err = {
-					kind = .Expected_Separator,
-					detection_offset = detection,
-					cause_offset = second_at,
-					has_cause_offset = true,
-				}
-				retain_failed_value(&second, &err)
-			} else {
-				err = {
-					kind = .Expected_Separator,
-					detection_offset = i,
-					cause_offset = i,
-					has_cause_offset = true,
+				if err.kind == .None {
+					detection := literal_detection_offset(input, i)
+					if input[second_at] == '"' do detection = i - 1
+					err = {kind = .Expected_Separator, detection_offset = detection, cause_offset = second_at, has_cause_offset = true}
+					retain_failed_value(&second, &err)
 				}
 			}
+			retire_frame_stack(&frames, &err)
+			return value.invalid_value(), i, err
 		}
-		retire_array_parse_state(frames, frame_memory, frame_allocator, active, &err)
-		return value.invalid_value(), i, err
+
+		member_at := i
+		if c == '[' || c == '{' {
+			child_kind := container_kind.Array
+			if c == '{' do child_kind = .Object
+			// The opener limit was checked above, before any allocation.
+			syntactic_entries += 1
+			child, child_error := new_container(child_kind, allocator)
+			if child_error.kind != .None {
+				err = take_scalar_parse_error(&child_error)
+				err.detection_offset = i
+				err.cause_offset = i
+				err.has_cause_offset = true
+				retire_frame_stack(&frames, &err)
+				return value.invalid_value(), i, err
+			}
+			frame_error := push_container_frame(&frames, &child, i, child_kind)
+			if frame_error.kind != .None {
+				err = take_scalar_parse_error(&frame_error)
+				retain_failed_value(&child, &err)
+				retire_frame_stack(&frames, &err)
+				return value.invalid_value(), i, err
+			}
+			i += 1
+			continue
+		}
+
+		member: value.Value
+		member, i, err = parse_scalar_at(input, i, allocator)
+		if err.kind != .None {
+			retire_frame_stack(&frames, &err)
+			return value.invalid_value(), i, err
+		}
+		attach_error := attach_container_value(frame, &member, member_at)
+		if attach_error.kind != .None {
+			err = take_scalar_parse_error(&attach_error)
+			retain_failed_value(&member, &err)
+			retire_frame_stack(&frames, &err)
+			return value.invalid_value(), i, err
+		}
 	}
 }
 
@@ -1367,10 +1653,8 @@ parse_one_value_at :: proc(input: string, start: int, allocator: runtime.Allocat
 	err: Scalar_Parse_Error,
 ) {
 	switch input[start] {
-	case '[':
-		return parse_array_at(input, start, allocator)
-	case '{':
-		result, err = parse_failure(.Object_Not_Supported, start)
+	case '[', '{':
+		return parse_container_at(input, start, allocator)
 	case ']':
 		result, err = parse_failure(.Unmatched_Array_Closer, start)
 	case '}':

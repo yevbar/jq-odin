@@ -29,7 +29,7 @@ array_element :: proc(t: ^testing.T, array: ^value.Value, index: int) -> value.V
 }
 
 @(test)
-parse_value_preserves_scalars_and_rejects_objects :: proc(t: ^testing.T) {
+parse_value_preserves_scalars_and_accepts_objects :: proc(t: ^testing.T) {
 	inputs := [5]string{"null", " true ", "-12.5", `"text"`, "\xef\xbb\xbf false"}
 	kinds := [5]value.Kind{.Null, .Boolean, .Number, .String, .Boolean}
 	for input, index in inputs {
@@ -38,8 +38,14 @@ parse_value_preserves_scalars_and_rejects_objects :: proc(t: ^testing.T) {
 		testing.expect_value(t, value.kind_of(&parsed), kinds[index])
 		testing.expect_value(t, value.destroy_value(&parsed), runtime.Allocator_Error.None)
 	}
-	expect_array_error_at(t, `{"x": 1}`, .Object_Not_Supported, 0, 0)
-	expect_array_error_at(t, `[{"x": 1}]`, .Object_Not_Supported, 1, 1)
+	object, object_error := parse_value(`{"x": 1}`, context.allocator)
+	testing.expect_value(t, object_error.kind, Scalar_Parse_Error_Kind.None)
+	testing.expect_value(t, value.kind_of(&object), value.Kind.Object)
+	testing.expect_value(t, value.destroy_value(&object), runtime.Allocator_Error.None)
+	mixed, mixed_error := parse_value(`[{"x": 1}]`, context.allocator)
+	testing.expect_value(t, mixed_error.kind, Scalar_Parse_Error_Kind.None)
+	testing.expect_value(t, value.kind_of(&mixed), value.Kind.Array)
+	testing.expect_value(t, value.destroy_value(&mixed), runtime.Allocator_Error.None)
 
 	legacy, legacy_error := parse_scalar("[]", context.allocator)
 	testing.expect_value(t, value.kind_of(&legacy), value.Kind.Invalid)
@@ -142,7 +148,7 @@ later_input_uses_jq_one_shot_precedence :: proc(t: ^testing.T) {
 	expect_array_error_at(t, "[] 2", .Unexpected_Extra_Values, 3, 3)
 	expect_array_error_at(t, "[] 1e+", .Invalid_Number, 5, 6)
 	expect_array_error_at(t, "[] [1,]", .Expected_Array_Element, 6, 6)
-	expect_array_error_at(t, "[] {", .Object_Not_Supported, 3, 3)
+	expect_array_error_at(t, "[] {", .Unfinished_Object, 3, 4)
 	expect_array_error_at(t, "null false", .Unexpected_Extra_Values, 5, 5)
 	expect_array_error_at(t, "null [", .Unfinished_Array, 5, 6)
 }
@@ -219,30 +225,30 @@ nested_null_input :: proc(depth: int) -> []byte {
 }
 
 @(test)
-depth_limit_counts_syntactic_container_frames :: proc(t: ^testing.T) {
-	depths := [3]int{9_999, 10_000, 10_001}
-	for depth in depths {
-		bytes := nested_null_input(depth)
-		parsed, err := parse_value(transmute(string)bytes, context.allocator)
-		if depth <= MAX_PARSING_DEPTH {
-			testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.None)
-			testing.expect_value(t, value.kind_of(&parsed), value.Kind.Array)
-			testing.expect_value(t, value.destroy_value(&parsed), runtime.Allocator_Error.None)
-		} else {
-			testing.expect_value(t, value.kind_of(&parsed), value.Kind.Invalid)
-			testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.Depth_Limit)
-			testing.expect_value(t, err.detection_offset, MAX_PARSING_DEPTH)
-			testing.expect_value(t, err.cause_offset, MAX_PARSING_DEPTH)
-			testing.expect_value(t, destroy_scalar_parse_error(&err), runtime.Allocator_Error.None)
-		}
-		delete(bytes)
-	}
+public_parser_enforces_array_syntactic_entry_boundary :: proc(t: ^testing.T) {
+	accepted_bytes := nested_null_input(MAX_PARSING_DEPTH)
+	accepted, accepted_error := parse_value(transmute(string)accepted_bytes, context.allocator)
+	delete(accepted_bytes)
+	testing.expect_value(t, accepted_error.kind, Scalar_Parse_Error_Kind.None)
+	testing.expect_value(t, value.kind_of(&accepted), value.Kind.Array)
+	testing.expect_value(t, value.destroy_value(&accepted), runtime.Allocator_Error.None)
 
-	brackets := make([]byte, MAX_PARSING_DEPTH + 4)
+	rejected_bytes := nested_null_input(MAX_PARSING_DEPTH + 1)
+	rejected, rejected_error := parse_value(transmute(string)rejected_bytes, context.allocator)
+	delete(rejected_bytes)
+	testing.expect_value(t, value.kind_of(&rejected), value.Kind.Invalid)
+	testing.expect_value(t, rejected_error.kind, Scalar_Parse_Error_Kind.Depth_Limit)
+	testing.expect_value(t, rejected_error.detection_offset, MAX_PARSING_DEPTH)
+	testing.expect(t, rejected_error.has_cause_offset)
+	testing.expect_value(t, rejected_error.cause_offset, MAX_PARSING_DEPTH)
+	testing.expect_value(t, destroy_scalar_parse_error(&rejected_error), runtime.Allocator_Error.None)
+
+	brackets := make([]byte, (MAX_PARSING_DEPTH + 1) * 2 + 4)
 	brackets[0] = '['
 	brackets[1] = '"'
-	for i in 0..<MAX_PARSING_DEPTH {
+	for i in 0..<MAX_PARSING_DEPTH + 1 {
 		brackets[2 + i] = '['
+		brackets[2 + MAX_PARSING_DEPTH + 1 + i] = '}'
 	}
 	brackets[len(brackets) - 2] = '"'
 	brackets[len(brackets) - 1] = ']'
@@ -250,20 +256,28 @@ depth_limit_counts_syntactic_container_frames :: proc(t: ^testing.T) {
 	testing.expect_value(t, string_error.kind, Scalar_Parse_Error_Kind.None)
 	testing.expect_value(t, value.destroy_value(&string_array), runtime.Allocator_Error.None)
 	delete(brackets)
+}
 
-	mixed := make([]byte, MAX_PARSING_DEPTH + 1)
-	for i in 0..<MAX_PARSING_DEPTH {
-		mixed[i] = '['
-	}
-	mixed[MAX_PARSING_DEPTH] = '{'
-	expect_array_error_at(
-		t,
-		transmute(string)mixed,
-		.Depth_Limit,
-		MAX_PARSING_DEPTH,
-		MAX_PARSING_DEPTH,
-	)
-	delete(mixed)
+@(test)
+public_parser_gives_boundary_opener_depth_precedence_over_separator :: proc(t: ^testing.T) {
+	shallow, shallow_error := parse_value("[null[", context.allocator)
+	testing.expect_value(t, value.kind_of(&shallow), value.Kind.Invalid)
+	testing.expect_value(t, shallow_error.kind, Scalar_Parse_Error_Kind.Expected_Separator)
+	testing.expect_value(t, shallow_error.detection_offset, 5)
+	testing.expect_value(t, destroy_scalar_parse_error(&shallow_error), runtime.Allocator_Error.None)
+
+	boundary := make([]byte, MAX_PARSING_DEPTH + 5)
+	for i in 0..<MAX_PARSING_DEPTH do boundary[i] = '['
+	copy(boundary[MAX_PARSING_DEPTH:MAX_PARSING_DEPTH + 4], "null")
+	boundary[len(boundary) - 1] = '{'
+	boundary_value, boundary_error := parse_value(transmute(string)boundary, context.allocator)
+	delete(boundary)
+	testing.expect_value(t, value.kind_of(&boundary_value), value.Kind.Invalid)
+	testing.expect_value(t, boundary_error.kind, Scalar_Parse_Error_Kind.Depth_Limit)
+	testing.expect_value(t, boundary_error.detection_offset, MAX_PARSING_DEPTH + 4)
+	testing.expect(t, boundary_error.has_cause_offset)
+	testing.expect_value(t, boundary_error.cause_offset, MAX_PARSING_DEPTH + 4)
+	testing.expect_value(t, destroy_scalar_parse_error(&boundary_error), runtime.Allocator_Error.None)
 }
 
 @(test)
@@ -364,9 +378,9 @@ frame_and_value_cleanup_failures_are_retryable :: proc(t: ^testing.T) {
 		destroy_scalar_parse_error(&err),
 		runtime.Allocator_Error.Invalid_Pointer,
 	)
-	for err.kind != .None {
-		_ = destroy_scalar_parse_error(&err)
-	}
+	cleanup_result, _ := retry_scalar_parse_error_cleanup(&err)
+	testing.expect_value(t, cleanup_result, scalar_parse_cleanup_retry_result.Terminal)
+	testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.None)
 	testing.expect_value(t, value_probe.live, 0)
 	testing.expect_value(t, temporary_probe.live, 0)
 }

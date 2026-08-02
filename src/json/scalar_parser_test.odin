@@ -490,10 +490,15 @@ allocator_probe :: struct {
 	allocation_limit: int,
 	maximum_request: int,
 	free_failures_remaining: int,
+	free_fail_at_plus_one:   int,
+	resize_calls:            int,
+	resize_unsupported:      bool,
+	resize_failure:          bool,
 	retired:        bool,
 	called_retired: bool,
 	nil_success:    bool,
 	short_success:  bool,
+	short_at_plus_one: int,
 }
 
 allocator_probe_proc :: proc(
@@ -521,7 +526,7 @@ allocator_probe_proc :: proc(
 		if probe.nil_success {
 			return nil, nil
 		}
-		if probe.short_success {
+		if probe.short_success || probe.short_at_plus_one == probe.allocations {
 			short_size := max(size - 1, 0)
 			result, err := probe.backing.procedure(
 				probe.backing.data,
@@ -550,12 +555,26 @@ allocator_probe_proc :: proc(
 			probe.live += 1
 		}
 		return result, err
+	case .Resize, .Resize_Non_Zeroed:
+		probe.resize_calls += 1
+		if probe.resize_unsupported do return nil, .Mode_Not_Implemented
+		if probe.resize_failure do return nil, .Out_Of_Memory
+		return probe.backing.procedure(
+			probe.backing.data,
+			mode,
+			size,
+			alignment,
+			old_memory,
+			old_size,
+			location,
+		)
 	case .Free:
 		probe.frees += 1
 		if probe.free_failures_remaining > 0 {
 			probe.free_failures_remaining -= 1
 			return nil, .Invalid_Pointer
 		}
+		if probe.free_fail_at_plus_one == probe.frees do return nil, .Invalid_Pointer
 		result, err := probe.backing.procedure(
 			probe.backing.data,
 			mode,
