@@ -23,6 +23,10 @@ The exact import edges are:
 - `eval`: may import `program`, `value`, and `diagnostic`; it must not import
   `compiler`.
 
+`src/eval/external_layout_test` is a test-only consumer package. It imports
+`eval`, `program`, and `value` solely to verify their public package layout and
+creates no production import edge.
+
 The syntax tree keeps source-level JSON literals rather than runtime `Value`
 objects. This prevents the parser from depending on runtime ownership.
 

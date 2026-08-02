@@ -19,3 +19,6 @@ under `workstreams/` and owns complete directories to minimize merge conflicts.
 `src/diagnostic/**`, root build files, architecture documents, and shared
 contracts remain coordinator-owned until explicitly delegated.
 
+`src/eval/external_layout_test` remains owned by the `eval` workstream under
+`src/eval/**`. It is a test-only consumer package and does not change
+production package ownership.

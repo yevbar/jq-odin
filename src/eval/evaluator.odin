@@ -239,16 +239,35 @@ evaluator_storage :: struct {
 	misuse:           Misuse_Kind,
 }
 
+// Evaluator_Handle fixes the public union payload layout across package
+// boundaries. Its contents are reserved for package eval; callers construct
+// only the nil Evaluator and use the lifecycle procedures below.
+Evaluator_Handle :: distinct [31]u64
+
 // Evaluator is one address-stable owner. Odin assignment is not an ownership
 // operation: step_evaluator and destroy_evaluator reject a shallow copy before
-// consulting Program or allocator state.
+// consulting Program or allocator state. The public fixed-layout variant keeps
+// the nil union lifecycle while giving every importing package the same payload
+// size, alignment, and tag offset.
 Evaluator :: union {
-	evaluator_storage,
+	Evaluator_Handle,
 }
+
+#assert(size_of(evaluator_storage) == size_of(Evaluator_Handle))
+#assert(align_of(evaluator_storage) == align_of(Evaluator_Handle))
+#assert(size_of(Evaluator) == 256)
+#assert(align_of(Evaluator) == 8)
 
 @(private)
 storage_of :: proc(evaluator: ^Evaluator) -> ^evaluator_storage {
-	return &evaluator.(evaluator_storage)
+	handle := &evaluator.(Evaluator_Handle)
+	return cast(^evaluator_storage)rawptr(handle)
+}
+
+@(private)
+set_storage :: proc(evaluator: ^Evaluator, storage: evaluator_storage) {
+	evaluator^ = Evaluator_Handle{}
+	storage_of(evaluator)^ = storage
 }
 
 @(private)
@@ -391,12 +410,12 @@ init_evaluator :: proc(
 		if len(memory) > 0 {
 			free_error := runtime.mem_free_bytes(memory, allocator)
 			if free_error != nil && free_error != .Mode_Not_Implemented {
-				evaluator^ = evaluator_storage{
+				set_storage(evaluator, evaluator_storage{
 					allocator = allocator,
 					memory = memory,
 					self = evaluator,
 					state = .Cleanup_Only,
-				}
+				})
 				return {kind = .Resource_Failure, resource_error = free_error}
 			}
 		}
@@ -408,7 +427,7 @@ init_evaluator :: proc(
 
 	frames := (cast([^]eval_frame)raw_data(memory))[:capacity]
 	for index in 0..<capacity do frames[index] = {}
-	evaluator^ = evaluator_storage{
+	set_storage(evaluator, evaluator_storage{
 		compiled = compiled,
 		sealed_program = sealed_program,
 		allocator = allocator,
@@ -417,7 +436,7 @@ init_evaluator :: proc(
 		frame_count = 1,
 		self = evaluator,
 		state = .Active,
-	}
+	})
 	storage := storage_of(evaluator)
 	storage.frames[0] = eval_frame{
 		instruction = root,

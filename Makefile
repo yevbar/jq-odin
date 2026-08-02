@@ -12,6 +12,8 @@ PACKAGE_DIRS := \
 	src/program \
 	src/compiler \
 	src/eval
+TEST_PACKAGE_DIRS := \
+	src/eval/external_layout_test
 
 .PHONY: bootstrap check check-layout check-packages doctor test upstream-status validate
 
@@ -25,7 +27,7 @@ check-layout:
 	./scripts/check-layout.sh
 
 check-packages:
-	@set -e; for package_dir in $(PACKAGE_DIRS); do \
+	@set -e; for package_dir in $(PACKAGE_DIRS) $(TEST_PACKAGE_DIRS); do \
 		echo "Checking $$package_dir"; \
 		$(ODIN) check "$$package_dir" -no-entry-point $(ODIN_FLAGS); \
 	done
@@ -33,7 +35,7 @@ check-packages:
 check: check-layout check-packages
 
 test:
-	@set -e; for package_dir in $(PACKAGE_DIRS); do \
+	@set -e; for package_dir in $(PACKAGE_DIRS) $(TEST_PACKAGE_DIRS); do \
 		echo "Testing $$package_dir"; \
 		$(ODIN) test "$$package_dir" $(ODIN_FLAGS); \
 	done

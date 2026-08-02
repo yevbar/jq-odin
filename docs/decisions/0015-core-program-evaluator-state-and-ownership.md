@@ -44,11 +44,32 @@ null, reported runtime errors for boolean, number, string, and array, `., .a`
 on a number emitted that number before the later error, and `(., .a)?`
 preserved the number while suppressing only the later runtime error.
 
+An Odin package-layout probe found that the original one-variant public union
+used a package-private payload. Both packages reported `Evaluator` as 256 bytes
+with alignment 8, while package `eval` reported its payload
+`evaluator_storage` as 248 bytes with alignment 8. In an importing package,
+`init_evaluator` wrote union metadata at byte offset 256: it changed the `u64`
+immediately after an `Evaluator` in a typed wrapper and corrupted allocator
+metadata after an exactly sized standalone allocation. The latter evaluated
+successfully but its exact free returned `Invalid_Pointer`. Making the union
+variant's fixed layout public removed the cross-package disagreement without
+changing either reported size.
+
 ## Decision
 
 `eval.Evaluator` is an address-stable, exclusive owner containing an explicit
-array of resumable frames. `init_evaluator` accepts only an inert Evaluator, a
-borrowed sealed Active Program, a live input owner, and an explicit allocator.
+array of resumable frames. Its public representation is a one-variant union
+whose variant is the fixed-layout `Evaluator_Handle`, a distinct `[31]u64`.
+The 248-byte, alignment-8 handle is reserved for package `eval`, which stores
+an identically sized and aligned private `evaluator_storage` in it. Compile-time
+assertions pin the handle, storage, and complete 256-byte, alignment-8 union
+layout. This retains nil-union construction and existing call sites while
+making the payload size, alignment, and tag position identical inside and
+outside the package. `init_evaluator` first selects the public handle variant
+and then initializes its private storage in place.
+
+`init_evaluator` accepts only an inert Evaluator, a borrowed sealed Active
+Program, a live input owner, and an explicit allocator.
 It validates the Program and allocates exact initial frame storage before
 taking the input. Success transfers the input and leaves the caller's Value
 Invalid. Ordinary allocation, size, or validation failure leaves the input
@@ -184,6 +205,13 @@ heap control block independent of the caller allocator. The production slice
 instead rejects ordinary accidental copies and documents the remaining Odin
 byte-copy limitation.
 
+Increasing the caller's allocation or adding padding after `Evaluator` was
+rejected because it would hide an incorrect public type layout and leave typed
+wrappers unsafe. Replacing `Evaluator` with a plain struct was unnecessary and
+would have removed the nil-union lifecycle used by existing callers. Exposing
+the semantic fields of `evaluator_storage` was rejected because callers need
+the representation's layout, not access to the ownership state machine.
+
 ## Consequences
 
 The new public contract affects `eval` and future driver consumers. `program`
@@ -227,5 +255,10 @@ contract, adding write mediation, or redesigning verification is deferred.
   states are pending; require cleanup-before-Misuse and exact terminal replay.
 - Run evaluator tests with one and four test threads in default, debug, speed,
   assertions-disabled, and debug+ASan configurations; then run `make validate`.
+- From a separate Odin package, pin the 256-byte/alignment-8 public layout and
+  typed-wrapper offsets; preserve distinct adjacent guards through init,
+  output, Done, runtime-error replay, Program-lifetime Misuse replay, cleanup
+  failure/retry, and destroy; allocate exactly 256 aligned bytes and require
+  its exact free to succeed after evaluation and destruction.
 - Required independent review lanes: source-aware semantic parity, Odin
   ownership/resource safety, and generator/failure-path test-gap review.
