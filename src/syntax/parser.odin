@@ -13,16 +13,17 @@ Node_Kind :: enum {
 	Null,
 	Boolean,
 	Number,
+	String,
 	Negate,
 }
 
 Node_Id :: distinct int
 
 // Node is source-level syntax. All spans borrow the Parser's Source. Number's
-// number_text is an exact, length-delimited copy owned by the Parser; it is
-// present only when has_number_text is true and remains valid until Parser
-// destruction begins. child and left/right are indices into the Parser-owned
-// node arena.
+// number_text and String's string_text are independently allocated,
+// length-delimited bytes owned by the Parser. Each is present only when its
+// corresponding has_* flag is true and remains valid until Parser destruction
+// begins. child and left/right are indices into the Parser-owned node arena.
 // Field has child only when it is a postfix suffix; a standalone field applies
 // to implicit identity and therefore has no explicit child node.
 Node :: struct {
@@ -37,6 +38,8 @@ Node :: struct {
 	boolean_value:  bool,
 	number_text:    string,
 	has_number_text: bool,
+	string_text:     string,
+	has_string_text: bool,
 }
 
 Parse_Error_Kind :: enum {
@@ -48,6 +51,7 @@ Parse_Error_Kind :: enum {
 Parse_Expectation :: enum {
 	Expression,
 	Close_Paren,
+	Close_String,
 	End_Of_Input,
 }
 
@@ -59,6 +63,8 @@ Parse_Error :: struct {
 	expected:   Parse_Expectation,
 	actual:     Token_Kind,
 	has_actual: bool,
+	// message is either empty or a static, non-owning diagnostic string.
+	message: string,
 }
 
 Parse_Outcome_Kind :: enum {
@@ -97,12 +103,18 @@ JQ_GROUP_OR_ORDERED_STACK_OVERHEAD :: 6
 JQ_QUERY_OPERATOR_STACK_OVERHEAD   :: 7
 JQ_FIRST_POSTFIX_STACK_INCREMENT   :: 1
 JQ_OPEN_PIPE_STACK_ENTRIES         :: 2
+JQ_STRING_TERM_STACK_INCREMENT     :: 1
 
 // Number_Allocation is parser-private ownership authority. Public Node string
 // headers are deliberately not consulted during cleanup because parser_nodes
 // exposes them for caller mutation.
 @(private="package")
 Number_Allocation :: struct {
+	memory: []byte,
+}
+
+@(private="package")
+String_Allocation :: struct {
 	memory: []byte,
 }
 
@@ -116,11 +128,13 @@ Parser :: struct {
 	scanner:             Scanner,
 	nodes:               Fallible_Buffer(Node),
 	number_allocations:  Fallible_Buffer(Number_Allocation),
+	string_allocations:  Fallible_Buffer(String_Allocation),
 	allocator:           runtime.Allocator,
 	state:               Parser_State,
 	self:                ^Parser,
 	lookahead:           Scan_Outcome,
 	pending_number_text: []byte,
+	pending_string_text: []byte,
 	failed:              bool,
 	failure:             Parse_Outcome,
 }
@@ -162,6 +176,7 @@ init_parser :: proc(
 	parser.allocator = allocator
 	init_fallible_buffer(&parser.nodes, allocator)
 	init_fallible_buffer(&parser.number_allocations, allocator)
+	init_fallible_buffer(&parser.string_allocations, allocator)
 	parser.state = .Ready
 	parser.self = parser
 	return true
@@ -249,6 +264,14 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 		}
 		parser.pending_number_text = nil
 	}
+	if parser.pending_string_text != nil {
+		pending_error := runtime.mem_free_bytes(parser.pending_string_text, parser.allocator)
+		if pending_error != nil && pending_error != .Mode_Not_Implemented {
+			parser.state = .Cleanup_Failed
+			return pending_error
+		}
+		parser.pending_string_text = nil
+	}
 
 	if parser.number_allocations.state != .Empty {
 		transfer_error := retry_fallible_buffer_transfer(&parser.number_allocations)
@@ -274,6 +297,30 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 		}
 	}
 
+	if parser.string_allocations.state != .Empty {
+		transfer_error := retry_fallible_buffer_transfer(&parser.string_allocations)
+		if transfer_error != nil {
+			parser.state = .Cleanup_Failed
+			return transfer_error
+		}
+		for index in 0..<parser.string_allocations.count {
+			allocation := &parser.string_allocations.storage[index]
+			if allocation.memory != nil {
+				text_error := runtime.mem_free_bytes(allocation.memory, parser.allocator)
+				if text_error != nil && text_error != .Mode_Not_Implemented {
+					parser.state = .Cleanup_Failed
+					return text_error
+				}
+				allocation.memory = nil
+			}
+		}
+		allocations_error := destroy_fallible_buffer(&parser.string_allocations)
+		if allocations_error != nil {
+			parser.state = .Cleanup_Failed
+			return allocations_error
+		}
+	}
+
 	if parser.nodes.state != .Empty {
 		nodes_error := destroy_fallible_buffer(&parser.nodes)
 		if nodes_error != nil {
@@ -286,6 +333,7 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 	parser.allocator = {}
 	parser.lookahead = {}
 	parser.pending_number_text = nil
+	parser.pending_string_text = nil
 	parser.failed = false
 	parser.failure = {}
 	parser.state = .Destroyed
@@ -386,6 +434,19 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				advance(parser)
 				new_term, number_ok := append_number_node(parser, token.span)
 				if !number_ok {
+					return {}, false
+				}
+				term = new_term
+			case .String_Start:
+				new_term, string_ok := append_string_node(
+					parser,
+					token.span,
+					group_depth+minus_depth,
+					live_pipe_count,
+					term_prefix_overhead,
+					term_has_postfix,
+				)
+				if !string_ok {
 					return {}, false
 				}
 				term = new_term
@@ -657,7 +718,7 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 	}
 	token := parser.lookahead.token
 	#partial switch token.kind {
-	case .Dot, .Field, .Number, .Minus, .Open_Paren:
+	case .Dot, .Field, .Number, .String_Start, .Minus, .Open_Paren:
 		return true
 	case .Identifier:
 		spelling := token_spelling(parser, token)
@@ -728,6 +789,369 @@ append_number_node :: proc(parser: ^Parser, span: diagnostic.Span) -> (Node_Id, 
 	stored.number_text = string(memory)
 	stored.has_number_text = true
 	return node, true
+}
+
+// append_string_node consumes one complete, non-interpolated quoted string.
+// Validation and decoding are iterative. The node is appended only after its
+// decoded storage and private ownership record have both committed.
+@(private="package")
+append_string_node :: proc(
+	parser: ^Parser,
+	open_span: diagnostic.Span,
+	live_prefix_depth, live_pipe_count, event_overhead: int,
+	has_postfix: bool,
+) -> (Node_Id, bool) {
+	open_start, open_end, open_ok := diagnostic.span_offsets(parser.source, open_span)
+	assert(open_ok && open_end == open_start+1)
+	advance(parser)
+	if parser.failed {
+		return {}, false
+	}
+	// A valid StringStart reduction and the empty QQString state add one live
+	// generated-parser entry beyond an ordinary one-token Term. A lexical error
+	// discovered while fetching the first string lookahead wins before that
+	// state is entered, matching jq's event-local parser-stack behavior.
+	if parser.lookahead.kind != .Lexical_Error &&
+	   parser_stack_budget_exhausted(
+		live_prefix_depth,
+		live_pipe_count,
+		event_overhead+JQ_STRING_TERM_STACK_INCREMENT,
+		has_postfix,
+	) {
+		fail_resource(parser, .Out_Of_Memory)
+		return {}, false
+	}
+	close_span: diagnostic.Span
+	for {
+		if token_is(parser, .String_Text) {
+			advance(parser)
+			continue
+		}
+		if token_is(parser, .String_End) {
+			close_span = parser.lookahead.token.span
+			break
+		}
+		if token_is(parser, .String_Interpolation_Start) {
+			fail_at_current(parser, .Unexpected_Token, .Close_String)
+			parser.failure.error.message = "string interpolation is not supported"
+			return {}, false
+		}
+		if parser.lookahead.kind == .End_Of_Input {
+			fail_unterminated_string(parser, open_span)
+			return {}, false
+		}
+		fail_from_lookahead(parser, .Close_String)
+		return {}, false
+	}
+
+	close_start, _, close_ok := diagnostic.span_offsets(parser.source, close_span)
+	assert(close_ok && close_start >= open_end)
+	contents := diagnostic.source_bytes(parser.source)[open_end:close_start]
+	sizing := decoded_string_size(contents)
+	if sizing.kind == .Size_Overflow {
+		fail_resource(parser, .Out_Of_Memory)
+		return {}, false
+	}
+	if sizing.kind == .Invalid {
+		span, span_ok := diagnostic.make_span(
+			parser.source,
+			open_end+sizing.error_offset,
+			open_end+sizing.error_offset+1,
+		)
+		assert(span_ok)
+		fail_string(parser, span, sizing.error_message)
+		return {}, false
+	}
+	decoded_count, narrow_ok := narrow_decoded_string_size(sizing.decoded_bytes)
+	if !narrow_ok {
+		fail_resource(parser, .Out_Of_Memory)
+		return {}, false
+	}
+
+	allocation_size := decoded_count
+	if allocation_size == 0 {
+		// Empty strings still receive independent parser-owned backing.
+		allocation_size = 1
+	}
+	memory, allocation_error := runtime.mem_alloc_bytes(allocation_size, 1, parser.allocator)
+	if allocation_error != nil || len(memory) != allocation_size || raw_data(memory) == nil {
+		resource_error := allocation_error
+		if resource_error == nil {
+			resource_error = .Out_Of_Memory
+		}
+		if raw_data(memory) != nil {
+			free_error := runtime.mem_free_bytes(memory, parser.allocator)
+			if free_error != nil && free_error != .Mode_Not_Implemented {
+				parser.pending_string_text = memory
+				resource_error = free_error
+			}
+		}
+		fail_resource(parser, resource_error)
+		return {}, false
+	}
+
+	decoded := memory[:decoded_count]
+	decode_string(contents, decoded)
+	registry_error := append_fallible_buffer(
+		&parser.string_allocations,
+		String_Allocation{memory = memory},
+	)
+	if registry_error != nil {
+		free_error := runtime.mem_free_bytes(memory, parser.allocator)
+		resource_error := registry_error
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			parser.pending_string_text = memory
+			resource_error = free_error
+		}
+		fail_resource(parser, resource_error)
+		return {}, false
+	}
+
+	span, span_ok := spanning(parser, open_span, close_span)
+	assert(span_ok)
+	node, node_ok := append_node(parser, Node{
+		kind = .String,
+		span = span,
+		string_text = string(decoded),
+		has_string_text = true,
+	})
+	if !node_ok {
+		return {}, false
+	}
+	advance(parser)
+	return node, true
+}
+
+@(private="package")
+Decoded_String_Size_Kind :: enum {
+	Success,
+	Invalid,
+	Size_Overflow,
+}
+
+@(private="package")
+Decoded_String_Size :: struct {
+	kind:          Decoded_String_Size_Kind,
+	decoded_bytes: u64,
+	error_offset:  int,
+	error_message: string,
+}
+
+@(private="package")
+decoded_string_source_size_fits :: proc(source_bytes: u64) -> bool {
+	return source_bytes <= u64(max(int))
+}
+
+@(private="package")
+checked_decoded_string_size_add :: proc(
+	total: ^u64,
+	unit_count, encoded_bytes_per_unit: u64,
+) -> bool {
+	limit := u64(max(int))
+	if encoded_bytes_per_unit != 0 && unit_count > limit/encoded_bytes_per_unit {
+		return false
+	}
+	increment := unit_count*encoded_bytes_per_unit
+	if total^ > limit-increment {
+		return false
+	}
+	total^ += increment
+	return true
+}
+
+@(private="package")
+narrow_decoded_string_size :: proc(decoded_bytes: u64) -> (int, bool) {
+	if decoded_bytes > u64(max(int)) {
+		return 0, false
+	}
+	return int(decoded_bytes), true
+}
+
+@(private="package")
+decoded_string_size :: proc(contents: string) -> Decoded_String_Size {
+	if !decoded_string_source_size_fits(u64(len(contents))) {
+		return Decoded_String_Size{kind = .Size_Overflow}
+	}
+	decoded_count: u64
+	index := 0
+	for index < len(contents) {
+		byte := contents[index]
+		if byte == '\\' {
+			if index+1 >= len(contents) {
+				return Decoded_String_Size{
+					kind = .Invalid,
+					error_offset = index,
+					error_message = "Expected escape character at end of string",
+				}
+			}
+			escape := contents[index+1]
+			switch escape {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+				if !checked_decoded_string_size_add(&decoded_count, 1, 1) {
+					return Decoded_String_Size{kind = .Size_Overflow}
+				}
+				index += 2
+			case 'u':
+				codepoint, ok := parse_unicode_escape(contents, index)
+				if !ok {
+					return Decoded_String_Size{
+						kind = .Invalid,
+						error_offset = index,
+						error_message = "Invalid \\uXXXX escape",
+					}
+				}
+				index += 6
+				if codepoint >= 0xd800 && codepoint <= 0xdbff {
+					low, low_ok := parse_unicode_escape(contents, index)
+					if !low_ok || low < 0xdc00 || low > 0xdfff {
+						return Decoded_String_Size{
+							kind = .Invalid,
+							error_offset = index-6,
+							error_message = "Invalid \\uXXXX\\uXXXX surrogate pair escape",
+						}
+					}
+					codepoint = 0x10000 + ((codepoint-0xd800)<<10) + (low-0xdc00)
+					index += 6
+				} else if codepoint >= 0xdc00 && codepoint <= 0xdfff {
+					// jq's JSON decoder first emits the surrogate encoding, then
+					// jv_string_sized replaces that invalid UTF-8 point with U+FFFD.
+					codepoint = 0xfffd
+				}
+				if !checked_decoded_string_size_add(
+					&decoded_count,
+					1,
+					u64(utf8_encoded_size(codepoint)),
+				) {
+					return Decoded_String_Size{kind = .Size_Overflow}
+				}
+			case:
+				return Decoded_String_Size{
+					kind = .Invalid,
+					error_offset = index,
+					error_message = "Invalid escape",
+				}
+			}
+			continue
+		}
+		source_width, codepoint, utf8_ok := utf8_decode_unit(contents, index)
+		encoded_width := u64(utf8_encoded_size(codepoint)) if utf8_ok else u64(3)
+		if !checked_decoded_string_size_add(&decoded_count, 1, encoded_width) {
+			return Decoded_String_Size{kind = .Size_Overflow}
+		}
+		index += source_width
+	}
+	return Decoded_String_Size{kind = .Success, decoded_bytes = decoded_count}
+}
+
+@(private="package")
+decode_string :: proc(contents: string, output: []byte) {
+	in_at, out_at := 0, 0
+	for in_at < len(contents) {
+		if contents[in_at] != '\\' {
+			source_width, _, ok := utf8_decode_unit(contents, in_at)
+			if ok {
+				copy(output[out_at:out_at+source_width], contents[in_at:in_at+source_width])
+				out_at += source_width
+			} else {
+				out_at += encode_utf8(0xfffd, output[out_at:])
+			}
+			in_at += source_width
+			continue
+		}
+		escape := contents[in_at+1]
+		switch escape {
+		case '"', '\\', '/': output[out_at] = escape
+		case 'b': output[out_at] = '\b'
+		case 'f': output[out_at] = '\f'
+		case 'n': output[out_at] = '\n'
+		case 'r': output[out_at] = '\r'
+		case 't': output[out_at] = '\t'
+		case 'u':
+			codepoint, ok := parse_unicode_escape(contents, in_at)
+			assert(ok)
+			in_at += 4
+			if codepoint >= 0xd800 && codepoint <= 0xdbff {
+				low, low_ok := parse_unicode_escape(contents, in_at+2)
+				assert(low_ok)
+				codepoint = 0x10000 + ((codepoint-0xd800)<<10) + (low-0xdc00)
+				in_at += 6
+			} else if codepoint >= 0xdc00 && codepoint <= 0xdfff {
+				codepoint = 0xfffd
+			}
+			out_at += encode_utf8(codepoint, output[out_at:]) - 1
+		}
+		in_at += 2
+		out_at += 1
+	}
+	assert(out_at == len(output))
+}
+
+@(private="package")
+utf8_decode_unit :: proc(text: string, at: int) -> (int, u32, bool) {
+	first := text[at]
+	if first < 0x80 {
+		return 1, u32(first), true
+	}
+	continuation := proc(byte: u8) -> bool { return byte >= 0x80 && byte <= 0xbf }
+	width := 1
+	codepoint := u32(0)
+	minimum := u32(0)
+	if first >= 0xc2 && first <= 0xdf {
+		width, codepoint, minimum = 2, u32(first&0x1f), 0x80
+	} else if first >= 0xe0 && first <= 0xef {
+		width, codepoint, minimum = 3, u32(first&0x0f), 0x800
+	} else if first >= 0xf0 && first <= 0xf4 {
+		width, codepoint, minimum = 4, u32(first&0x07), 0x10000
+	} else {
+		return 1, 0, false
+	}
+	if at+width > len(text) {
+		return len(text)-at, 0, false
+	}
+	for offset in 1..<width {
+		byte := text[at+offset]
+		if !continuation(byte) {
+			return offset, 0, false
+		}
+		codepoint = (codepoint<<6) | u32(byte&0x3f)
+	}
+	if codepoint < minimum ||
+	   (codepoint >= 0xd800 && codepoint <= 0xdfff) ||
+	   codepoint > 0x10ffff {
+		return width, 0, false
+	}
+	return width, codepoint, true
+}
+
+@(private="package")
+utf8_encoded_size :: proc(codepoint: u32) -> int {
+	if codepoint <= 0x7f do return 1
+	if codepoint <= 0x7ff do return 2
+	if codepoint <= 0xffff do return 3
+	return 4
+}
+
+@(private="package")
+encode_utf8 :: proc(codepoint: u32, output: []byte) -> int {
+	width := utf8_encoded_size(codepoint)
+	assert(len(output) >= width)
+	switch width {
+	case 1:
+		output[0] = u8(codepoint)
+	case 2:
+		output[0] = 0xc0 | u8(codepoint>>6)
+		output[1] = 0x80 | u8(codepoint&0x3f)
+	case 3:
+		output[0] = 0xe0 | u8(codepoint>>12)
+		output[1] = 0x80 | u8((codepoint>>6)&0x3f)
+		output[2] = 0x80 | u8(codepoint&0x3f)
+	case 4:
+		output[0] = 0xf0 | u8(codepoint>>18)
+		output[1] = 0x80 | u8((codepoint>>12)&0x3f)
+		output[2] = 0x80 | u8((codepoint>>6)&0x3f)
+		output[3] = 0x80 | u8(codepoint&0x3f)
+	}
+	return width
 }
 
 @(private="package")
@@ -861,6 +1285,87 @@ fail_at_current :: proc(
 }
 
 @(private="package")
+fail_string :: proc(parser: ^Parser, span: diagnostic.Span, message: string) {
+	if parser.failed {
+		return
+	}
+	parser.failed = true
+	parser.failure = Parse_Outcome{
+		kind = .Input_Error,
+		error = Parse_Error{
+			kind = .Lexical_Error,
+			span = span,
+			expected = .Close_String,
+			message = message,
+		},
+	}
+}
+
+@(private="package")
+fail_unterminated_string :: proc(parser: ^Parser, open_span: diagnostic.Span) {
+	if parser.failed {
+		return
+	}
+	parser.failed = true
+	parser.failure = Parse_Outcome{
+		kind = .Input_Error,
+		error = Parse_Error{
+			kind = .Unexpected_End,
+			span = open_span,
+			expected = .Close_String,
+			message = "unterminated string literal",
+		},
+	}
+}
+
+@(private="package")
+string_lexical_message :: proc(parser: ^Parser, span: diagnostic.Span) -> string {
+	start, end, ok := diagnostic.span_offsets(parser.source, span)
+	if !ok || end <= start {
+		return "Invalid string literal"
+	}
+	text := diagnostic.source_bytes(parser.source)[start:end]
+	index := 0
+	for index < len(text) {
+		if text[index] != '\\' {
+			// This is defensive for a malformed scanner span. Raw string tokens,
+			// including invalid UTF-8 units, are accepted and decoded separately.
+			source_width, _, _ := utf8_decode_unit(text, index)
+			index += source_width
+			continue
+		}
+		if index+1 >= len(text) {
+			// A lone reverse-solidus is an INVALID_CHARACTER lexer unit rather
+			// than a grouped JSON escape candidate.
+			return "Invalid escape"
+		}
+		switch text[index+1] {
+		case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+			index += 2
+		case 'u':
+			if index+6 > len(text) {
+				return "Invalid \\uXXXX escape"
+			}
+			codepoint, unicode_ok := parse_unicode_escape(text, index)
+			if !unicode_ok {
+				return "Invalid characters in \\uXXXX escape"
+			}
+			index += 6
+			if codepoint >= 0xd800 && codepoint <= 0xdbff {
+				low, low_ok := parse_unicode_escape(text, index)
+				if !low_ok || low < 0xdc00 || low > 0xdfff {
+					return "Invalid \\uXXXX\\uXXXX surrogate pair escape"
+				}
+				index += 6
+			}
+		case:
+			return "Invalid escape"
+		}
+	}
+	return "Invalid string literal"
+}
+
+@(private="package")
 fail_from_lookahead :: proc(parser: ^Parser, expected: Parse_Expectation) {
 	if parser.failed {
 		return
@@ -873,11 +1378,12 @@ fail_from_lookahead :: proc(parser: ^Parser, expected: Parse_Expectation) {
 		parser.failed = true
 		parser.failure = Parse_Outcome{
 			kind = .Input_Error,
-			error = Parse_Error{
-				kind = .Lexical_Error,
-				span = parser.lookahead.error_span,
-				expected = expected,
-			},
+				error = Parse_Error{
+					kind = .Lexical_Error,
+					span = parser.lookahead.error_span,
+					expected = expected,
+					message = string_lexical_message(parser, parser.lookahead.error_span) if expected == .Close_String else "",
+				},
 		}
 	case .End_Of_Input:
 		span, ok := diagnostic.make_span(
@@ -889,11 +1395,12 @@ fail_from_lookahead :: proc(parser: ^Parser, expected: Parse_Expectation) {
 		parser.failed = true
 		parser.failure = Parse_Outcome{
 			kind = .Input_Error,
-			error = Parse_Error{
-				kind = .Unexpected_End,
-				span = span,
-				expected = expected,
-			},
+				error = Parse_Error{
+					kind = .Unexpected_End,
+					span = span,
+					expected = expected,
+					message = "unterminated string literal" if expected == .Close_String else "",
+				},
 		}
 	case .Resource_Failure:
 		fail_resource(parser, parser.lookahead.resource_error)

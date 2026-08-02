@@ -320,7 +320,6 @@ test_unary_minus_does_not_broaden_identifier_or_unsupported_term_subset :: proc(
 		{"-[]", 1, 2, .Open_Bracket},
 		{"-{}", 1, 2, .Open_Brace},
 		{"-$name", 1, 6, .Binding},
-		{"-\"x\"", 1, 2, .String_Start},
 		{"-+1", 1, 2, .Plus},
 	}
 

@@ -47,20 +47,30 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 
 	switch node.kind {
 	case .Identity, .Null:
-		return no_child && no_edges && no_name && !node.boolean_value && no_number
+		return no_child && no_edges && no_name && !node.boolean_value && no_number &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Field:
 		return (node.has_child || node.child == 0) && no_edges &&
-		       node.has_name_span && !node.boolean_value && no_number
+		       node.has_name_span && !node.boolean_value && no_number &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Parenthesized, .Optional, .Negate:
-		return node.has_child && no_edges && no_name && !node.boolean_value && no_number
+		return node.has_child && no_edges && no_name && !node.boolean_value && no_number &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Comma, .Pipe:
-		return no_child && no_name && !node.boolean_value && no_number
+		return no_child && no_name && !node.boolean_value && no_number &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Boolean:
-		return no_child && no_edges && no_name && no_number
+		return no_child && no_edges && no_name && no_number &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Number:
 		header := transmute(runtime.Raw_String)node.number_text
 		return no_child && no_edges && no_name && !node.boolean_value &&
-		       node.has_number_text && header.data != nil && header.len > 0
+		       node.has_number_text && header.data != nil && header.len > 0 &&
+		       !node.has_string_text && string_header_absent(node.string_text)
+	case .String:
+		header := transmute(runtime.Raw_String)node.string_text
+		return no_child && no_edges && no_name && !node.boolean_value && no_number &&
+		       node.has_string_text && header.data != nil && header.len >= 0
 	case:
 		return false
 	}
@@ -153,7 +163,7 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 			has_unlowered_node = true
-		case .Null, .Boolean, .Number:
+		case .Null, .Boolean, .Number, .String:
 			has_unlowered_node = true
 		case:
 			return Lower_Outcome{kind = .Invalid_AST}
@@ -239,7 +249,7 @@ lower_filter :: proc(
 			})
 			assert(right_ok)
 			operand_at += 1
-		case .Null, .Boolean, .Number, .Negate:
+		case .Null, .Boolean, .Number, .String, .Negate:
 			cleanup_error := program.destroy_program(output)
 			if cleanup_error != nil {
 				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}

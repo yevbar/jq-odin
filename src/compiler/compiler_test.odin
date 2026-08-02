@@ -142,7 +142,7 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 @(test)
 scalar_and_general_negate_ast_nodes_validate_without_lowering_or_allocation :: proc(t: ^testing.T) {
 	texts := [?]string{
-		"null", "true", "false", "0", "- 1.25e+2", "--1",
+		"null", "true", "false", "0", "- 1.25e+2", "--1", `"x"`, `""`,
 		"-.", "-.a", "-(.)", "-(.a)", "-(. | .)", "-(., .)",
 		"-(.a?)", "-(.a)?", "--(. | .)",
 	}
@@ -205,7 +205,7 @@ scalar_keyword_call_parse_failure_never_reaches_compiler_allocation :: proc(t: ^
 @(test)
 every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.T) {
 	parser: syntax.Parser
-	source := diagnostic.borrow_source("<shape>", "null,true,false,1,-2,(.)?,.a|.")
+	source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-2,(.)?,.a|.`)
 	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
 	parsed := syntax.parse_filter(&parser)
 	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
@@ -280,6 +280,34 @@ number_kind_swaps_cannot_smuggle_owned_payload_into_any_other_kind :: proc(t: ^t
 }
 
 @(test)
+foreign_string_payload_is_rejected_for_every_non_string_kind :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<foreign-string>", "abc")
+	span, span_ok := diagnostic.make_span(source, 0, 3)
+	name_span, name_ok := diagnostic.make_span(source, 0, 1)
+	testing.expect(t, span_ok && name_ok)
+	valid := [?]syntax.Node{
+		{kind = .Identity, span = span},
+		{kind = .Field, span = span, name_span = name_span, has_name_span = true},
+		{kind = .Parenthesized, span = span, child = 0, has_child = true},
+		{kind = .Comma, span = span, left = 0, right = 0},
+		{kind = .Pipe, span = span, left = 0, right = 0},
+		{kind = .Optional, span = span, child = 0, has_child = true},
+		{kind = .Null, span = span},
+		{kind = .Boolean, span = span, boolean_value = true},
+		{kind = .Number, span = span, number_text = "1", has_number_text = true},
+		{kind = .Negate, span = span, child = 0, has_child = true},
+	}
+	for node in valid {
+		testing.expect(t, node_payload_shape_valid(node))
+		hostile := node
+		hostile.string_text = "x"
+		hostile.has_string_text = true
+		testing.expect(t, !node_payload_shape_valid(hostile))
+		expect_invalid_ast_without_program_owner(t, []syntax.Node{hostile}, 0, source, true)
+	}
+}
+
+@(test)
 foreign_payload_is_rejected_for_every_node_discriminant :: proc(t: ^testing.T) {
 	source := diagnostic.borrow_source("<hostile>", "abc")
 	span, span_ok := diagnostic.make_span(source, 0, 3)
@@ -301,6 +329,7 @@ foreign_payload_is_rejected_for_every_node_discriminant :: proc(t: ^testing.T) {
 		{"Null/child-without-flag", {kind = .Null, span = span}, {kind = .Null, span = span, child = 1}},
 		{"Boolean/edge", {kind = .Boolean, span = span, boolean_value = true}, {kind = .Boolean, span = span, boolean_value = true, right = 1}},
 		{"Number/name", {kind = .Number, span = span, number_text = "1", has_number_text = true}, {kind = .Number, span = span, number_text = "1", has_number_text = true, name_span = name_span, has_name_span = true}},
+		{"String/number", {kind = .String, span = span, string_text = "x", has_string_text = true}, {kind = .String, span = span, string_text = "x", has_string_text = true, number_text = "1", has_number_text = true}},
 		{"Negate/name-flag", {kind = .Negate, span = span, child = 0, has_child = true}, {kind = .Negate, span = span, child = 0, has_child = true, has_name_span = true}},
 	}
 
@@ -341,6 +370,75 @@ number_payload_header_and_presence_inconsistencies_are_rejected :: proc(t: ^test
 	for node in cases {
 		testing.expect(t, !node_payload_shape_valid(node))
 		expect_invalid_ast_without_program_owner(t, []syntax.Node{node}, 0, source, true)
+	}
+}
+
+@(test)
+string_payload_hostile_shapes_are_rejected :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<string-payload>", `"x"`)
+	span, span_ok := diagnostic.make_span(source, 0, 3)
+	name_span, name_ok := diagnostic.make_span(source, 1, 2)
+	testing.expect(t, span_ok && name_ok)
+
+	static_header := transmute(runtime.Raw_String)string("x")
+	non_nil_empty := static_header
+	non_nil_empty.len = 0
+	nil_with_length := static_header
+	nil_with_length.data = nil
+	negative_length := static_header
+	negative_length.len = -1
+
+	valid := [?]syntax.Node{
+		{kind = .String, span = span, string_text = "x", has_string_text = true},
+		{kind = .String, span = span, string_text = transmute(string)non_nil_empty, has_string_text = true},
+	}
+	for node in valid {
+		testing.expect(t, node_payload_shape_valid(node))
+		// String lowering remains intentionally unsupported and allocation-free.
+		expect_invalid_ast_without_program_owner(t, []syntax.Node{node}, 0, source, true)
+	}
+
+	hostile := [?]syntax.Node{
+		{kind = .String, span = span},
+		{kind = .String, span = span, string_text = "x"},
+		{kind = .String, span = span, has_string_text = true},
+		{kind = .String, span = span, string_text = transmute(string)nil_with_length, has_string_text = true},
+		{kind = .String, span = span, string_text = transmute(string)negative_length, has_string_text = true},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, child = 1},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, has_child = true},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, left = 1},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, right = 1},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, name_span = name_span},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, has_name_span = true},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, name_span = name_span, has_name_span = true},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, boolean_value = true},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, number_text = "1"},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, has_number_text = true},
+		{kind = .String, span = span, string_text = "x", has_string_text = true, number_text = "1", has_number_text = true},
+	}
+	for node in hostile {
+		testing.expect(t, !node_payload_shape_valid(node))
+		expect_invalid_ast_without_program_owner(t, []syntax.Node{node}, 0, source, true)
+	}
+
+	parsed_texts := [?]string{`"x"`, `""`}
+	for text in parsed_texts {
+		parser: syntax.Parser
+		parsed_source := diagnostic.borrow_source("<parsed-string>", text)
+		testing.expect(t, syntax.init_parser(&parser, parsed_source, context.allocator))
+		parsed := syntax.parse_filter(&parser)
+		testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
+		nodes := syntax.parser_nodes(&parser)
+		testing.expect_value(t, len(nodes), 1)
+		testing.expect(t, node_payload_shape_valid(nodes[0]))
+		expect_invalid_ast_without_program_owner(
+			t,
+			nodes,
+			parsed.root,
+			syntax.parser_source(&parser),
+			true,
+		)
+		testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
 }
 

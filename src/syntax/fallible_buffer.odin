@@ -64,6 +64,9 @@ append_fallible_buffer :: proc(
 		buffer.count += 1
 		return nil
 	}
+	if buffer.allocator.procedure == nil {
+		return .Out_Of_Memory
+	}
 
 	new_capacity := 8
 	if len(buffer.storage) > 0 {
