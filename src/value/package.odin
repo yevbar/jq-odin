@@ -653,7 +653,7 @@ literal_number_value_with_context :: proc(
 	special_negative, special_infinite, special_nan, special_ok :=
 		special_literal(literal)
 	if special_ok && special_nan {
-		return number_value(math.nan_f64()), nil
+		return number_value(transmute(f64)u64(0x7ff8000000000000)), nil
 	}
 
 	scan, ok := scan_literal(literal)
@@ -979,6 +979,33 @@ number_negate :: proc(
 	}
 	copy(payload_coefficient(destination_payload), payload_coefficient(source_payload))
 	return value_from_storage({kind = .Number, owned_payload = destination_payload}), nil, true
+}
+
+// number_add borrows both operands for the complete call and returns a new
+// inline native number. jq converts literal-backed operands through their
+// binary64 caches before addition, so no representation combination allocates.
+// Nil, invalid, and non-number operands return an inert result and false.
+number_add :: proc(left, right: ^Value) -> (result: Value, ok: bool) {
+	left_number, left_ok := number_value_get(left)
+	if !left_ok {
+		return {}, false
+	}
+	right_number, right_ok := number_value_get(right)
+	if !right_ok {
+		return {}, false
+	}
+	left_nan := math.is_nan(left_number)
+	right_nan := math.is_nan(right_number)
+	if left_nan || right_nan {
+		// Pinned jq's C addition selects the right NaN when both operands
+		// are NaN, and otherwise propagates the sole NaN. Quiet the selected
+		// operand exactly as the floating-point operation would, while keeping
+		// its sign and payload independent of Odin's native operand selection.
+		selected := right_number if right_nan else left_number
+		selected_bits := transmute(u64)selected | u64(0x0008000000000000)
+		return number_value(transmute(f64)selected_bits), true
+	}
+	return number_value(left_number + right_number), true
 }
 
 clone_value :: proc(value: ^Value) -> Value {

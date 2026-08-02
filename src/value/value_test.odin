@@ -916,6 +916,31 @@ literal_constructor_accepts_jq_decnumber_grammar :: proc(t: ^testing.T) {
 }
 
 @(test)
+literal_constructor_canonicalizes_payload_free_nan_bits :: proc(t: ^testing.T) {
+	literals := [?]string{
+		"NaN",
+		"nan",
+		"+NaN",
+		"-NaN",
+		"sNaN",
+		"-sNaN",
+		"NaN00",
+		"-NaN00",
+	}
+	for literal in literals {
+		value, err := literal_number_value(literal, context.allocator)
+		number, number_ok := number_value_get(&value)
+		kind, kind_ok := number_kind(&value)
+		testing.expect_value(t, constructor_error_kind(&err), Error.None)
+		testing.expect(t, kind_ok && kind == .Native)
+		testing.expect(t, number_ok && math.is_nan(number))
+		testing.expect_value(t, transmute(u64)number, u64(0x7ff8000000000000))
+		destroy_value(&value)
+		destroy_constructor_error(&err)
+	}
+}
+
+@(test)
 special_literals_use_bytewise_ascii_case_folding :: proc(t: ^testing.T) {
 	// These valid UTF-8 strings have the same byte length as the special
 	// spelling they previously impersonated. Rune truncation yielded the
