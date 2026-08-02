@@ -22,6 +22,16 @@ Number_Kind :: enum u8 {
 	Literal,
 }
 
+// Number_Arithmetic_Result_Kind separates operand rejection and jq's
+// zero-divisor runtime condition from a successful numeric result. These
+// primitives allocate nothing, so allocator/resource failure is not part of
+// this result space.
+Number_Arithmetic_Result_Kind :: enum u8 {
+	Success,
+	Invalid_Operands,
+	Zero_Divisor,
+}
+
 Error :: enum u8 {
 	None,
 	Out_Of_Memory,
@@ -1006,6 +1016,154 @@ number_add :: proc(left, right: ^Value) -> (result: Value, ok: bool) {
 		return number_value(transmute(f64)selected_bits), true
 	}
 	return number_value(left_number + right_number), true
+}
+
+@(private)
+quiet_nan :: proc(value: f64) -> f64 {
+	return transmute(f64)(transmute(u64)value | u64(0x0008000000000000))
+}
+
+@(private)
+binary_number_operands :: proc(left, right: ^Value) -> (
+	left_number, right_number: f64,
+	ok: bool,
+) {
+	left_ok: bool
+	left_number, left_ok = number_value_get(left)
+	if !left_ok {
+		return 0, 0, false
+	}
+	right_ok: bool
+	right_number, right_ok = number_value_get(right)
+	if !right_ok {
+		return 0, 0, false
+	}
+	return left_number, right_number, true
+}
+
+@(private)
+negative_canonical_nan :: proc() -> f64 {
+	return transmute(f64)u64(0xfff8000000000000)
+}
+
+// number_subtract borrows both operands and returns an independent inline
+// native number. Literal identity ends when jq observes each binary64 cache.
+number_subtract :: proc(left, right: ^Value) -> (
+	result: Value,
+	kind: Number_Arithmetic_Result_Kind,
+) {
+	a, b, ok := binary_number_operands(left, right)
+	if !ok {
+		return {}, .Invalid_Operands
+	}
+	if math.is_nan(a) {
+		return number_value(quiet_nan(a)), .Success
+	}
+	if math.is_nan(b) {
+		return number_value(quiet_nan(b)), .Success
+	}
+	value := a - b
+	if math.is_nan(value) {
+		// The pinned x86_64 jq oracle produces this for infinity-infinity.
+		value = negative_canonical_nan()
+	}
+	return number_value(value), .Success
+}
+
+// number_multiply has the same borrowed, allocation-free ownership contract
+// as number_subtract.
+number_multiply :: proc(left, right: ^Value) -> (
+	result: Value,
+	kind: Number_Arithmetic_Result_Kind,
+) {
+	a, b, ok := binary_number_operands(left, right)
+	if !ok {
+		return {}, .Invalid_Operands
+	}
+	if math.is_nan(a) || math.is_nan(b) {
+		// Pinned binop_multiply selects the right NaN when both are NaNs.
+		selected := b if math.is_nan(b) else a
+		return number_value(quiet_nan(selected)), .Success
+	}
+	value := a * b
+	if math.is_nan(value) {
+		// The pinned x86_64 jq oracle produces this for zero*infinity.
+		value = negative_canonical_nan()
+	}
+	return number_value(value), .Success
+}
+
+// number_divide classifies either sign of binary64 zero before evaluating the
+// quotient. A zero divisor returns no Value and cannot be confused with a
+// successful infinity or NaN.
+number_divide :: proc(left, right: ^Value) -> (
+	result: Value,
+	kind: Number_Arithmetic_Result_Kind,
+) {
+	a, b, ok := binary_number_operands(left, right)
+	if !ok {
+		return {}, .Invalid_Operands
+	}
+	if b == 0.0 {
+		return {}, .Zero_Divisor
+	}
+	if math.is_nan(a) {
+		return number_value(quiet_nan(a)), .Success
+	}
+	if math.is_nan(b) {
+		return number_value(quiet_nan(b)), .Success
+	}
+	value := a / b
+	if math.is_nan(value) {
+		// The pinned x86_64 jq oracle produces this for infinity/infinity.
+		value = negative_canonical_nan()
+	}
+	return number_value(value), .Success
+}
+
+@(private)
+jq_intmax_from_binary64 :: proc(value: f64) -> i64 {
+	lower := f64(-9_223_372_036_854_775_808)
+	upper := f64(9_223_372_036_854_775_808)
+	if value < lower {
+		return min(i64)
+	}
+	if value > upper {
+		return max(i64)
+	}
+	// The pinned C conversion yields INTMAX_MIN at the exactly representable
+	// +2^63 boundary; spell it explicitly rather than invoke an out-of-range
+	// Odin float-to-integer conversion.
+	if value == upper {
+		return min(i64)
+	}
+	return i64(value)
+}
+
+// number_modulo mirrors jq 1.8.1 binop_mod, which is integer remainder after
+// saturating/truncating binary64-to-intmax conversion. It intentionally is not
+// C fmod: fractional divisors with magnitude below one classify as zero.
+number_modulo :: proc(left, right: ^Value) -> (
+	result: Value,
+	kind: Number_Arithmetic_Result_Kind,
+) {
+	a, b, ok := binary_number_operands(left, right)
+	if !ok {
+		return {}, .Invalid_Operands
+	}
+	if math.is_nan(a) || math.is_nan(b) {
+		return number_value(transmute(f64)u64(0x7ff8000000000000)), .Success
+	}
+	divisor := jq_intmax_from_binary64(b)
+	if divisor == 0 {
+		return {}, .Zero_Divisor
+	}
+	dividend := jq_intmax_from_binary64(a)
+	remainder := i64(0)
+	if divisor != -1 {
+		remainder = dividend % divisor
+	}
+	return number_value(f64(remainder)), .Success
 }
 
 clone_value :: proc(value: ^Value) -> Value {
