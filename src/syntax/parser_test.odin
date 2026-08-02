@@ -36,6 +36,657 @@ expect_parse_success :: proc(t: ^testing.T, parser: ^Parser, outcome: Parse_Outc
 }
 
 @(test)
+test_parser_scalar_literals_preserve_kinds_spans_and_numeric_source :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		kind: Node_Kind,
+		boolean_value: bool,
+		number_text: string,
+	}
+	cases := [?]Case{
+		{"null", .Null, false, ""},
+		{"true", .Boolean, true, ""},
+		{"false", .Boolean, false, ""},
+		{"0", .Number, false, "0"},
+		{"01", .Number, false, "01"},
+		{"1.", .Number, false, "1."},
+		{".1", .Number, false, ".1"},
+		{"12.34", .Number, false, "12.34"},
+		{"1e2", .Number, false, "1e2"},
+		{"1E+2", .Number, false, "1E+2"},
+		{".1e-2", .Number, false, ".1e-2"},
+		{"-1", .Negate, false, "1"},
+		{"-  .1E+2", .Negate, false, ".1E+2"},
+	}
+	for test_case in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		node := parser.nodes.storage[int(outcome.root)]
+		testing.expect_value(t, node.kind, test_case.kind)
+		expect_span(t, parser.source, node.span, 0, len(test_case.text))
+		if node.kind == .Boolean {
+			testing.expect_value(t, node.boolean_value, test_case.boolean_value)
+		}
+		number := node
+		if node.kind == .Negate {
+			testing.expect(t, node.has_child)
+			number = parser.nodes.storage[int(node.child)]
+			testing.expect_value(t, number.kind, Node_Kind.Number)
+		}
+		if number.kind == .Number {
+			testing.expect(t, number.has_number_text)
+			testing.expect_value(t, number.number_text, test_case.number_text)
+		} else {
+			testing.expect(t, !node.has_number_text)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_scalar_keyword_calls_are_rejected_at_delimiter_without_literal_nodes :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		start, end: int,
+	}
+	cases := [?]Case{
+		{"true(.)", 4, 5},
+		{"false()", 5, 6},
+		{"null(1)", 4, 5},
+		{"true (.)", 5, 6},
+		{"false\n()", 6, 7},
+		{"null \n (1)", 7, 8},
+		{"-true(.)", 5, 6},
+		{"(false())", 6, 7},
+		{"null(1)?", 4, 5},
+		{"-(true\n(.))", 7, 8},
+		{"(null \n (1))?", 8, 9},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+		testing.expect_value(t, outcome.error.expected, Parse_Expectation.Expression)
+		testing.expect_value(t, outcome.error.actual, Token_Kind.Open_Paren)
+		testing.expect(t, outcome.error.has_actual)
+		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
+		for node in parser_nodes(&parser) {
+			testing.expect(t, node.kind != .Boolean && node.kind != .Null)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_unsupported_scalar_keyword_call_cleanup_and_copy_safety :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	parser: Parser
+	source, outcome := parse_test_filter(
+		t,
+		&parser,
+		"true \n (.)",
+		test_allocator(&allocator_data),
+	)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+	testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+	expect_span(t, source, outcome.error.span, 7, 8)
+	testing.expect_value(t, parser.nodes.count, 0)
+	testing.expect_value(t, allocator_data.request_count, 1)
+	testing.expect_value(t, len(tracker.allocation_map), 1)
+
+	copied := parser
+	expect_invalid_parser_copy(t, &copied)
+	testing.expect_value(t, len(tracker.allocation_map), 1)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	expect_invalid_parser_copy(t, &copied)
+	allocator_data.alive = false
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_repeated_unary_minus_preserves_source_nesting_spans_and_number_lexeme :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "--1")
+	expect_parse_success(t, &parser, outcome)
+	outer := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, outer.kind, Node_Kind.Negate)
+	expect_span(t, parser.source, outer.span, 0, 3)
+	inner := parser.nodes.storage[int(outer.child)]
+	testing.expect_value(t, inner.kind, Node_Kind.Negate)
+	expect_span(t, parser.source, inner.span, 1, 3)
+	number := parser.nodes.storage[int(inner.child)]
+	testing.expect_value(t, number.kind, Node_Kind.Number)
+	expect_span(t, parser.source, number.span, 2, 3)
+	testing.expect_value(t, number.number_text, "1")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+
+	spaced: Parser
+	_, spaced_outcome := parse_test_filter(t, &spaced, "- 1")
+	expect_parse_success(t, &spaced, spaced_outcome)
+	spaced_negate := spaced.nodes.storage[int(spaced_outcome.root)]
+	testing.expect_value(t, spaced_negate.kind, Node_Kind.Negate)
+	expect_span(t, spaced.source, spaced_negate.span, 0, 3)
+	spaced_number := spaced.nodes.storage[int(spaced_negate.child)]
+	expect_span(t, spaced.source, spaced_number.span, 2, 3)
+	testing.expect_value(t, spaced_number.number_text, "1")
+	testing.expect_value(t, destroy_parser(&spaced), runtime.Allocator_Error.None)
+}
+
+@(private="package")
+make_nested_term_filter :: proc(
+	t: ^testing.T,
+	outer_minuses, groups, inner_minuses, postfixes: int,
+	payload := "1",
+) -> string {
+	outer, outer_error := strings.repeat("-", outer_minuses)
+	testing.expect(t, outer_error == nil)
+	opens, opens_error := strings.repeat("(", groups)
+	testing.expect(t, opens_error == nil)
+	inner, inner_error := strings.repeat("-", inner_minuses)
+	testing.expect(t, inner_error == nil)
+	closes, closes_error := strings.repeat(")", groups)
+	testing.expect(t, closes_error == nil)
+	postfix, postfix_error := strings.repeat("?", postfixes)
+	testing.expect(t, postfix_error == nil)
+	text, text_error := strings.concatenate([]string{outer, opens, inner, payload, closes, postfix})
+	testing.expect(t, text_error == nil)
+	delete(outer)
+	delete(opens)
+	delete(inner)
+	delete(closes)
+	delete(postfix)
+	return text
+}
+
+@(test)
+test_unary_minus_accepts_every_supported_term_start_and_postfix_placement :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		kinds: []Node_Kind,
+		spans: [][2]int,
+		kind_count: int,
+		boolean_value: bool,
+		field_name: string,
+	}
+	cases := [?]Case{
+		{"-.", []Node_Kind{.Negate, .Identity}, [][2]int{{0, 2}, {1, 2}}, 2, false, ""},
+		{"- .a", []Node_Kind{.Negate, .Field}, [][2]int{{0, 4}, {2, 4}}, 2, false, "a"},
+		{"-.?", []Node_Kind{.Negate, .Optional, .Identity}, [][2]int{{0, 3}, {1, 3}, {1, 2}}, 3, false, ""},
+		{"-.a?", []Node_Kind{.Negate, .Optional, .Field}, [][2]int{{0, 4}, {1, 4}, {1, 3}}, 3, false, "a"},
+		{"-(.a?)", []Node_Kind{.Negate, .Parenthesized, .Optional, .Field}, [][2]int{{0, 6}, {1, 6}, {2, 5}, {2, 4}}, 4, false, "a"},
+		{"-(.a)?", []Node_Kind{.Negate, .Optional, .Parenthesized, .Field}, [][2]int{{0, 6}, {1, 6}, {1, 5}, {2, 4}}, 4, false, "a"},
+		{"(-.a)?", []Node_Kind{.Optional, .Parenthesized, .Negate, .Field}, [][2]int{{0, 6}, {0, 5}, {1, 4}, {2, 4}}, 4, false, "a"},
+		{"-(-.a?)", []Node_Kind{.Negate, .Parenthesized, .Negate, .Optional, .Field}, [][2]int{{0, 7}, {1, 7}, {2, 6}, {3, 6}, {3, 5}}, 5, false, "a"},
+		{"-true", []Node_Kind{.Negate, .Boolean}, [][2]int{{0, 5}, {1, 5}}, 2, true, ""},
+		{"--false", []Node_Kind{.Negate, .Negate, .Boolean}, [][2]int{{0, 7}, {1, 7}, {2, 7}}, 3, false, ""},
+		{"-(null)", []Node_Kind{.Negate, .Parenthesized, .Null}, [][2]int{{0, 7}, {1, 7}, {2, 6}}, 3, false, ""},
+		{"-1", []Node_Kind{.Negate, .Number}, [][2]int{{0, 2}, {1, 2}}, 2, false, ""},
+	}
+
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		expect_span(t, source, parser.nodes.storage[int(outcome.root)].span, 0, len(test_case.text))
+
+		node_id := outcome.root
+		for index in 0..<test_case.kind_count {
+			node := parser.nodes.storage[int(node_id)]
+			testing.expect_value(t, node.kind, test_case.kinds[index])
+			expect_span(t, source, node.span, test_case.spans[index][0], test_case.spans[index][1])
+			if index+1 < test_case.kind_count {
+				testing.expect(t, node.has_child)
+				node_id = node.child
+			} else if node.kind == .Boolean {
+				testing.expect_value(t, node.boolean_value, test_case.boolean_value)
+			} else if node.kind == .Field {
+				name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+				testing.expect(t, node.has_name_span && name_ok)
+				testing.expect_value(t, diagnostic.source_bytes(source)[name_start:name_end], test_case.field_name)
+			}
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_unary_minus_grouped_query_structure_preserves_precedence_and_associativity :: proc(t: ^testing.T) {
+	pipe_parser: Parser
+	pipe_source, pipe_outcome := parse_test_filter(t, &pipe_parser, "-(. | .)")
+	expect_parse_success(t, &pipe_parser, pipe_outcome)
+	negate := pipe_parser.nodes.storage[int(pipe_outcome.root)]
+	testing.expect_value(t, negate.kind, Node_Kind.Negate)
+	expect_span(t, pipe_source, negate.span, 0, 8)
+	group := pipe_parser.nodes.storage[int(negate.child)]
+	testing.expect_value(t, group.kind, Node_Kind.Parenthesized)
+	expect_span(t, pipe_source, group.span, 1, 8)
+	pipe := pipe_parser.nodes.storage[int(group.child)]
+	testing.expect_value(t, pipe.kind, Node_Kind.Pipe)
+	expect_span(t, pipe_source, pipe.span, 2, 7)
+	testing.expect_value(t, pipe_parser.nodes.storage[int(pipe.left)].kind, Node_Kind.Identity)
+	testing.expect_value(t, pipe_parser.nodes.storage[int(pipe.right)].kind, Node_Kind.Identity)
+	expect_node_span(t, &pipe_parser, pipe.left, 2, 3)
+	expect_node_span(t, &pipe_parser, pipe.right, 6, 7)
+	testing.expect_value(t, destroy_parser(&pipe_parser), runtime.Allocator_Error.None)
+
+	comma_parser: Parser
+	comma_source, comma_outcome := parse_test_filter(t, &comma_parser, "-(., .)")
+	expect_parse_success(t, &comma_parser, comma_outcome)
+	comma_negate := comma_parser.nodes.storage[int(comma_outcome.root)]
+	testing.expect_value(t, comma_negate.kind, Node_Kind.Negate)
+	expect_span(t, comma_source, comma_negate.span, 0, 7)
+	comma_group := comma_parser.nodes.storage[int(comma_negate.child)]
+	testing.expect_value(t, comma_group.kind, Node_Kind.Parenthesized)
+	comma := comma_parser.nodes.storage[int(comma_group.child)]
+	testing.expect_value(t, comma.kind, Node_Kind.Comma)
+	expect_span(t, comma_source, comma.span, 2, 6)
+	testing.expect_value(t, comma_parser.nodes.storage[int(comma.left)].kind, Node_Kind.Identity)
+	testing.expect_value(t, comma_parser.nodes.storage[int(comma.right)].kind, Node_Kind.Identity)
+	expect_node_span(t, &comma_parser, comma.left, 2, 3)
+	expect_node_span(t, &comma_parser, comma.right, 5, 6)
+	testing.expect_value(t, destroy_parser(&comma_parser), runtime.Allocator_Error.None)
+
+	mixed_parser: Parser
+	_, mixed_outcome := parse_test_filter(t, &mixed_parser, "-(., . | .)")
+	expect_parse_success(t, &mixed_parser, mixed_outcome)
+	mixed_negate := mixed_parser.nodes.storage[int(mixed_outcome.root)]
+	mixed_group := mixed_parser.nodes.storage[int(mixed_negate.child)]
+	mixed_pipe := mixed_parser.nodes.storage[int(mixed_group.child)]
+	testing.expect_value(t, mixed_negate.kind, Node_Kind.Negate)
+	testing.expect_value(t, mixed_group.kind, Node_Kind.Parenthesized)
+	testing.expect_value(t, mixed_pipe.kind, Node_Kind.Pipe)
+	testing.expect_value(t, mixed_parser.nodes.storage[int(mixed_pipe.left)].kind, Node_Kind.Comma)
+	testing.expect_value(t, mixed_parser.nodes.storage[int(mixed_pipe.right)].kind, Node_Kind.Identity)
+	testing.expect_value(t, destroy_parser(&mixed_parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_unary_minus_does_not_broaden_identifier_or_unsupported_term_subset :: proc(t: ^testing.T) {
+	Case :: struct { text: string, start, end: int, actual: Token_Kind }
+	cases := [?]Case{
+		{"-name", 1, 5, .Identifier},
+		{"-name?", 1, 5, .Identifier},
+		{"-truex", 1, 6, .Identifier},
+		{"-false_", 1, 7, .Identifier},
+		{"-nullfoo", 1, 8, .Identifier},
+		{"-[]", 1, 2, .Open_Bracket},
+		{"-{}", 1, 2, .Open_Brace},
+		{"-$name", 1, 6, .Binding},
+		{"-\"x\"", 1, 2, .String_Start},
+		{"-+1", 1, 2, .Plus},
+	}
+
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+		testing.expect_value(t, outcome.error.expected, Parse_Expectation.Expression)
+		testing.expect_value(t, outcome.error.actual, test_case.actual)
+		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_supported_term_leaves_preserve_exact_prefix_and_postfix_stack_budgets :: proc(t: ^testing.T) {
+	Case :: struct {
+		outer_minuses, groups, inner_minuses, postfixes: int,
+		payload: string,
+		succeeds: bool,
+	}
+	cases := [?]Case{
+		{9_995, 0, 0, 0, ".", true},
+		{9_996, 0, 0, 0, ".", false},
+		{9_995, 0, 0, 0, ".a", true},
+		{9_996, 0, 0, 0, ".a", false},
+		{0, 9_994, 0, 0, ".", true},
+		{0, 9_995, 0, 0, ".", false},
+		{0, 0, 9_994, 1, ".a", true},
+		{0, 0, 9_995, 1, ".a", false},
+		{9_995, 0, 0, 0, "true", true},
+		{9_996, 0, 0, 0, "true", false},
+		{0, 9_994, 0, 0, "false", true},
+		{0, 9_995, 0, 0, "false", false},
+		{0, 4_000, 5_995, 0, "null", true},
+		{0, 4_000, 5_996, 0, "null", false},
+		{9_993, 1, 0, 0, "true", true},
+		{9_994, 1, 0, 0, "true", false},
+		{0, 0, 9_994, 1, "false", true},
+		{0, 0, 9_995, 1, "false", false},
+		{0, 4_000, 5_994, 1, "null", true},
+		{0, 4_000, 5_995, 1, "null", true},
+		{0, 4_000, 5_996, 1, "null", false},
+	}
+
+	for test_case in cases {
+		text := make_nested_term_filter(
+			t,
+			test_case.outer_minuses,
+			test_case.groups,
+			test_case.inner_minuses,
+			test_case.postfixes,
+			test_case.payload,
+		)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_grouped_pipe_and_comma_leaves_preserve_exact_query_stack_boundary :: proc(t: ^testing.T) {
+	Case :: struct { groups: int, payload: string, kind: Node_Kind, succeeds: bool }
+	cases := [?]Case{
+		{9_993, ". | .", .Pipe, true},
+		{9_994, ". | .", .Pipe, false},
+		{9_993, "., .", .Comma, true},
+		{9_994, "., .", .Comma, false},
+	}
+	for test_case in cases {
+		text := make_nested_term_filter(t, 0, test_case.groups, 0, 0, test_case.payload)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+			node_id := outcome.root
+			for _ in 0..<test_case.groups {
+				node := parser.nodes.storage[int(node_id)]
+				testing.expect_value(t, node.kind, Node_Kind.Parenthesized)
+				node_id = node.child
+			}
+			testing.expect_value(t, parser.nodes.storage[int(node_id)].kind, test_case.kind)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(private="package")
+expect_parser_resource_limit :: proc(t: ^testing.T, text: string) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_parser_exact_unary_minus_stack_budget_without_native_recursion :: proc(t: ^testing.T) {
+	SUCCESS_DEPTH :: 9_995
+	success_text := make_nested_term_filter(t, SUCCESS_DEPTH, 0, 0, 0)
+	defer delete(success_text)
+
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, success_text)
+	expect_parse_success(t, &parser, outcome)
+	testing.expect_value(t, parser.nodes.count, SUCCESS_DEPTH+1)
+	node_id := outcome.root
+	for start in 0..<SUCCESS_DEPTH {
+		node := parser.nodes.storage[int(node_id)]
+		testing.expect_value(t, node.kind, Node_Kind.Negate)
+		expect_span(t, parser.source, node.span, start, SUCCESS_DEPTH+1)
+		node_id = node.child
+	}
+	number := parser.nodes.storage[int(node_id)]
+	testing.expect_value(t, number.kind, Node_Kind.Number)
+	expect_span(t, parser.source, number.span, SUCCESS_DEPTH, SUCCESS_DEPTH+1)
+	testing.expect_value(t, number.number_text, "1")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+
+	failure_text := make_nested_term_filter(t, SUCCESS_DEPTH+1, 0, 0, 0)
+	defer delete(failure_text)
+	expect_parser_resource_limit(t, failure_text)
+}
+
+@(test)
+test_parser_exact_group_and_prefix_order_stack_budgets :: proc(t: ^testing.T) {
+	Case :: struct {
+		outer_minuses, groups, inner_minuses: int,
+		succeeds: bool,
+	}
+	cases := [?]Case{
+		{0, 9_994, 0, true},
+		{0, 9_995, 0, false},
+		{0, 4_000, 5_995, true},
+		{0, 4_000, 5_996, false},
+		{4_000, 5_994, 0, true},
+		{4_000, 5_995, 0, false},
+		{9_993, 1, 0, true},
+		{9_994, 1, 0, false},
+	}
+
+	for test_case in cases {
+		text := make_nested_term_filter(
+			t,
+			test_case.outer_minuses,
+			test_case.groups,
+			test_case.inner_minuses,
+			0,
+		)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_parser_only_first_postfix_increases_live_stack_depth :: proc(t: ^testing.T) {
+	Case :: struct {
+		groups, inner_minuses, postfixes: int,
+		succeeds: bool,
+	}
+	cases := [?]Case{
+		{0, 9_994, 1, true},
+		{0, 9_995, 1, false},
+		{0, 9_994, 4, true},
+		{4_000, 5_994, 1, true},
+		{4_000, 5_995, 1, true},
+		{4_000, 5_996, 1, false},
+		{4_000, 5_994, 4, true},
+	}
+
+	for test_case in cases {
+		text := make_nested_term_filter(
+			t,
+			0,
+			test_case.groups,
+			test_case.inner_minuses,
+			test_case.postfixes,
+		)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_parser_stack_budget_preserves_below_limit_ast_and_spans :: proc(t: ^testing.T) {
+	parser: Parser
+	source, outcome := parse_test_filter(t, &parser, "((--1))??")
+	expect_parse_success(t, &parser, outcome)
+	outer_optional := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, outer_optional.kind, Node_Kind.Optional)
+	expect_span(t, source, outer_optional.span, 0, 9)
+	inner_optional := parser.nodes.storage[int(outer_optional.child)]
+	testing.expect_value(t, inner_optional.kind, Node_Kind.Optional)
+	expect_span(t, source, inner_optional.span, 0, 8)
+	outer_group := parser.nodes.storage[int(inner_optional.child)]
+	testing.expect_value(t, outer_group.kind, Node_Kind.Parenthesized)
+	expect_span(t, source, outer_group.span, 0, 7)
+	inner_group := parser.nodes.storage[int(outer_group.child)]
+	testing.expect_value(t, inner_group.kind, Node_Kind.Parenthesized)
+	expect_span(t, source, inner_group.span, 1, 6)
+	outer_negate := parser.nodes.storage[int(inner_group.child)]
+	testing.expect_value(t, outer_negate.kind, Node_Kind.Negate)
+	expect_span(t, source, outer_negate.span, 2, 5)
+	inner_negate := parser.nodes.storage[int(outer_negate.child)]
+	testing.expect_value(t, inner_negate.kind, Node_Kind.Negate)
+	expect_span(t, source, inner_negate.span, 3, 5)
+	number := parser.nodes.storage[int(inner_negate.child)]
+	testing.expect_value(t, number.kind, Node_Kind.Number)
+	expect_span(t, source, number.span, 4, 5)
+	testing.expect_value(t, number.number_text, "1")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+
+	ordered_parser: Parser
+	ordered_source, ordered_outcome := parse_test_filter(t, &ordered_parser, "--((1))")
+	expect_parse_success(t, &ordered_parser, ordered_outcome)
+	ordered_outer := ordered_parser.nodes.storage[int(ordered_outcome.root)]
+	testing.expect_value(t, ordered_outer.kind, Node_Kind.Negate)
+	expect_span(t, ordered_source, ordered_outer.span, 0, 7)
+	ordered_inner := ordered_parser.nodes.storage[int(ordered_outer.child)]
+	testing.expect_value(t, ordered_inner.kind, Node_Kind.Negate)
+	expect_span(t, ordered_source, ordered_inner.span, 1, 7)
+	ordered_group := ordered_parser.nodes.storage[int(ordered_inner.child)]
+	testing.expect_value(t, ordered_group.kind, Node_Kind.Parenthesized)
+	expect_span(t, ordered_source, ordered_group.span, 2, 7)
+	nested_group := ordered_parser.nodes.storage[int(ordered_group.child)]
+	testing.expect_value(t, nested_group.kind, Node_Kind.Parenthesized)
+	expect_span(t, ordered_source, nested_group.span, 3, 6)
+	ordered_number := ordered_parser.nodes.storage[int(nested_group.child)]
+	testing.expect_value(t, ordered_number.kind, Node_Kind.Number)
+	expect_span(t, ordered_source, ordered_number.span, 4, 5)
+	testing.expect_value(t, destroy_parser(&ordered_parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_parser_stack_limit_failure_cleanup_is_retryable :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	text := make_nested_term_filter(t, 9_996, 0, 0, 0)
+	defer delete(text)
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text, test_allocator(&allocator_data))
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	allocator_data.free_failures_remaining = 1
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_scalar_literals_compose_at_existing_term_precedence :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "null?, (true | false, - 1)?.field")
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Comma)
+	testing.expect_value(t, parser.nodes.storage[int(root.left)].kind, Node_Kind.Optional)
+	rhs := parser.nodes.storage[int(root.right)]
+	testing.expect_value(t, rhs.kind, Node_Kind.Field)
+	testing.expect_value(t, parser.nodes.storage[int(rhs.child)].kind, Node_Kind.Optional)
+	group := parser.nodes.storage[int(parser.nodes.storage[int(rhs.child)].child)]
+	testing.expect_value(t, group.kind, Node_Kind.Parenthesized)
+	pipe := parser.nodes.storage[int(group.child)]
+	testing.expect_value(t, pipe.kind, Node_Kind.Pipe)
+	comma := parser.nodes.storage[int(pipe.right)]
+	testing.expect_value(t, comma.kind, Node_Kind.Comma)
+	negate := parser.nodes.storage[int(comma.right)]
+	testing.expect_value(t, negate.kind, Node_Kind.Negate)
+	number := parser.nodes.storage[int(negate.child)]
+	testing.expect_value(t, number.kind, Node_Kind.Number)
+	testing.expect_value(t, number.number_text, "1")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+
+	negative_parser: Parser
+	_, negative_outcome := parse_test_filter(t, &negative_parser, "-1?.field")
+	expect_parse_success(t, &negative_parser, negative_outcome)
+	negative := negative_parser.nodes.storage[int(negative_outcome.root)]
+	testing.expect_value(t, negative.kind, Node_Kind.Negate)
+	field := negative_parser.nodes.storage[int(negative.child)]
+	testing.expect_value(t, field.kind, Node_Kind.Field)
+	optional := negative_parser.nodes.storage[int(field.child)]
+	testing.expect_value(t, optional.kind, Node_Kind.Optional)
+	testing.expect_value(t, negative_parser.nodes.storage[int(optional.child)].kind, Node_Kind.Number)
+	testing.expect_value(t, destroy_parser(&negative_parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_scalar_keyword_and_rejected_number_boundaries_are_not_split :: proc(t: ^testing.T) {
+	Case :: struct { text: string, start, end: int, actual: Token_Kind }
+	cases := [?]Case{
+		{"nullfoo", 0, 7, .Identifier},
+		{"truex", 0, 5, .Identifier},
+		{"false_", 0, 6, .Identifier},
+		{"1foo", 1, 4, .Identifier},
+		{"1e", 1, 2, .Identifier},
+		{"1e+", 1, 2, .Identifier},
+		{".1e+", 2, 3, .Identifier},
+		{"1..2", 2, 4, .Number},
+		{"+1", 0, 1, .Plus},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+		testing.expect_value(t, outcome.error.actual, test_case.actual)
+		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_owned_numeric_text_survives_caller_input_release :: proc(t: ^testing.T) {
+	input := make([]byte, len("- 1.25e+2"))
+	copy(input, "- 1.25e+2")
+	source := diagnostic.borrow_source("<released-input>", string(input))
+	parser: Parser
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	expect_parse_success(t, &parser, outcome)
+	negate := &parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, negate.kind, Node_Kind.Negate)
+	node := &parser.nodes.storage[int(negate.child)]
+	testing.expect(t, node.has_number_text)
+	delete(input)
+	testing.expect_value(t, node.number_text, "1.25e+2")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_parser_every_supported_standalone_form :: proc(t: ^testing.T) {
 	Case :: struct {
 		text: string,
@@ -357,7 +1008,6 @@ test_parser_rejects_every_unsupported_token_class_and_lexer_errors :: proc(t: ^t
 	}
 	cases := [?]Case{
 		{"name", .Unexpected_Token, 0, 4},
-		{"1", .Unexpected_Token, 0, 1},
 		{"[]", .Unexpected_Token, 0, 1},
 		{"..", .Unexpected_Token, 0, 2},
 		{". // .", .Unexpected_Token, 2, 4},
@@ -401,12 +1051,64 @@ nested_filter :: proc(depth: int) -> string {
 }
 
 @(private="package")
-pipe_filter :: proc(pipe_count: int) -> string {
+pipe_filter :: proc(pipe_count: int, term := ".") -> string {
+	segment, segment_error := strings.concatenate([]string{term, "|"})
+	assert(segment_error == nil)
+	prefix, prefix_error := strings.repeat(segment, pipe_count)
+	assert(prefix_error == nil)
+	result, result_error := strings.concatenate([]string{prefix, term})
+	assert(result_error == nil)
+	delete(segment)
+	delete(prefix)
+	return result
+}
+
+@(private="package")
+grouped_pipe_filter :: proc(group_count, pipe_count: int, postfix := false) -> string {
+	opens, opens_error := strings.repeat("(", group_count)
+	assert(opens_error == nil)
+	chain := pipe_filter(pipe_count)
+	closes, closes_error := strings.repeat(")", group_count)
+	assert(closes_error == nil)
+	suffix := "?" if postfix else ""
+	result, result_error := strings.concatenate([]string{opens, chain, closes, suffix})
+	assert(result_error == nil)
+	delete(opens)
+	delete(chain)
+	delete(closes)
+	return result
+}
+
+@(private="package")
+pipe_rhs_minus_filter :: proc(pipe_count, minus_count, postfix_count: int) -> string {
 	prefix, prefix_error := strings.repeat(".|", pipe_count)
 	assert(prefix_error == nil)
-	result, result_error := strings.concatenate([]string{prefix, "."})
+	minuses, minuses_error := strings.repeat("-", minus_count)
+	assert(minuses_error == nil)
+	postfixes, postfixes_error := strings.repeat("?", postfix_count)
+	assert(postfixes_error == nil)
+	result, result_error := strings.concatenate([]string{prefix, minuses, "1", postfixes})
 	assert(result_error == nil)
 	delete(prefix)
+	delete(minuses)
+	delete(postfixes)
+	return result
+}
+
+@(private="package")
+nested_pipe_filter :: proc(inner_pipe_count, inner_postfixes, outer_postfixes: int) -> string {
+	inner := pipe_filter(inner_pipe_count)
+	inner_suffix, inner_suffix_error := strings.repeat("?", inner_postfixes)
+	assert(inner_suffix_error == nil)
+	outer_suffix, outer_suffix_error := strings.repeat("?", outer_postfixes)
+	assert(outer_suffix_error == nil)
+	result, result_error := strings.concatenate(
+		[]string{".|(", inner, inner_suffix, ")", outer_suffix},
+	)
+	assert(result_error == nil)
+	delete(inner)
+	delete(inner_suffix)
+	delete(outer_suffix)
 	return result
 }
 
@@ -464,6 +1166,94 @@ test_parser_accepts_oracle_supported_deep_right_associative_pipes :: proc(t: ^te
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 		delete(text)
 	}
+}
+
+@(test)
+test_parser_exact_oracle_pipe_boundaries_for_supported_terms :: proc(t: ^testing.T) {
+	Case :: struct { term: string, pipe_count: int, succeeds: bool }
+	cases := [?]Case{
+		{".", 4_997, true},
+		{".", 4_998, false},
+		{"1", 4_997, true},
+		{"1", 4_998, false},
+		{".field?", 4_997, true},
+		{".field?", 4_998, false},
+	}
+	for test_case in cases {
+		text := pipe_filter(test_case.pipe_count, test_case.term)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_parser_stack_budget_uses_simultaneously_live_grammar_states :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		succeeds: bool,
+	}
+	cases := [?]Case{
+		{grouped_pipe_filter(9_994, 0, true), true},
+		{grouped_pipe_filter(9_995, 0, true), false},
+		{grouped_pipe_filter(9_795, 100), true},
+		{grouped_pipe_filter(9_796, 100), false},
+		{grouped_pipe_filter(9_795, 100, true), true},
+		{grouped_pipe_filter(9_796, 100, true), false},
+		{pipe_rhs_minus_filter(100, 9_795, 0), true},
+		{pipe_rhs_minus_filter(100, 9_796, 0), false},
+		{pipe_rhs_minus_filter(100, 9_794, 1), true},
+		{pipe_rhs_minus_filter(100, 9_795, 1), false},
+		{nested_pipe_filter(4_996, 0, 0), true},
+		{nested_pipe_filter(4_997, 0, 0), false},
+		{nested_pipe_filter(4_995, 1, 0), true},
+		{nested_pipe_filter(4_996, 1, 0), false},
+		{nested_pipe_filter(4_996, 0, 1), true},
+		{nested_pipe_filter(4_997, 0, 1), false},
+	}
+	for test_case in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, test_case.text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(test_case.text)
+	}
+}
+
+@(test)
+test_parser_pipe_stack_limit_failure_cleanup_is_retryable :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	text := pipe_filter(4_998, "1")
+	defer delete(text)
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text, test_allocator(&allocator_data))
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	allocator_data.free_failures_remaining = 1
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
 }
 
 @(test)
@@ -697,6 +1487,380 @@ test_parser_failed_scanner_destruction_preserves_both_owners :: proc(t: ^testing
 }
 
 @(test)
+test_numeric_text_allocation_failures_and_cleanup_are_complete :: proc(t: ^testing.T) {
+	text :: "1, - 2 | (3.0e+4)?"
+	baseline_data := Test_Allocator{backing = context.allocator, alive = true}
+	baseline: Parser
+	_, baseline_outcome := parse_test_filter(
+		t,
+		&baseline,
+		text,
+		test_allocator(&baseline_data),
+	)
+	expect_parse_success(t, &baseline, baseline_outcome)
+	allocation_points := baseline_data.request_count
+	testing.expect(t, allocation_points >= 4)
+	testing.expect_value(t, destroy_parser(&baseline), runtime.Allocator_Error.None)
+
+	for fail_at in 1..=allocation_points {
+		tracker: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&tracker, context.allocator)
+		allocator_data := Test_Allocator{
+			backing = mem.tracking_allocator(&tracker),
+			fail_at = fail_at,
+			alive = true,
+		}
+		parser: Parser
+		_, outcome := parse_test_filter(
+			t,
+			&parser,
+			text,
+			test_allocator(&allocator_data),
+		)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		testing.expect_value(t, len(tracker.allocation_map), 0)
+		mem.tracking_allocator_destroy(&tracker)
+	}
+}
+
+@(test)
+test_numeric_text_free_failure_preserves_owner_for_retry :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "123", test_allocator(&allocator_data))
+	expect_parse_success(t, &parser, outcome)
+	node := &parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, node.number_text, "123")
+	allocator_data.free_failures_remaining = 1
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	testing.expect(t, node.has_number_text)
+	testing.expect_value(t, node.number_text, "123")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_mutable_scalar_payload_cannot_redirect_private_allocation_cleanup :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	tracker.bad_free_callback = mem.tracking_allocator_bad_free_callback_add_to_array
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	parser: Parser
+	_, outcome := parse_test_filter(
+		t,
+		&parser,
+		"1|22|333|4444|55555|666666",
+		test_allocator(&allocator_data),
+	)
+	expect_parse_success(t, &parser, outcome)
+	public_nodes := parser_nodes(&parser)
+	numbers: [6]^Node
+	number_count := 0
+	non_scalar: ^Node
+	for &node in public_nodes {
+		if node.kind == .Number {
+			numbers[number_count] = &node
+			number_count += 1
+		} else if non_scalar == nil {
+			non_scalar = &node
+		}
+	}
+	testing.expect_value(t, number_count, len(numbers))
+	testing.expect(t, non_scalar != nil)
+	testing.expect_value(t, parser.number_allocations.count, len(numbers))
+
+	stack_text := [4]byte{'s', 't', 'a', 'k'}
+	embedded_nul := [3]byte{'x', 0, 'y'}
+	numbers[0].number_text = "static-unowned"
+	numbers[0].has_number_text = false
+	numbers[1].number_text = transmute(string)stack_text[:]
+	numbers[1].has_number_text = true
+	numbers[2].number_text = transmute(string)embedded_nul[:]
+	numbers[2].has_number_text = false
+	zero_length := transmute(runtime.Raw_String)numbers[3].number_text
+	zero_length.len = 0
+	numbers[3].number_text = transmute(string)zero_length
+	numbers[4].number_text = numbers[5].number_text
+	numbers[4].has_number_text = true
+	pointer_only := transmute(runtime.Raw_String)numbers[5].number_text
+	static_header := transmute(runtime.Raw_String)string("q")
+	pointer_only.data = static_header.data
+	numbers[5].number_text = transmute(string)pointer_only
+	numbers[5].has_number_text = false
+	// Odin strings expose pointer and length but no capacity. Corrupt a
+	// non-scalar too, proving registry iteration is not selected through nodes.
+	non_scalar.number_text = transmute(string)embedded_nul[:]
+	non_scalar.has_number_text = true
+
+	live_before := len(tracker.allocation_map)
+	free_before := allocator_data.free_count
+	testing.expect(t, live_before >= len(numbers)+2)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.free_count-free_before, live_before)
+	testing.expect_value(t, len(tracker.bad_free_array), 0)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	allocator_data.alive = false
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_corrupted_scalar_aliases_preserve_cleanup_failure_retry_cursor :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	tracker.bad_free_callback = mem.tracking_allocator_bad_free_callback_add_to_array
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "1|22|333", test_allocator(&allocator_data))
+	expect_parse_success(t, &parser, outcome)
+	public_nodes := parser_nodes(&parser)
+	numbers: [3]^Node
+	number_count := 0
+	for &node in public_nodes {
+		if node.kind == .Number {
+			numbers[number_count] = &node
+			number_count += 1
+		}
+	}
+	testing.expect_value(t, number_count, len(numbers))
+	numbers[0].number_text = numbers[1].number_text
+	numbers[0].has_number_text = false
+	stack_bytes := [2]byte{'z', 0}
+	numbers[1].number_text = transmute(string)stack_bytes[:]
+	numbers[1].has_number_text = true
+	numbers[2].number_text = ""
+	numbers[2].has_number_text = false
+
+	live_before := len(tracker.allocation_map)
+	free_before := allocator_data.free_count
+	allocator_data.free_fail_at = free_before+2
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	testing.expect(t, parser.number_allocations.storage[0].memory == nil)
+	testing.expect(t, parser.number_allocations.storage[1].memory != nil)
+	testing.expect_value(t, len(tracker.allocation_map), live_before-1)
+	testing.expect_value(t, len(tracker.bad_free_array), 0)
+
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.free_count-free_before, live_before+1)
+	testing.expect_value(t, len(tracker.bad_free_array), 0)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	allocator_data.alive = false
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_short_allocator_result_cannot_escape_numeric_parser :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+		short_success = true,
+	}
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "123", test_allocator(&allocator_data))
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_exact_length_nil_backing_numeric_allocation_is_retryably_cleaned :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+		exact_nil_at = 2,
+		free_failures_remaining = 1,
+	}
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "123", test_allocator(&allocator_data))
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect_value(t, allocator_data.request_count, 2)
+	testing.expect_value(t, parser.nodes.count, 1)
+	testing.expect(t, !parser.nodes.storage[0].has_number_text)
+	testing.expect(t, parser.pending_number_text == nil)
+	testing.expect_value(t, len(tracker.allocation_map), 1)
+
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	testing.expect_value(t, len(tracker.allocation_map), 1)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	allocator_data.alive = false
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_short_numeric_allocation_failed_retirement_is_retryable :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	parser: Parser
+	testing.expect(t, init_parser(
+		&parser,
+		diagnostic.borrow_source("<short-number>", "123"),
+		test_allocator(&allocator_data),
+	))
+	// Let the node arena allocate normally, then make the second request (the
+	// numeric text) short and fail its first retirement.
+	allocator_data.short_at = 2
+	allocator_data.free_failures_remaining = 1
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect(t, parser.pending_number_text != nil)
+	testing.expect_value(t, len(tracker.allocation_map), 2)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(private="package")
+expect_invalid_parser_copy :: proc(t: ^testing.T, parser: ^Parser) {
+	testing.expect_value(t, parse_filter(parser).kind, Parse_Outcome_Kind.Misuse)
+	testing.expect(t, parser_nodes(parser) == nil)
+	testing.expect_value(t, parser_source(parser), diagnostic.Source{})
+	testing.expect_value(t, destroy_parser(parser), runtime.Allocator_Error.Invalid_Argument)
+}
+
+@(test)
+test_parser_shallow_copy_runtime_guards_preserve_ready_original :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<copy-ready>", "123")
+	parser: Parser
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	copied := parser
+	copy_of_copy := copied
+
+	expect_invalid_parser_copy(t, &copied)
+	expect_invalid_parser_copy(t, &copy_of_copy)
+	testing.expect(t, !init_parser(&copied, source, context.allocator))
+
+	outcome := parse_filter(&parser)
+	expect_parse_success(t, &parser, outcome)
+	testing.expect_value(t, parser_nodes(&parser)[int(outcome.root)].number_text, "123")
+	testing.expect_value(t, parser_source(&parser), source)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+
+	// Copies made while live remain invalid after the canonical owner retires.
+	expect_invalid_parser_copy(t, &copied)
+	expect_invalid_parser_copy(t, &copy_of_copy)
+}
+
+@(test)
+test_parser_shallow_copy_cannot_touch_pending_numeric_owner :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	parser: Parser
+	testing.expect(t, init_parser(
+		&parser,
+		diagnostic.borrow_source("<copy-pending>", "123"),
+		test_allocator(&allocator_data),
+	))
+	allocator_data.short_at = 2
+	allocator_data.free_failures_remaining = 1
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect(t, parser.pending_number_text != nil)
+	live_before := len(tracker.allocation_map)
+	copied := parser
+	copy_of_copy := copied
+
+	expect_invalid_parser_copy(t, &copied)
+	expect_invalid_parser_copy(t, &copy_of_copy)
+	testing.expect_value(t, len(tracker.allocation_map), live_before)
+	testing.expect(t, parser.pending_number_text != nil)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	expect_invalid_parser_copy(t, &copied)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_parser_shallow_copy_cannot_interfere_with_cleanup_retry :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "123", test_allocator(&allocator_data))
+	expect_parse_success(t, &parser, outcome)
+	copied_before_cleanup := parser
+	allocator_data.free_failures_remaining = 1
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	copied_after_failure := parser
+	live_before := len(tracker.allocation_map)
+
+	expect_invalid_parser_copy(t, &copied_before_cleanup)
+	expect_invalid_parser_copy(t, &copied_after_failure)
+	testing.expect_value(t, len(tracker.allocation_map), live_before)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	expect_invalid_parser_copy(t, &copied_before_cleanup)
+	expect_invalid_parser_copy(t, &copied_after_failure)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_parser_canonical_heap_address_and_preinit_move_are_supported :: proc(t: ^testing.T) {
+	zero: Parser
+	moved_before_init := zero
+	source := diagnostic.borrow_source("<preinit-move>", "true")
+	testing.expect(t, init_parser(&moved_before_init, source, context.allocator))
+	outcome := parse_filter(&moved_before_init)
+	expect_parse_success(t, &moved_before_init, outcome)
+	testing.expect_value(t, destroy_parser(&moved_before_init), runtime.Allocator_Error.None)
+
+	heap_parser, allocation_error := new(Parser)
+	testing.expect_value(t, allocation_error, runtime.Allocator_Error.None)
+	if allocation_error != nil {
+		return
+	}
+	heap_source := diagnostic.borrow_source("<heap-parser>", "456")
+	testing.expect(t, init_parser(heap_parser, heap_source, context.allocator))
+	heap_copy := heap_parser^
+	expect_invalid_parser_copy(t, &heap_copy)
+	heap_outcome := parse_filter(heap_parser)
+	expect_parse_success(t, heap_parser, heap_outcome)
+	testing.expect_value(t, parser_nodes(heap_parser)[int(heap_outcome.root)].number_text, "456")
+	testing.expect_value(t, destroy_parser(heap_parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, free(heap_parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_bulk_lifetime_parser_destruction_retires_all_handles :: proc(t: ^testing.T) {
 	arena: runtime.Arena
 	init_error := runtime.arena_init(&arena, 4096, context.allocator)
@@ -710,10 +1874,10 @@ test_bulk_lifetime_parser_destruction_retires_all_handles :: proc(t: ^testing.T)
 		alive = true,
 	}
 	parser: Parser
-	_, outcome := parse_test_filter(t, &parser, "(.)", test_allocator(&allocator_data))
+	_, outcome := parse_test_filter(t, &parser, "(1)", test_allocator(&allocator_data))
 	expect_parse_success(t, &parser, outcome)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
-	testing.expect_value(t, allocator_data.free_count, 2)
+	testing.expect_value(t, allocator_data.free_count, 4)
 
 	allocator_data.alive = false
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)

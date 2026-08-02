@@ -246,6 +246,27 @@ test_identifiers_bindings_formats_fields_and_longest_match :: proc(t: ^testing.T
 }
 
 @(test)
+test_scalar_keyword_call_delimiters_remain_separate_tokens :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		identifier_end, open_start: int,
+	}
+	cases := [?]Case{
+		{"true(.)", 4, 4},
+		{"false ()", 5, 6},
+		{"null\n\t(1)", 4, 6},
+	}
+	for test_case in cases {
+		source := diagnostic.borrow_source(test_case.text, test_case.text)
+		scanner: Scanner
+		init_test_scanner(t, &scanner, source)
+		expect_token(t, &scanner, source, .Identifier, 0, test_case.identifier_end)
+		expect_token(t, &scanner, source, .Open_Paren, test_case.open_start, test_case.open_start+1)
+		testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
 test_comment_odd_even_backslashes_lf :: proc(t: ^testing.T) {
 	Case :: struct {
 		name: string,
@@ -836,11 +857,15 @@ Test_Allocator :: struct {
 	fail_at:              int,
 	request_count:        int,
 	free_count:           int,
+	free_fail_at:         int,
 	alive:                bool,
 	calls_after_retirement: int,
 	free_failures_remaining: int,
 	resize_unsupported:      bool,
 	resize_call_count:       int,
+	short_success:           bool,
+	short_at:                int,
+	exact_nil_at:            int,
 }
 
 @(private="package")
@@ -878,9 +903,26 @@ test_allocator_proc :: proc(
 		if data.fail_at > 0 && data.request_count == data.fail_at {
 			return nil, .Out_Of_Memory
 		}
+		if data.exact_nil_at == data.request_count && size > 0 {
+			return transmute([]byte)runtime.Raw_Slice{data = nil, len = size}, nil
+		}
+		if (data.short_success || data.short_at == data.request_count) && size > 0 {
+			return data.backing.procedure(
+				data.backing.data,
+				mode,
+				size-1,
+				alignment,
+				old_memory,
+				old_size,
+				location,
+			)
+		}
 	}
 	if mode == .Free {
 		data.free_count += 1
+		if data.free_fail_at == data.free_count {
+			return nil, .Invalid_Pointer
+		}
 		if data.free_failures_remaining > 0 {
 			data.free_failures_remaining -= 1
 			return nil, .Invalid_Pointer

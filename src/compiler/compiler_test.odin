@@ -140,6 +140,211 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 }
 
 @(test)
+scalar_and_general_negate_ast_nodes_validate_without_lowering_or_allocation :: proc(t: ^testing.T) {
+	texts := [?]string{
+		"null", "true", "false", "0", "- 1.25e+2", "--1",
+		"-.", "-.a", "-(.)", "-(.a)", "-(. | .)", "-(., .)",
+		"-(.a?)", "-(.a)?", "--(. | .)",
+	}
+	for text in texts {
+		parser: syntax.Parser
+		source := diagnostic.borrow_source("<scalar>", text)
+		testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
+		parsed := syntax.parse_filter(&parser)
+		testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
+		nodes := syntax.parser_nodes(&parser)
+		for node in nodes {
+			testing.expect(t, node_payload_shape_valid(node), text)
+		}
+		root := nodes[int(parsed.root)]
+		if root.kind == .Negate {
+			testing.expect(t, node_reference_valid(root.child, len(nodes)), text)
+		}
+		expect_invalid_ast_without_program_owner(
+			t,
+			nodes,
+			parsed.root,
+			syntax.parser_source(&parser),
+			true,
+		)
+		testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+scalar_keyword_call_parse_failure_never_reaches_compiler_allocation :: proc(t: ^testing.T) {
+	texts := [?]string{"true(.)", "false()", "null(1)", "-true (.)", "(null\n(1))?"}
+	for text in texts {
+		parser: syntax.Parser
+		source := diagnostic.borrow_source("<call-boundary>", text)
+		testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
+		parsed := syntax.parse_filter(&parser)
+		testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, parsed.error.kind, syntax.Parse_Error_Kind.Unexpected_Token)
+		testing.expect_value(t, parsed.error.actual, syntax.Token_Kind.Open_Paren)
+
+		compiled: program.Program
+		probe := Compiler_Fail_Allocator{backing = context.allocator}
+		if parsed.kind == .Success {
+			_ = lower_filter(
+				&compiled,
+				syntax.parser_nodes(&parser),
+				parsed.root,
+				syntax.parser_source(&parser),
+				runtime.Allocator{procedure = compiler_fail_allocator_proc, data = &probe},
+			)
+		}
+		testing.expect_value(t, probe.allocations, 0)
+		testing.expect(t, !program.program_is_active(&compiled))
+		testing.expect(t, !program.program_is_building(&compiled))
+		testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
+		testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	source := diagnostic.borrow_source("<shape>", "null,true,false,1,-2,(.)?,.a|.")
+	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
+	parsed := syntax.parse_filter(&parser)
+	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
+
+	seen: [syntax.Node_Kind]bool
+	for node in syntax.parser_nodes(&parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	for kind in syntax.Node_Kind {
+		testing.expect(t, seen[kind])
+	}
+
+	compiled: program.Program
+	probe := Compiler_Fail_Allocator{backing = context.allocator}
+	lowered := lower_filter(
+		&compiled,
+		syntax.parser_nodes(&parser),
+		parsed.root,
+		syntax.parser_source(&parser),
+		runtime.Allocator{procedure = compiler_fail_allocator_proc, data = &probe},
+	)
+	testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
+	// The copied outcome and inert output remain valid after the source AST owner
+	// is gone. Scalar lowering is intentionally still unsupported.
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.Invalid_AST)
+	testing.expect_value(t, probe.allocations, 0)
+	testing.expect(t, !program.program_is_active(&compiled))
+	testing.expect(t, !program.program_is_building(&compiled))
+	testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
+}
+
+@(test)
+number_kind_swaps_cannot_smuggle_owned_payload_into_any_other_kind :: proc(t: ^testing.T) {
+	kinds := [?]syntax.Node_Kind{
+		.Identity,
+		.Field,
+		.Parenthesized,
+		.Comma,
+		.Pipe,
+		.Optional,
+		.Null,
+		.Boolean,
+		.Negate,
+	}
+	for kind in kinds {
+		parser: syntax.Parser
+		source := diagnostic.borrow_source("<kind-swap>", "1")
+		testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
+		parsed := syntax.parse_filter(&parser)
+		testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
+		nodes := syntax.parser_nodes(&parser)
+		testing.expect_value(t, len(nodes), 1)
+		nodes[0].kind = kind
+
+		compiled: program.Program
+		probe := Compiler_Fail_Allocator{backing = context.allocator}
+		lowered := lower_filter(
+			&compiled,
+			nodes,
+			parsed.root,
+			syntax.parser_source(&parser),
+			runtime.Allocator{procedure = compiler_fail_allocator_proc, data = &probe},
+		)
+		testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.Invalid_AST)
+		testing.expect_value(t, probe.allocations, 0)
+		testing.expect(t, !program.program_is_active(&compiled))
+		testing.expect(t, !program.program_is_building(&compiled))
+		testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+foreign_payload_is_rejected_for_every_node_discriminant :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<hostile>", "abc")
+	span, span_ok := diagnostic.make_span(source, 0, 3)
+	name_span, name_ok := diagnostic.make_span(source, 0, 1)
+	testing.expect(t, span_ok && name_ok)
+
+	Case :: struct {
+		name: string,
+		valid: syntax.Node,
+		hostile: syntax.Node,
+	}
+	cases := [?]Case{
+		{"Identity/number", {kind = .Identity, span = span}, {kind = .Identity, span = span, number_text = "1", has_number_text = true}},
+		{"Field/child-without-flag", {kind = .Field, span = span, name_span = name_span, has_name_span = true}, {kind = .Field, span = span, child = 1, name_span = name_span, has_name_span = true}},
+		{"Parenthesized/boolean", {kind = .Parenthesized, span = span, child = 0, has_child = true}, {kind = .Parenthesized, span = span, child = 0, has_child = true, boolean_value = true}},
+		{"Comma/child-flag", {kind = .Comma, span = span, left = 0, right = 0}, {kind = .Comma, span = span, left = 0, right = 0, has_child = true}},
+		{"Pipe/name-without-flag", {kind = .Pipe, span = span, left = 0, right = 0}, {kind = .Pipe, span = span, left = 0, right = 0, name_span = name_span}},
+		{"Optional/number-flag", {kind = .Optional, span = span, child = 0, has_child = true}, {kind = .Optional, span = span, child = 0, has_child = true, has_number_text = true}},
+		{"Null/child-without-flag", {kind = .Null, span = span}, {kind = .Null, span = span, child = 1}},
+		{"Boolean/edge", {kind = .Boolean, span = span, boolean_value = true}, {kind = .Boolean, span = span, boolean_value = true, right = 1}},
+		{"Number/name", {kind = .Number, span = span, number_text = "1", has_number_text = true}, {kind = .Number, span = span, number_text = "1", has_number_text = true, name_span = name_span, has_name_span = true}},
+		{"Negate/name-flag", {kind = .Negate, span = span, child = 0, has_child = true}, {kind = .Negate, span = span, child = 0, has_child = true, has_name_span = true}},
+	}
+
+	for test_case in cases {
+		testing.expect(t, node_payload_shape_valid(test_case.valid), test_case.name)
+		testing.expect(t, !node_payload_shape_valid(test_case.hostile), test_case.name)
+		nodes := []syntax.Node{test_case.hostile}
+		expect_invalid_ast_without_program_owner(t, nodes, 0, source, true)
+	}
+}
+
+@(test)
+number_payload_header_and_presence_inconsistencies_are_rejected :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<number-payload>", "1")
+	span, span_ok := diagnostic.make_span(source, 0, 1)
+	testing.expect(t, span_ok)
+
+	static_header := transmute(runtime.Raw_String)string("1")
+	pointer_only := static_header
+	pointer_only.len = 0
+	nil_with_length := static_header
+	nil_with_length.data = nil
+	negative_length := static_header
+	negative_length.len = -1
+
+	completed := syntax.Node{kind = .Number, span = span, number_text = "1", has_number_text = true}
+	testing.expect(t, node_payload_shape_valid(completed))
+	expect_invalid_ast_without_program_owner(t, []syntax.Node{completed}, 0, source, true)
+
+	cases := [?]syntax.Node{
+		{kind = .Number, span = span},
+		{kind = .Number, span = span, has_number_text = true},
+		{kind = .Number, span = span, number_text = "1"},
+		{kind = .Number, span = span, number_text = transmute(string)pointer_only, has_number_text = true},
+		{kind = .Number, span = span, number_text = transmute(string)nil_with_length, has_number_text = true},
+		{kind = .Number, span = span, number_text = transmute(string)negative_length, has_number_text = true},
+	}
+	for node in cases {
+		testing.expect(t, !node_payload_shape_valid(node))
+		expect_invalid_ast_without_program_owner(t, []syntax.Node{node}, 0, source, true)
+	}
+}
+
+@(test)
 precedence_association_and_control_are_explicit :: proc(t: ^testing.T) {
 	parser: syntax.Parser
 	compiled: program.Program
@@ -248,7 +453,9 @@ arena_order_makes_instruction_and_operand_order_deterministic :: proc(t: ^testin
 
 @(test)
 deep_supported_ast_lowers_and_destroys_iteratively :: proc(t: ^testing.T) {
-	DEPTH :: 12_000
+	// This parser boundary is jq-observable and still exercises iterative
+	// compiler lowering and destruction at the exact supported group depth.
+	DEPTH :: 9_994
 	input := make([]byte, DEPTH*2+1)
 	for i in 0..<DEPTH {
 		input[i] = '('

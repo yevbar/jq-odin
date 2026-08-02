@@ -33,6 +33,40 @@ node_reference_valid :: proc(id: syntax.Node_Id, node_count: int) -> bool {
 }
 
 @(private="package")
+string_header_absent :: proc(text: string) -> bool {
+	header := transmute(runtime.Raw_String)text
+	return header.data == nil && header.len == 0
+}
+
+@(private="package")
+node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
+	no_child := !node.has_child && node.child == 0
+	no_edges := node.left == 0 && node.right == 0
+	no_name := !node.has_name_span && node.name_span == diagnostic.Span{}
+	no_number := !node.has_number_text && string_header_absent(node.number_text)
+
+	switch node.kind {
+	case .Identity, .Null:
+		return no_child && no_edges && no_name && !node.boolean_value && no_number
+	case .Field:
+		return (node.has_child || node.child == 0) && no_edges &&
+		       node.has_name_span && !node.boolean_value && no_number
+	case .Parenthesized, .Optional, .Negate:
+		return node.has_child && no_edges && no_name && !node.boolean_value && no_number
+	case .Comma, .Pipe:
+		return no_child && no_name && !node.boolean_value && no_number
+	case .Boolean:
+		return no_child && no_edges && no_name && no_number
+	case .Number:
+		header := transmute(runtime.Raw_String)node.number_text
+		return no_child && no_edges && no_name && !node.boolean_value &&
+		       node.has_number_text && header.data != nil && header.len > 0
+	case:
+		return false
+	}
+}
+
+@(private="package")
 span_to_program :: proc(
 	source: diagnostic.Source,
 	span: diagnostic.Span,
@@ -75,19 +109,20 @@ lower_filter :: proc(
 
 	operand_count: u64
 	text_count: u64
+	has_unlowered_node := false
 	for node in nodes {
 		_, span_error := span_to_program(source, node.span)
 		if span_error != .None {
 			return Lower_Outcome{kind = span_error}
 		}
+		if !node_payload_shape_valid(node) {
+			return Lower_Outcome{kind = .Invalid_AST}
+		}
 
 		switch node.kind {
 		case .Identity:
-			if node.has_child || node.has_name_span {
-				return Lower_Outcome{kind = .Invalid_AST}
-			}
 		case .Field:
-			if !node.has_name_span || node.has_child && !node_reference_valid(node.child, len(nodes)) {
+			if node.has_child && !node_reference_valid(node.child, len(nodes)) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
@@ -99,25 +134,33 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Parenthesized, .Optional:
-			if !node.has_child || node.has_name_span ||
-			   !node_reference_valid(node.child, len(nodes)) {
+			if !node_reference_valid(node.child, len(nodes)) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 			if !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Comma, .Pipe:
-			if node.has_child || node.has_name_span ||
-			   !node_reference_valid(node.left, len(nodes)) ||
+			if !node_reference_valid(node.left, len(nodes)) ||
 			   !node_reference_valid(node.right, len(nodes)) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 			if !checked_count_add(&operand_count, 2) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
+		case .Negate:
+			if !node_reference_valid(node.child, len(nodes)) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+			has_unlowered_node = true
+		case .Null, .Boolean, .Number:
+			has_unlowered_node = true
 		case:
 			return Lower_Outcome{kind = .Invalid_AST}
 		}
+	}
+	if has_unlowered_node {
+		return Lower_Outcome{kind = .Invalid_AST}
 	}
 
 	init_error := program.init_program(
@@ -196,6 +239,12 @@ lower_filter :: proc(
 			})
 			assert(right_ok)
 			operand_at += 1
+		case .Null, .Boolean, .Number, .Negate:
+			cleanup_error := program.destroy_program(output)
+			if cleanup_error != nil {
+				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}
+			}
+			return Lower_Outcome{kind = .Invalid_AST}
 		case:
 			cleanup_error := program.destroy_program(output)
 			if cleanup_error != nil {
