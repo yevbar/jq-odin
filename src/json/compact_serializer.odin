@@ -84,6 +84,13 @@ Compact_Result :: struct {
 	byte_count: int,
 }
 
+// Pretty_Serializer and Pretty_Result deliberately mirror the compact owner
+// layouts so both public modes use the same bounded traversal and cleanup
+// implementation. They remain distinct types, preventing a result or owner
+// from being passed to the other mode accidentally.
+Pretty_Serializer :: distinct Compact_Serializer
+Pretty_Result :: distinct Compact_Result
+
 @(private)
 serializer_valid :: proc(serializer: ^Compact_Serializer) -> bool {
 	return serializer != nil && serializer.owner == rawptr(serializer) &&
@@ -253,6 +260,18 @@ append_byte :: proc(serializer: ^Compact_Serializer, byte_value: byte) -> Compac
 	if err.kind != .None do return err
 	serializer.output_memory[serializer.output_length] = byte_value
 	serializer.output_length += 1
+	return {}
+}
+
+@(private)
+append_pretty_indent :: proc(serializer: ^Compact_Serializer, depth: int) -> Compact_Error {
+	if depth < 0 || depth > max(int) / 2 do return {kind = .Size_Overflow}
+	err := append_byte(serializer, '\n')
+	if err.kind != .None do return err
+	for _ in 0..<depth * 2 {
+		err = append_byte(serializer, ' ')
+		if err.kind != .None do return err
+	}
 	return {}
 }
 
@@ -732,18 +751,15 @@ finish_compact_failure :: proc(serializer: ^Compact_Serializer, err: Compact_Err
 	return err
 }
 
-// serialize_compact borrows input and writes one compact jq-compatible printer
-// representation into result. At jq's depth cutoff that representation contains
-// a raw <skipped: too deep> marker rather than valid JSON. result must point to
-// an inert Compact_Result. On success it owns a length-delimited allocation; on
-// failure it remains inert. Ordinary
-// terminal failures leave the serializer Ready and reusable; a failure that
-// retains cleanup ownership leaves it Cleanup_Required and only destroyable.
-// The serializer and input must remain live and unmutated for the call.
-serialize_compact :: proc(
+// Both public layout modes share this ownership and traversal implementation.
+// At jq's depth cutoff the representation contains a raw
+// <skipped: too deep> marker rather than valid JSON.
+@(private)
+serialize_json :: proc(
 	serializer: ^Compact_Serializer,
 	input: ^value.Value,
 	result: ^Compact_Result,
+	pretty: bool,
 ) -> Compact_Error {
 	if !serializer_valid(serializer) || serializer.state != .Ready {
 		return {kind = .Invalid_Serializer_Owner}
@@ -816,9 +832,13 @@ serialize_compact :: proc(
 				frame.started = true
 				if err.kind == .None && frame.length == 0 do err = append_byte(serializer, ']')
 			} else if frame.index >= frame.length {
-				err = append_byte(serializer, ']')
+				if pretty do err = append_pretty_indent(serializer, frame.depth)
+				if err.kind == .None do err = append_byte(serializer, ']')
 			} else {
 				if frame.index > 0 do err = append_byte(serializer, ',')
+				if err.kind == .None && pretty {
+					err = append_pretty_indent(serializer, frame.depth + 1)
+				}
 				if err.kind == .None {
 					child, ok := value.array_element_copy(&frame.node, frame.index)
 					if !ok {
@@ -854,19 +874,24 @@ serialize_compact :: proc(
 				frame.started = true
 				if err.kind == .None && frame.length == 0 do err = append_byte(serializer, '}')
 			} else if frame.index >= frame.length {
-				err = append_byte(serializer, '}')
+				if pretty do err = append_pretty_indent(serializer, frame.depth)
+				if err.kind == .None do err = append_byte(serializer, '}')
 			} else {
 				key, child, ok := value.object_iter_next_copy(&frame.node, &frame.iterator)
 				if !ok {
 					err = {kind = .Value_Access_Failure, value_kind = .Object}
 				} else {
 					if frame.index > 0 do err = append_byte(serializer, ',')
+					if err.kind == .None && pretty {
+						err = append_pretty_indent(serializer, frame.depth + 1)
+					}
 					key_bytes, key_ok := value.string_borrowed(&key)
 					if err.kind == .None && !key_ok {
 						err = {kind = .Value_Access_Failure, value_kind = .Object}
 					}
 					if err.kind == .None do err = append_quoted(serializer, key_bytes)
 					if err.kind == .None do err = append_byte(serializer, ':')
+					if err.kind == .None && pretty do err = append_byte(serializer, ' ')
 					key_destroy_error := value.destroy_value(&key)
 					if key_destroy_error != nil {
 						serializer.frames[serializer.frame_count] = frame
@@ -943,4 +968,54 @@ serialize_compact :: proc(
 	serializer.output_memory = nil
 	serializer.output_length = 0
 	return {}
+}
+
+serialize_compact :: proc(
+	serializer: ^Compact_Serializer,
+	input: ^value.Value,
+	result: ^Compact_Result,
+) -> Compact_Error {
+	return serialize_json(serializer, input, result, false)
+}
+
+init_pretty_serializer :: proc(
+	serializer: ^Pretty_Serializer,
+	allocator: runtime.Allocator,
+) -> bool {
+	return init_compact_serializer(cast(^Compact_Serializer)serializer, allocator)
+}
+
+pretty_result_bytes :: proc(result: ^Pretty_Result) -> (string, bool) {
+	return compact_result_bytes(cast(^Compact_Result)result)
+}
+
+take_pretty_result :: proc(destination, source: ^Pretty_Result) -> Compact_Error_Kind {
+	return take_compact_result(
+		cast(^Compact_Result)destination,
+		cast(^Compact_Result)source,
+	)
+}
+
+destroy_pretty_result :: proc(result: ^Pretty_Result) -> runtime.Allocator_Error {
+	return destroy_compact_result(cast(^Compact_Result)result)
+}
+
+destroy_pretty_serializer :: proc(serializer: ^Pretty_Serializer) -> runtime.Allocator_Error {
+	return destroy_compact_serializer(cast(^Compact_Serializer)serializer)
+}
+
+// serialize_pretty borrows input and emits jq 1.8.1's default two-space pretty
+// term bytes. It intentionally excludes the CLI's trailing newline, color,
+// ASCII-only output, and sorted-key options.
+serialize_pretty :: proc(
+	serializer: ^Pretty_Serializer,
+	input: ^value.Value,
+	result: ^Pretty_Result,
+) -> Compact_Error {
+	return serialize_json(
+		cast(^Compact_Serializer)serializer,
+		input,
+		cast(^Compact_Result)result,
+		true,
+	)
 }
