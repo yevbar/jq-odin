@@ -1,0 +1,8 @@
+id	area	claim	source_path	source_lines	author	reviewer_1	reviewer_2	status
+compat-001	shtest-raw-input	The fixture writes five raw segments containing two embedded NUL bytes and checks both one slurped raw string and three raw inputs.	upstream/jq/tests/shtest	38-40	codex			proposed
+compat-002	shtest-json-sequence	The JSON-sequence fixtures exercise recovery after truncated records, a final valid null record, parse-error-only success, exit status 4 when -e produces no valid output, a numeric value truncated at EOF, and an inputs error after a trailing newline.	upstream/jq/tests/shtest	53-98	codex			proposed
+compat-003	shtest-control-bytes	The control-character regression passes literal bytes U+0001, U+0002, U+001E, and U+001F inside JSON strings and expects parse failure, while space, tilde, and DEL in a string are accepted and printed.	upstream/jq/tests/shtest	100-113	codex			proposed
+compat-004	shtest-exit-status	The exit-status fixtures cover matches at the first, middle, and last input, no output with status 4, and final false and true outputs.	upstream/jq/tests/shtest	115-126	codex			proposed
+compat-005	shtest-malformed-input	The regressions require non-success for an unterminated string and specifically status 5 for a bare invalid word.	upstream/jq/tests/shtest	129-143	codex			proposed
+compat-006	shtest-pipeline	The large-exponent regression is explicitly a two-jq-process pipeline whose second process selects .a with exit-status behavior.	upstream/jq/tests/shtest	145-149	codex			proposed
+compat-007	shtest-slurp-stream	The fixtures run slurp-add and slurp-stream over adjacent JSON inputs both without and with a trailing newline and compare exact compact output.	upstream/jq/tests/shtest	151-163	codex			proposed

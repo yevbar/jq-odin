@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "raw-slurp-nul",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 38, "line_end": 39},
+      "argv": ["-b", "-Rse", ". == \"a\\u0000b\\nc\\u0000d\\ne\""],
+      "stdin_b64": "YQBiCmMAZApl",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "raw-inputs-nul",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 38, "line_end": 40},
+      "argv": ["-b", "-Rne", "[inputs] == [\"a\\u0000b\", \"c\\u0000d\", \"e\"]"],
+      "stdin_b64": "YQBiCmMAZApl",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "constant-folding-disassembly-loop",
+      "kind": "skip",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 42, "line_end": 51},
+      "reason": "The fixture derives and compares line counts through command substitution, wc, and a shell loop; this first single-process adapter cannot model that assertion without a pipeline/interpreter."
+    },
+    {
+      "id": "seq-recover-records",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 53, "line_end": 60},
+      "argv": ["-b", "-ces", "--seq", ". == [2,3,[4,5],true,\"ab\",{},false]"],
+      "stdin_b64": "MR4yIDMKWzAsMR5bNCw1XXRydWUiYWIieyJjIjo0Hnt9eyJkIjo1LCJlIjo2Ih5mYWxzZQo=",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "seq-recover-final-null",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 62, "line_end": 68},
+      "argv": ["-b", "-ces", "--seq", ". == [2,3,[4,5],true,\"ab\",{},null]"],
+      "stdin_b64": "MR4yIDMKWzAsMR5bNCw1XXRydWUiYWIieyJjIjo0Hnt9eyJkIjo1LCJlIjo2ImZhbHNlCh5udWxs",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "seq-only-parse-error-success",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 70, "line_end": 76},
+      "argv": ["-b", "-c", "--seq", "."],
+      "stdin_b64": "ImZvbw==",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "seq-only-parse-error-exit-status",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 78, "line_end": 82},
+      "argv": ["-b", "-ce", "--seq", "."],
+      "stdin_b64": "ImZvbw==",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "seq-truncated-number-eof",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 84, "line_end": 89},
+      "argv": ["-b", "-c", "--seq", "."],
+      "stdin_b64": "MQ==",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "seq-inputs-trailing-newline-error",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 91, "line_end": 98},
+      "argv": ["-b", "-cen", "--seq", "[inputs] == []"],
+      "stdin_b64": "MQo=",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "json-control-u0001",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 100, "line_end": 110},
+      "argv": ["-b", "."],
+      "stdin_b64": "IgEi",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "json-control-u0002",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 100, "line_end": 110},
+      "argv": ["-b", "."],
+      "stdin_b64": "IgIi",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "json-control-u001e",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 100, "line_end": 110},
+      "argv": ["-b", "."],
+      "stdin_b64": "Ih4i",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "json-control-u001f",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 100, "line_end": 110},
+      "argv": ["-b", "."],
+      "stdin_b64": "Ih8i",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "json-space-tilde-del",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 111, "line_end": 113},
+      "argv": ["-b", "."],
+      "stdin_b64": "IiB+fyI=",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "exit-status-first-match",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 115, "line_end": 117},
+      "argv": ["-b", "--exit-status", "select(.i==1)"],
+      "stdin_b64": "eyJpIjogMX0KeyJpIjogMn0KeyJpIjogM30K",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "exit-status-middle-match",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 115, "line_end": 118},
+      "argv": ["-b", "--exit-status", "select(.i==2)"],
+      "stdin_b64": "eyJpIjogMX0KeyJpIjogMn0KeyJpIjogM30K",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "exit-status-last-match",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 115, "line_end": 119},
+      "argv": ["-b", "--exit-status", "select(.i==3)"],
+      "stdin_b64": "eyJpIjogMX0KeyJpIjogMn0KeyJpIjogM30K",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "exit-status-no-output",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 120, "line_end": 122},
+      "argv": ["-b", "--exit-status", "select(.i==4)"],
+      "stdin_b64": "eyJpIjogMX0KeyJpIjogMn0KeyJpIjogM30K",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "exit-status-false",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 123, "line_end": 125},
+      "argv": ["-b", "--exit-status", "select(.i==2) | false"],
+      "stdin_b64": "eyJpIjogMX0KeyJpIjogMn0KeyJpIjogM30K",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "exit-status-true",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 126, "line_end": 126},
+      "argv": ["-b", "--exit-status", "select(.i==2) | true"],
+      "stdin_b64": "eyJpIjogMX0KeyJpIjogMn0KeyJpIjogM30K",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "malformed-unterminated-string",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 129, "line_end": 134},
+      "argv": ["-b", "-e", "."],
+      "stdin_b64": "ImEK",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "malformed-bare-word-status",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 136, "line_end": 143},
+      "argv": ["-b", "."],
+      "stdin_b64": "Zm9vYmFyCg==",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "large-exponent-two-process-pipeline",
+      "kind": "skip",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 145, "line_end": 149},
+      "reason": "The regression assertion pipes one jq process into a second jq process; this first adapter intentionally models exactly one process per side and does not guess pipeline semantics."
+    },
+    {
+      "id": "slurp-adjacent-json",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 151, "line_end": 154},
+      "argv": ["-b", "-cs", "add"],
+      "stdin_b64": "WzEsMl1bMyw0XQ==",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "slurp-adjacent-json-newline",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 151, "line_end": 156},
+      "argv": ["-b", "-cs", "add"],
+      "stdin_b64": "WzEsMl1bMyw0XQo=",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "stream-slurp-adjacent-json",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 158, "line_end": 161},
+      "argv": ["-b", "-c", "-s", "--stream", "."],
+      "stdin_b64": "WzFdWzJd",
+      "timeout_seconds": 5
+    },
+    {
+      "id": "stream-slurp-adjacent-json-newline",
+      "kind": "run",
+      "provenance": {"source": "upstream/jq/tests/shtest", "line_start": 158, "line_end": 163},
+      "argv": ["-b", "-c", "-s", "--stream", "."],
+      "stdin_b64": "WzFdWzJdCg==",
+      "timeout_seconds": 5
+    }
+  ]
+}
