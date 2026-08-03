@@ -40,6 +40,19 @@ string_header_absent :: proc(text: string) -> bool {
 
 @(private="package")
 node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
+	switch node.form {
+	case .Kinded:
+		if node.binary_operator != {} ||
+		   node.operator_span != (diagnostic.Span{}) ||
+		   node.has_operator_span {
+			return false
+		}
+	case .Binary:
+		return false
+	case:
+		return false
+	}
+
 	no_child := !node.has_child && node.child == 0
 	no_edges := node.left == 0 && node.right == 0
 	no_name := !node.has_name_span && node.name_span == diagnostic.Span{}
@@ -121,6 +134,13 @@ lower_filter :: proc(
 	text_count: u64
 	has_unlowered_node := false
 	for node in nodes {
+		switch node.form {
+		case .Kinded:
+		case .Binary:
+			return Lower_Outcome{kind = .Invalid_AST}
+		case:
+			return Lower_Outcome{kind = .Invalid_AST}
+		}
 		_, span_error := span_to_program(source, node.span)
 		if span_error != .None {
 			return Lower_Outcome{kind = span_error}
@@ -192,6 +212,28 @@ lower_filter :: proc(
 	text_at: u32
 	bytes := diagnostic.source_bytes(source)
 	for node, node_at in nodes {
+		switch node.form {
+		case .Kinded:
+		case .Binary:
+			cleanup_error := program.destroy_program(output)
+			if cleanup_error != nil {
+				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}
+			}
+			return Lower_Outcome{kind = .Invalid_AST}
+		case:
+			cleanup_error := program.destroy_program(output)
+			if cleanup_error != nil {
+				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}
+			}
+			return Lower_Outcome{kind = .Invalid_AST}
+		}
+		if !node_payload_shape_valid(node) {
+			cleanup_error := program.destroy_program(output)
+			if cleanup_error != nil {
+				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}
+			}
+			return Lower_Outcome{kind = .Invalid_AST}
+		}
 		span, span_error := span_to_program(source, node.span)
 		assert(span_error == .None)
 		instruction := program.Instruction{

@@ -19,27 +19,48 @@ Node_Kind :: enum {
 
 Node_Id :: distinct int
 
-// Node is source-level syntax. All spans borrow the Parser's Source. Number's
+Node_Form :: enum u8 {
+	Kinded,
+	Binary,
+}
+
+Binary_Operator :: enum u8 {
+	Add,
+	Subtract,
+	Multiply,
+	Divide,
+	Modulo,
+}
+
+// Node is source-level syntax. form selects either a legacy kinded node or the
+// explicit Binary payload; kind has no semantic meaning for Binary. All spans
+// borrow the Parser's Source. Number's
 // number_text and String's string_text are independently allocated,
 // length-delimited bytes owned by the Parser. Each is present only when its
 // corresponding has_* flag is true and remains valid until Parser destruction
 // begins. child and left/right are indices into the Parser-owned node arena.
 // Field has child only when it is a postfix suffix; a standalone field applies
-// to implicit identity and therefore has no explicit child node.
+// to implicit identity and therefore has no explicit child node. Binary has
+// left and right operands plus an exact operator_span; neither span owns source
+// bytes.
 Node :: struct {
-	kind:          Node_Kind,
-	span:          diagnostic.Span,
-	child:         Node_Id,
-	has_child:     bool,
-	left:          Node_Id,
-	right:         Node_Id,
-	name_span:     diagnostic.Span,
-	has_name_span: bool,
-	boolean_value:  bool,
-	number_text:    string,
-	has_number_text: bool,
-	string_text:     string,
-	has_string_text: bool,
+	form:              Node_Form,
+	kind:              Node_Kind,
+	span:              diagnostic.Span,
+	child:             Node_Id,
+	has_child:         bool,
+	left:              Node_Id,
+	right:             Node_Id,
+	name_span:         diagnostic.Span,
+	has_name_span:     bool,
+	boolean_value:     bool,
+	number_text:       string,
+	has_number_text:   bool,
+	string_text:       string,
+	has_string_text:   bool,
+	binary_operator:   Binary_Operator,
+	operator_span:     diagnostic.Span,
+	has_operator_span: bool,
 }
 
 Parse_Error_Kind :: enum {
@@ -103,7 +124,23 @@ JQ_GROUP_OR_ORDERED_STACK_OVERHEAD :: 6
 JQ_QUERY_OPERATOR_STACK_OVERHEAD   :: 7
 JQ_FIRST_POSTFIX_STACK_INCREMENT   :: 1
 JQ_OPEN_PIPE_STACK_ENTRIES         :: 2
+JQ_OPEN_COMMA_STACK_ENTRIES        :: 2
+JQ_OPEN_BINARY_STACK_ENTRIES       :: 2
 JQ_STRING_TERM_STACK_INCREMENT     :: 1
+
+@(private="package")
+Parse_Frame :: struct {
+	parenthesized:             Node_Id,
+	outer_current:             Node_Id,
+	outer_pipe_root:           Node_Id,
+	outer_pipe_tail:           Node_Id,
+	outer_binary_boundary:     Node_Id,
+	outer_negate_boundary:     Node_Id,
+	outer_pipe_count:          int,
+	outer_prefix_overhead:     int,
+	outer_minus_before_group: bool,
+	outer_term_has_postfix:    bool,
+}
 
 // Number_Allocation is parser-private ownership authority. Public Node string
 // headers are deliberately not consulted during cleanup because parser_nodes
@@ -118,15 +155,16 @@ String_Allocation :: struct {
 	memory: []byte,
 }
 
-// Parser owns its scanner, flat AST arena, and every Number node's exact source
-// text. source is otherwise borrowed; nodes, numeric text, and scanner state
-// use allocator. A live Parser must remain at its initialized address and must
-// not be copied. After parse_filter, only parser_nodes, parser_source, and
-// destroy_parser are valid.
+// Parser owns its scanner, flat AST arena, parse frames, and every Number node's
+// exact source text. source is otherwise borrowed; frames, nodes, numeric text,
+// and scanner state use allocator. A live Parser must remain at its initialized
+// address and must not be copied. After parse_filter, only parser_nodes,
+// parser_source, and destroy_parser are valid.
 Parser :: struct {
 	source:              diagnostic.Source,
 	scanner:             Scanner,
 	nodes:               Fallible_Buffer(Node),
+	frames:              Fallible_Buffer(Parse_Frame),
 	number_allocations:  Fallible_Buffer(Number_Allocation),
 	string_allocations:  Fallible_Buffer(String_Allocation),
 	allocator:           runtime.Allocator,
@@ -175,6 +213,7 @@ init_parser :: proc(
 	parser.source = source
 	parser.allocator = allocator
 	init_fallible_buffer(&parser.nodes, allocator)
+	init_fallible_buffer(&parser.frames, allocator)
 	init_fallible_buffer(&parser.number_allocations, allocator)
 	init_fallible_buffer(&parser.string_allocations, allocator)
 	parser.state = .Ready
@@ -328,6 +367,13 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 			return nodes_error
 		}
 	}
+	if parser.frames.state != .Empty {
+		frames_error := destroy_fallible_buffer(&parser.frames)
+		if frames_error != nil {
+			parser.state = .Cleanup_Failed
+			return frames_error
+		}
+	}
 
 	parser.source = {}
 	parser.allocator = {}
@@ -341,27 +387,30 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 	return nil
 }
 
-// parse_pipe is an explicit-state precedence parser. Parenthesized nodes hold
-// the suspended outer state while their child is parsed, then become ordinary
-// AST nodes in place. Pipe and comma nodes similarly begin as incomplete
-// placeholders and are completed before success. Partial placeholders remain
-// owned by parser.nodes on every input or resource failure.
+// parse_pipe is an explicit-state precedence parser. Parenthesized state lives
+// in parser.frames; binary, pipe, and comma nodes begin as incomplete arena
+// placeholders and are completed before success. Partial state remains owned
+// by the Parser on every input or resource failure.
 @(private="package")
 parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 	invalid_id := Node_Id(-1)
 	current, pipe_root, pipe_tail := invalid_id, invalid_id, invalid_id
-	frame := invalid_id
 	term := invalid_id
 	term_ready := false
 	negate_frame := invalid_id
+	binary_frame := invalid_id
 	group_depth := 0
 	minus_depth := 0
-	// Every unreduced right-recursive pipe contributes two simultaneously-live
-	// generated-parser entries, including pipes suspended outside a group.
+	// Every unreduced Query or Expr operator contributes two simultaneously-live
+	// generated-parser entries while its right operand is being parsed.
 	live_pipe_count := 0
 	// This local count lets a completed group's pipes leave the live total;
 	// the suspended outer chain is recovered from its existing placeholders.
 	current_pipe_count := 0
+	// Commas reduce before another comma is shifted, but remain live across the
+	// tighter binary, grouped, postfix, and pipe states in their right operand.
+	live_comma_count := 0
+	live_binary_count := 0
 	term_prefix_overhead := JQ_PREFIX_STACK_OVERHEAD
 	minus_before_group := false
 	term_has_postfix := false
@@ -376,6 +425,9 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			token := parser.lookahead.token
 			#partial switch token.kind {
 			case .Open_Paren:
+				outer_prefix_overhead := term_prefix_overhead
+				outer_minus_before_group := minus_before_group
+				outer_term_has_postfix := term_has_postfix
 				group_depth += 1
 				if minus_depth > 0 {
 					minus_before_group = true
@@ -384,25 +436,37 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				if parser_stack_budget_exhausted(
 					group_depth+minus_depth,
 					live_pipe_count,
+					live_comma_count,
+					live_binary_count,
 					term_prefix_overhead,
 					term_has_postfix,
 				) {
 					fail_resource(parser, .Out_Of_Memory)
 					return {}, false
 				}
-				new_frame, ok := append_node(parser, Node{
+				parenthesized, ok := append_node(parser, Node{
 					kind = .Parenthesized,
 					span = token.span,
-					child = frame,
-					left = current,
-					right = pipe_root,
-					has_child = current != invalid_id,
-					has_name_span = pipe_root != invalid_id,
 				})
 				if !ok {
 					return {}, false
 				}
-				frame = new_frame
+				frame_error := append_fallible_buffer(&parser.frames, Parse_Frame{
+					parenthesized = parenthesized,
+					outer_current = current,
+					outer_pipe_root = pipe_root,
+					outer_pipe_tail = pipe_tail,
+					outer_binary_boundary = binary_frame,
+					outer_negate_boundary = negate_frame,
+					outer_pipe_count = current_pipe_count,
+					outer_prefix_overhead = outer_prefix_overhead,
+					outer_minus_before_group = outer_minus_before_group,
+					outer_term_has_postfix = outer_term_has_postfix,
+				})
+				if frame_error != nil {
+					fail_resource(parser, frame_error)
+					return {}, false
+				}
 				current, pipe_root, pipe_tail = invalid_id, invalid_id, invalid_id
 				current_pipe_count = 0
 				advance(parser)
@@ -443,6 +507,8 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 					token.span,
 					group_depth+minus_depth,
 					live_pipe_count,
+					live_comma_count,
+					live_binary_count,
 					term_prefix_overhead,
 					term_has_postfix,
 				)
@@ -460,6 +526,8 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				if parser_stack_budget_exhausted(
 					group_depth+minus_depth,
 					live_pipe_count,
+					live_comma_count,
+					live_binary_count,
 					term_prefix_overhead,
 					term_has_postfix,
 				) {
@@ -524,29 +592,24 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			term,
 			group_depth+minus_depth,
 			live_pipe_count,
+			live_comma_count,
+			live_binary_count,
 			term_prefix_overhead,
 			&term_has_postfix,
 		)
 		if !ok {
 			return {}, false
 		}
-		for negate_frame != invalid_id {
+		negate_boundary := invalid_id
+		binary_boundary := invalid_id
+		if parser.frames.count > 0 {
+			active_frame := parser.frames.storage[parser.frames.count-1]
+			negate_boundary = active_frame.outer_negate_boundary
+			binary_boundary = active_frame.outer_binary_boundary
+		}
+		for negate_frame != negate_boundary {
 			frame_id := negate_frame
 			frame_node := &parser.nodes.storage[int(frame_id)]
-			if frame != invalid_id {
-				negate_start, _, negate_span_ok := diagnostic.span_offsets(
-					parser.source,
-					frame_node.span,
-				)
-				group_start, _, group_span_ok := diagnostic.span_offsets(
-					parser.source,
-					parser.nodes.storage[int(frame)].span,
-				)
-				assert(negate_span_ok && group_span_ok)
-				if negate_start < group_start {
-					break
-				}
-			}
 			previous_frame := frame_node.left
 			span, span_ok := spanning(parser, frame_node.span, parser.nodes.storage[int(term)].span)
 			assert(span_ok)
@@ -559,6 +622,52 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			term = frame_id
 			negate_frame = previous_frame
 			minus_depth -= 1
+		}
+
+		next_operator, next_precedence, has_binary_operator := binary_from_token(parser)
+		term = reduce_binary_nodes(
+			parser,
+			term,
+			&binary_frame,
+			binary_boundary,
+			next_precedence,
+			has_binary_operator,
+			&live_binary_count,
+		)
+		if has_binary_operator {
+			if parser_stack_budget_exhausted(
+				group_depth+minus_depth,
+				live_pipe_count,
+				live_comma_count,
+				live_binary_count,
+				JQ_QUERY_OPERATOR_STACK_OVERHEAD,
+				false,
+			) {
+				fail_resource(parser, .Out_Of_Memory)
+				return {}, false
+			}
+			operator_token := parser.lookahead.token
+			binary, binary_ok := append_node(parser, Node{
+				form = .Binary,
+				span = operator_token.span,
+				child = binary_frame,
+				has_child = true, // transient link to the next lower pending operator
+				left = term,
+				binary_operator = next_operator,
+				operator_span = operator_token.span,
+				has_operator_span = true,
+			})
+			if !binary_ok {
+				return {}, false
+			}
+			binary_frame = binary
+			live_binary_count += 1
+			advance(parser)
+			term_ready = false
+			term_prefix_overhead = JQ_GROUP_OR_ORDERED_STACK_OVERHEAD if group_depth > 0 else JQ_PREFIX_STACK_OVERHEAD
+			minus_before_group = minus_depth > 0
+			term_has_postfix = false
+			continue
 		}
 
 		if current == invalid_id {
@@ -575,6 +684,7 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			)
 			assert(span_ok)
 			comma.span = span
+			live_comma_count -= 1
 		}
 		term_ready = false
 
@@ -582,6 +692,8 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			if parser_stack_budget_exhausted(
 				group_depth+minus_depth,
 				live_pipe_count,
+				live_comma_count,
+				live_binary_count,
 				JQ_QUERY_OPERATOR_STACK_OVERHEAD,
 				false,
 			) {
@@ -597,6 +709,7 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				return {}, false
 			}
 			current = comma
+			live_comma_count += 1
 			advance(parser)
 			term_prefix_overhead = JQ_GROUP_OR_ORDERED_STACK_OVERHEAD if group_depth > 0 else JQ_PREFIX_STACK_OVERHEAD
 			minus_before_group = minus_depth > 0
@@ -608,6 +721,8 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			if parser_stack_budget_exhausted(
 				group_depth+minus_depth,
 				live_pipe_count,
+				live_comma_count,
+				live_binary_count,
 				JQ_QUERY_OPERATOR_STACK_OVERHEAD,
 				false,
 			) {
@@ -663,17 +778,13 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			result = pipe_root
 		}
 
-		if token_is(parser, .Close_Paren) && frame != invalid_id {
+		if token_is(parser, .Close_Paren) && parser.frames.count > 0 {
 			close := parser.lookahead.token
 			advance(parser)
 
-			frame_id := frame
-			frame_node := &parser.nodes.storage[int(frame_id)]
-			previous_frame := frame_node.child
-			outer_current := frame_node.left
-			outer_pipe_root := frame_node.right
-			outer_has_current := frame_node.has_child
-			outer_has_pipe := frame_node.has_name_span
+			frame_state := parser.frames.storage[parser.frames.count-1]
+			parser.frames.count -= 1
+			frame_node := &parser.nodes.storage[int(frame_state.parenthesized)]
 			span, span_ok := spanning(parser, frame_node.span, close.span)
 			assert(span_ok)
 			frame_node^ = Node{
@@ -683,27 +794,22 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				has_child = true,
 			}
 
-			frame = previous_frame
 			live_pipe_count -= current_pipe_count
-			current = outer_current if outer_has_current else invalid_id
-			pipe_root = outer_pipe_root if outer_has_pipe else invalid_id
-			pipe_tail = invalid_id
-			current_pipe_count = 0
-			if outer_has_pipe {
-				pipe_tail = pipe_root
-				current_pipe_count = 1
-				for !parser.nodes.storage[int(pipe_tail)].has_child {
-					pipe_tail = parser.nodes.storage[int(pipe_tail)].right
-					current_pipe_count += 1
-				}
-			}
-			term = frame_id
+			current = frame_state.outer_current
+			pipe_root = frame_state.outer_pipe_root
+			pipe_tail = frame_state.outer_pipe_tail
+			current_pipe_count = frame_state.outer_pipe_count
+			term_prefix_overhead = frame_state.outer_prefix_overhead
+			minus_before_group = frame_state.outer_minus_before_group
+			term_has_postfix = frame_state.outer_term_has_postfix
+			assert(binary_frame == frame_state.outer_binary_boundary)
+			term = frame_state.parenthesized
 			term_ready = true
 			group_depth -= 1
 			continue
 		}
 
-		if frame != invalid_id {
+		if parser.frames.count > 0 {
 			fail_from_lookahead(parser, .Close_Paren)
 			return {}, false
 		}
@@ -729,8 +835,75 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 }
 
 @(private="package")
+binary_precedence :: proc(operator: Binary_Operator) -> int {
+	switch operator {
+	case .Add, .Subtract:
+		return 1
+	case .Multiply, .Divide, .Modulo:
+		return 2
+	}
+	return 0
+}
+
+@(private="package")
+binary_from_token :: proc(parser: ^Parser) -> (Binary_Operator, int, bool) {
+	if parser.failed || parser.lookahead.kind != .Token {
+		return {}, 0, false
+	}
+	#partial switch parser.lookahead.token.kind {
+	case .Plus:
+		return .Add, 1, true
+	case .Minus:
+		return .Subtract, 1, true
+	case .Multiply:
+		return .Multiply, 2, true
+	case .Divide:
+		return .Divide, 2, true
+	case .Modulo:
+		return .Modulo, 2, true
+	case:
+		return {}, 0, false
+	}
+}
+
+@(private="package")
+reduce_binary_nodes :: proc(
+	parser: ^Parser,
+	initial: Node_Id,
+	frame: ^Node_Id,
+	boundary: Node_Id,
+	next_precedence: int,
+	has_next: bool,
+	live_binary_count: ^int,
+) -> Node_Id {
+	node := initial
+	for frame^ != boundary {
+		binary := &parser.nodes.storage[int(frame^)]
+		assert(binary.form == .Binary && binary.has_child)
+		if has_next && binary_precedence(binary.binary_operator) < next_precedence {
+			break
+		}
+		previous := binary.child
+		span, span_ok := spanning(
+			parser,
+			parser.nodes.storage[int(binary.left)].span,
+			parser.nodes.storage[int(node)].span,
+		)
+		assert(span_ok)
+		binary.span = span
+		binary.right = node
+		binary.child = 0
+		binary.has_child = false
+		node = frame^
+		frame^ = previous
+		live_binary_count^ -= 1
+	}
+	return node
+}
+
+@(private="package")
 parser_stack_budget_exhausted :: proc(
-	live_prefix_depth, live_pipe_count, event_overhead: int,
+	live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead: int,
 	has_postfix: bool,
 ) -> bool {
 	// Checks happen exactly where jq would push another grammar state. Earlier
@@ -741,6 +914,8 @@ parser_stack_budget_exhausted :: proc(
 	}
 	return live_prefix_depth+
 	       live_pipe_count*JQ_OPEN_PIPE_STACK_ENTRIES+
+	       live_comma_count*JQ_OPEN_COMMA_STACK_ENTRIES+
+	       live_binary_count*JQ_OPEN_BINARY_STACK_ENTRIES+
 	       event_overhead+
 	       postfix_increment > JQ_PARSER_STACK_CAP
 }
@@ -798,7 +973,7 @@ append_number_node :: proc(parser: ^Parser, span: diagnostic.Span) -> (Node_Id, 
 append_string_node :: proc(
 	parser: ^Parser,
 	open_span: diagnostic.Span,
-	live_prefix_depth, live_pipe_count, event_overhead: int,
+	live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead: int,
 	has_postfix: bool,
 ) -> (Node_Id, bool) {
 	open_start, open_end, open_ok := diagnostic.span_offsets(parser.source, open_span)
@@ -815,6 +990,8 @@ append_string_node :: proc(
 	   parser_stack_budget_exhausted(
 		live_prefix_depth,
 		live_pipe_count,
+		live_comma_count,
+		live_binary_count,
 		event_overhead+JQ_STRING_TERM_STACK_INCREMENT,
 		has_postfix,
 	) {
@@ -1165,7 +1342,7 @@ token_spelling :: proc(parser: ^Parser, token: Token) -> string {
 append_postfix :: proc(
 	parser: ^Parser,
 	initial: Node_Id,
-	live_prefix_depth, live_pipe_count, event_overhead: int,
+	live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead: int,
 	has_postfix: ^bool,
 ) -> (Node_Id, bool) {
 	node := initial
@@ -1176,6 +1353,8 @@ append_postfix :: proc(
 			if parser_stack_budget_exhausted(
 				live_prefix_depth,
 				live_pipe_count,
+				live_comma_count,
+				live_binary_count,
 				event_overhead,
 				has_postfix^,
 			) {

@@ -35,6 +35,24 @@ expect_parse_success :: proc(t: ^testing.T, parser: ^Parser, outcome: Parse_Outc
 	testing.expect(t, int(outcome.root) < parser.nodes.count)
 }
 
+@(private="package")
+expect_binary_node :: proc(
+	t: ^testing.T,
+	parser: ^Parser,
+	node_id: Node_Id,
+	operator: Binary_Operator,
+	span_start, span_end, operator_start, operator_end: int,
+) -> Node {
+	node := parser.nodes.storage[int(node_id)]
+	testing.expect_value(t, node.form, Node_Form.Binary)
+	testing.expect_value(t, node.binary_operator, operator)
+	testing.expect(t, node.has_operator_span)
+	testing.expect(t, !node.has_child)
+	expect_span(t, parser.source, node.span, span_start, span_end)
+	expect_span(t, parser.source, node.operator_span, operator_start, operator_end)
+	return node
+}
+
 @(test)
 test_parser_scalar_literals_preserve_kinds_spans_and_numeric_source :: proc(t: ^testing.T) {
 	Case :: struct {
@@ -456,6 +474,111 @@ test_parser_exact_unary_minus_stack_budget_without_native_recursion :: proc(t: ^
 	expect_parser_resource_limit(t, failure_text)
 }
 
+@(private="package")
+binary_minus_filter :: proc(t: ^testing.T, minus_count: int, rhs := false, grouped := false) -> string {
+	minuses, minus_error := strings.repeat("-", minus_count)
+	testing.expect(t, minus_error == nil)
+	prefix := "1+" if rhs else ""
+	suffix := "2" if rhs else "1+2"
+	open := "(" if grouped else ""
+	close := ")" if grouped else ""
+	result, result_error := strings.concatenate([]string{open, prefix, minuses, suffix, close})
+	testing.expect(t, result_error == nil)
+	delete(minuses)
+	return result
+}
+
+@(private="package")
+query_binary_minus_filter :: proc(
+	t: ^testing.T,
+	prefix: string,
+	minus_count: int,
+	suffix: string,
+) -> string {
+	minuses, minus_error := strings.repeat("-", minus_count)
+	testing.expect(t, minus_error == nil)
+	result, result_error := strings.concatenate([]string{prefix, minuses, suffix})
+	testing.expect(t, result_error == nil)
+	delete(minuses)
+	return result
+}
+
+@(test)
+test_binary_arithmetic_exact_unary_minus_parser_stack_boundaries :: proc(t: ^testing.T) {
+	Case :: struct { minus_count: int, rhs, grouped, succeeds: bool }
+	cases := [?]Case{
+		{9_995, false, false, true},
+		{9_996, false, false, false},
+		{9_993, true, false, true},
+		{9_994, true, false, false},
+		{9_992, true, true, true},
+		{9_993, true, true, false},
+	}
+	for test_case in cases {
+		text := binary_minus_filter(t, test_case.minus_count, test_case.rhs, test_case.grouped)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+			root := parser.nodes.storage[int(outcome.root)]
+			if test_case.grouped {
+				testing.expect_value(t, root.kind, Node_Kind.Parenthesized)
+				root = parser.nodes.storage[int(root.child)]
+			}
+			testing.expect_value(t, root.form, Node_Form.Binary)
+			testing.expect_value(t, root.binary_operator, Binary_Operator.Add)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_comma_binary_rhs_preserves_exact_neighboring_query_stack_boundaries :: proc(t: ^testing.T) {
+	Case :: struct { prefix: string, minus_count: int, suffix: string, succeeds: bool }
+	cases := [?]Case{
+		// One live comma plus the pending binary operator.
+		{"1,2+", 9_991, "3", true},
+		{"1,2+", 9_992, "3", false},
+		// The same state inside one surrounding group.
+		{"(1,2+", 9_990, "3)", true},
+		{"(1,2+", 9_991, "3)", false},
+		// A live pipe and binary retain the established neighboring boundary.
+		{"1|2+", 9_991, "3", true},
+		{"1|2+", 9_992, "3", false},
+		// The first postfix state adds one entry at the deepest event.
+		{"1,2+", 9_990, "3?", true},
+		{"1,2+", 9_991, "3?", false},
+		// Pipe, comma, and binary are simultaneously suspended.
+		{"1|2,3+", 9_989, "4", true},
+		{"1|2,3+", 9_990, "4", false},
+		// Two comma queries, a group, and binary are simultaneously suspended.
+		{"1,(2,3+", 9_988, "4)", true},
+		{"1,(2,3+", 9_989, "4)", false},
+	}
+	for test_case in cases {
+		text := query_binary_minus_filter(
+			t,
+			test_case.prefix,
+			test_case.minus_count,
+			test_case.suffix,
+		)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
 @(test)
 test_parser_exact_group_and_prefix_order_stack_budgets :: proc(t: ^testing.T) {
 	Case :: struct {
@@ -606,6 +729,30 @@ test_parser_stack_limit_failure_cleanup_is_retryable :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_comma_binary_stack_limit_failure_cleanup_is_retryable :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	text := query_binary_minus_filter(t, "1,2+", 9_992, "3")
+	defer delete(text)
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text, test_allocator(&allocator_data))
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	allocator_data.free_failures_remaining = 1
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
 test_scalar_literals_compose_at_existing_term_precedence :: proc(t: ^testing.T) {
 	parser: Parser
 	_, outcome := parse_test_filter(t, &parser, "null?, (true | false, - 1)?.field")
@@ -711,6 +858,144 @@ test_parser_every_supported_standalone_form :: proc(t: ^testing.T) {
 			testing.expect(t, root.has_name_span)
 			expect_span(t, source, root.name_span, 1, 5)
 		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_binary_arithmetic_each_operator_has_exact_ast_and_source_spans :: proc(t: ^testing.T) {
+	Case :: struct { text: string, operator: Binary_Operator }
+	cases := [?]Case{
+		{"1 + 2", .Add},
+		{"1 - 2", .Subtract},
+		{"1 * 2", .Multiply},
+		{"1 / 2", .Divide},
+		{"1 % 2", .Modulo},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		root := expect_binary_node(t, &parser, outcome.root, test_case.operator, 0, 5, 2, 3)
+		testing.expect_value(t, parser.nodes.storage[int(root.left)].kind, Node_Kind.Number)
+		testing.expect_value(t, parser.nodes.storage[int(root.right)].kind, Node_Kind.Number)
+		expect_node_span(t, &parser, root.left, 0, 1)
+		expect_node_span(t, &parser, root.right, 4, 5)
+		distinct_source := diagnostic.borrow_source("<distinct>", test_case.text)
+		_, _, distinct_ok := diagnostic.span_offsets(distinct_source, root.operator_span)
+		testing.expect(t, !distinct_ok)
+		testing.expect_value(t, parser_source(&parser), source)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_binary_arithmetic_precedence_and_left_associativity :: proc(t: ^testing.T) {
+	text :: "1 - 2 - 3 + 4 * 5 / 6 % 7"
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	expect_parse_success(t, &parser, outcome)
+
+	add := expect_binary_node(t, &parser, outcome.root, .Add, 0, len(text), 10, 11)
+	second_subtract := expect_binary_node(t, &parser, add.left, .Subtract, 0, 9, 6, 7)
+	first_subtract := expect_binary_node(t, &parser, second_subtract.left, .Subtract, 0, 5, 2, 3)
+	testing.expect_value(t, parser.nodes.storage[int(first_subtract.left)].number_text, "1")
+	testing.expect_value(t, parser.nodes.storage[int(first_subtract.right)].number_text, "2")
+	testing.expect_value(t, parser.nodes.storage[int(second_subtract.right)].number_text, "3")
+
+	modulo := expect_binary_node(t, &parser, add.right, .Modulo, 12, len(text), 22, 23)
+	divide := expect_binary_node(t, &parser, modulo.left, .Divide, 12, 21, 18, 19)
+	multiply := expect_binary_node(t, &parser, divide.left, .Multiply, 12, 17, 14, 15)
+	testing.expect_value(t, parser.nodes.storage[int(multiply.left)].number_text, "4")
+	testing.expect_value(t, parser.nodes.storage[int(multiply.right)].number_text, "5")
+	testing.expect_value(t, parser.nodes.storage[int(divide.right)].number_text, "6")
+	testing.expect_value(t, parser.nodes.storage[int(modulo.right)].number_text, "7")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_binary_arithmetic_parentheses_unary_minus_and_postfix_precedence :: proc(t: ^testing.T) {
+	text :: "-1 + 2 * -(3 + 4)?"
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	expect_parse_success(t, &parser, outcome)
+	add := expect_binary_node(t, &parser, outcome.root, .Add, 0, len(text), 3, 4)
+	left_negate := parser.nodes.storage[int(add.left)]
+	testing.expect_value(t, left_negate.kind, Node_Kind.Negate)
+	expect_node_span(t, &parser, add.left, 0, 2)
+	multiply := expect_binary_node(t, &parser, add.right, .Multiply, 5, len(text), 7, 8)
+	testing.expect_value(t, parser.nodes.storage[int(multiply.left)].number_text, "2")
+	right_negate := parser.nodes.storage[int(multiply.right)]
+	testing.expect_value(t, right_negate.kind, Node_Kind.Negate)
+	optional := parser.nodes.storage[int(right_negate.child)]
+	testing.expect_value(t, optional.kind, Node_Kind.Optional)
+	group := parser.nodes.storage[int(optional.child)]
+	testing.expect_value(t, group.kind, Node_Kind.Parenthesized)
+	inner := expect_binary_node(t, &parser, group.child, .Add, 11, 16, 13, 14)
+	testing.expect_value(t, parser.nodes.storage[int(inner.left)].number_text, "3")
+	testing.expect_value(t, parser.nodes.storage[int(inner.right)].number_text, "4")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+
+	chain: Parser
+	_, chain_outcome := parse_test_filter(t, &chain, "1 - - -2")
+	expect_parse_success(t, &chain, chain_outcome)
+	subtract := expect_binary_node(t, &chain, chain_outcome.root, .Subtract, 0, 8, 2, 3)
+	outer := chain.nodes.storage[int(subtract.right)]
+	inner_negate := chain.nodes.storage[int(outer.child)]
+	testing.expect_value(t, outer.kind, Node_Kind.Negate)
+	testing.expect_value(t, inner_negate.kind, Node_Kind.Negate)
+	testing.expect_value(t, destroy_parser(&chain), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_binary_arithmetic_comma_pipe_and_optional_interactions :: proc(t: ^testing.T) {
+	text :: "1? + 2?, 3 * 4 | (5 % 2)?"
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	expect_parse_success(t, &parser, outcome)
+	pipe := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, pipe.kind, Node_Kind.Pipe)
+	comma := parser.nodes.storage[int(pipe.left)]
+	testing.expect_value(t, comma.kind, Node_Kind.Comma)
+	add := parser.nodes.storage[int(comma.left)]
+	multiply := parser.nodes.storage[int(comma.right)]
+	testing.expect_value(t, add.form, Node_Form.Binary)
+	testing.expect_value(t, add.binary_operator, Binary_Operator.Add)
+	testing.expect_value(t, parser.nodes.storage[int(add.left)].kind, Node_Kind.Optional)
+	testing.expect_value(t, parser.nodes.storage[int(add.right)].kind, Node_Kind.Optional)
+	testing.expect_value(t, multiply.form, Node_Form.Binary)
+	testing.expect_value(t, multiply.binary_operator, Binary_Operator.Multiply)
+	right_optional := parser.nodes.storage[int(pipe.right)]
+	testing.expect_value(t, right_optional.kind, Node_Kind.Optional)
+	right_group := parser.nodes.storage[int(right_optional.child)]
+	modulo := parser.nodes.storage[int(right_group.child)]
+	testing.expect_value(t, modulo.form, Node_Form.Binary)
+	testing.expect_value(t, modulo.binary_operator, Binary_Operator.Modulo)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_binary_arithmetic_whitespace_and_minus_token_boundaries_match_oracle :: proc(t: ^testing.T) {
+	Case :: struct { text: string, operator: Binary_Operator }
+	cases := [?]Case{
+		{"1+2", .Add},
+		{".1+.2", .Add},
+		{"1e-2+3", .Add},
+		{"1 +\n -2", .Add},
+		{"1+-2", .Add},
+		{"1--2", .Subtract},
+		{"1*-2", .Multiply},
+		{"1/-2", .Divide},
+		{"1%-2", .Modulo},
+		{"--1+2", .Add},
+	}
+	for test_case in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		root := parser.nodes.storage[int(outcome.root)]
+		testing.expect_value(t, root.form, Node_Form.Binary)
+		testing.expect_value(t, root.binary_operator, test_case.operator)
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
 }
@@ -920,6 +1205,17 @@ test_parser_rejects_malformed_delimiters_and_trailing_tokens :: proc(t: ^testing
 		{".a..b", .Unexpected_Token, .End_Of_Input, 2, 4},
 		{".a.b,", .Unexpected_End, .Expression, 5, 5},
 		{".a.b | .c.", .Unexpected_End, .End_Of_Input, 10, 10},
+		{"1+", .Unexpected_End, .Expression, 2, 2},
+		{"1/", .Unexpected_End, .Expression, 2, 2},
+		{"1++2", .Unexpected_Token, .Expression, 2, 3},
+		{"1+*2", .Unexpected_Token, .Expression, 2, 3},
+		{"1*/2", .Unexpected_Token, .Expression, 2, 3},
+		{"+1", .Unexpected_Token, .Expression, 0, 1},
+		{"(1+)", .Unexpected_Token, .Expression, 3, 4},
+		{"(1+2", .Unexpected_End, .Close_Paren, 4, 4},
+		{"1+)", .Lexical_Error, .Expression, 2, 3},
+		{"1 2", .Unexpected_Token, .End_Of_Input, 2, 3},
+		{"1% %2", .Unexpected_Token, .Expression, 3, 4},
 	}
 
 	for test_case in cases {
@@ -1010,7 +1306,6 @@ test_parser_rejects_every_unsupported_token_class_and_lexer_errors :: proc(t: ^t
 		{"[]", .Unexpected_Token, 0, 1},
 		{"..", .Unexpected_Token, 0, 2},
 		{". // .", .Unexpected_Token, 2, 4},
-		{". + .", .Unexpected_Token, 2, 3},
 		{"\x00.", .Lexical_Error, 0, 1},
 		{". \xff", .Lexical_Error, 2, 3},
 	}
@@ -1307,7 +1602,7 @@ test_parser_rejects_deep_incomplete_forms_like_oracle :: proc(t: ^testing.T) {
 
 @(test)
 test_parser_every_allocation_failure_keeps_cleanup_owner :: proc(t: ^testing.T) {
-	text :: "((((.root.first?.second)))) | (.x?.y, .z??.last)"
+	text :: "((((.root + .first?.second)))) | ((.x?.y * .z??.last), (. - . / . % .))"
 	baseline_data := Test_Allocator{backing = context.allocator, alive = true}
 	baseline: Parser
 	_, baseline_outcome := parse_test_filter(
@@ -1382,6 +1677,39 @@ test_parser_growth_free_failure_retains_replacement_for_retry :: proc(t: ^testin
 	testing.expect(t, parser.nodes.replacement == nil)
 	testing.expect_value(t, parser.nodes.count, 8)
 	testing.expect_value(t, len(tracker.allocation_map), 1)
+
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	allocator_data.alive = false
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
+test_group_frame_growth_free_failure_preserves_retryable_owner :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+		free_fail_at = 3,
+		resize_unsupported = true,
+	}
+	parser: Parser
+	_, outcome := parse_test_filter(
+		t,
+		&parser,
+		"(((((((((.",
+		test_allocator(&allocator_data),
+	)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.frames.count, 8)
+	testing.expect_value(t, parser.frames.state, Fallible_Buffer_State.Transfer_Pending)
+	testing.expect(t, parser.frames.storage != nil)
+	testing.expect(t, parser.frames.replacement != nil)
+	testing.expect_value(t, len(tracker.allocation_map), 4)
 
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	testing.expect_value(t, len(tracker.allocation_map), 0)
@@ -1876,7 +2204,7 @@ test_bulk_lifetime_parser_destruction_retires_all_handles :: proc(t: ^testing.T)
 	_, outcome := parse_test_filter(t, &parser, "(1)", test_allocator(&allocator_data))
 	expect_parse_success(t, &parser, outcome)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
-	testing.expect_value(t, allocator_data.free_count, 4)
+	testing.expect_value(t, allocator_data.free_count, 5)
 
 	allocator_data.alive = false
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)

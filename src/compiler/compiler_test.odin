@@ -668,6 +668,48 @@ unknown_node_kinds_are_rejected_before_allocation :: proc(t: ^testing.T) {
 }
 
 @(test)
+binary_and_cross_form_nodes_never_activate_program_output :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<cross-form>", "1+2")
+	span, span_ok := diagnostic.make_span(source, 0, 1)
+	operator_span, operator_span_ok := diagnostic.make_span(source, 1, 2)
+	testing.expect(t, span_ok && operator_span_ok)
+
+	for kind in syntax.Node_Kind {
+		node := syntax.Node{form = .Binary, kind = kind, span = span}
+		testing.expect(t, !node_payload_shape_valid(node))
+		expect_invalid_ast_without_program_owner(t, []syntax.Node{node}, 0, source, true)
+	}
+
+	invalid_form := syntax.Node_Form(int(max(syntax.Node_Form))+1)
+	cases := [?]syntax.Node{
+		{form = invalid_form, kind = .Identity, span = span},
+		{kind = .Identity, span = span, binary_operator = .Subtract},
+		{kind = .Identity, span = span, operator_span = operator_span},
+		{kind = .Identity, span = span, has_operator_span = true},
+		{kind = .Identity, span = span, operator_span = operator_span, has_operator_span = true},
+	}
+	for node in cases {
+		testing.expect(t, !node_payload_shape_valid(node))
+		expect_invalid_ast_without_program_owner(t, []syntax.Node{node}, 0, source, true)
+	}
+
+	parser: syntax.Parser
+	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
+	parsed := syntax.parse_filter(&parser)
+	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	nodes := syntax.parser_nodes(&parser)
+	testing.expect_value(t, nodes[int(parsed.root)].form, syntax.Node_Form.Binary)
+	expect_invalid_ast_without_program_owner(
+		t,
+		nodes,
+		parsed.root,
+		syntax.parser_source(&parser),
+		true,
+	)
+	testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 cyclic_asts_never_return_an_active_program :: proc(t: ^testing.T) {
 	source := diagnostic.borrow_source("bad", ".")
 	span, _ := diagnostic.make_span(source, 0, 1)
