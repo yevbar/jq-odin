@@ -1001,6 +1001,208 @@ test_binary_arithmetic_whitespace_and_minus_token_boundaries_match_oracle :: pro
 }
 
 @(test)
+test_comparison_each_operator_has_exact_ast_and_source_spans :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		operator: Binary_Operator,
+		operator_start, operator_end: int,
+	}
+	cases := [?]Case{
+		{"1 == 2", .Equal, 2, 4},
+		{"1 != 2", .Not_Equal, 2, 4},
+		{"1 < 2", .Less, 2, 3},
+		{"1 <= 2", .Less_Equal, 2, 4},
+		{"1 > 2", .Greater, 2, 3},
+		{"1 >= 2", .Greater_Equal, 2, 4},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		root := expect_binary_node(
+			t,
+			&parser,
+			outcome.root,
+			test_case.operator,
+			0,
+			len(test_case.text),
+			test_case.operator_start,
+			test_case.operator_end,
+		)
+		testing.expect_value(t, parser.nodes.storage[int(root.left)].kind, Node_Kind.Number)
+		testing.expect_value(t, parser.nodes.storage[int(root.right)].kind, Node_Kind.Number)
+		expect_node_span(t, &parser, root.left, 0, 1)
+		expect_node_span(t, &parser, root.right, len(test_case.text)-1, len(test_case.text))
+		distinct_source := diagnostic.borrow_source("<distinct-comparison>", test_case.text)
+		_, _, distinct_ok := diagnostic.span_offsets(distinct_source, root.operator_span)
+		testing.expect(t, !distinct_ok)
+		testing.expect_value(t, parser_source(&parser), source)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_comparison_precedence_is_looser_than_arithmetic_and_tighter_than_query :: proc(t: ^testing.T) {
+	text :: "1 + 2 * 3 <= -4 % 5, 6 | 7 > 8"
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	expect_parse_success(t, &parser, outcome)
+
+	pipe := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, pipe.kind, Node_Kind.Pipe)
+	comma := parser.nodes.storage[int(pipe.left)]
+	testing.expect_value(t, comma.kind, Node_Kind.Comma)
+	less_equal := expect_binary_node(t, &parser, comma.left, .Less_Equal, 0, 19, 10, 12)
+	add := expect_binary_node(t, &parser, less_equal.left, .Add, 0, 9, 2, 3)
+	multiply := expect_binary_node(t, &parser, add.right, .Multiply, 4, 9, 6, 7)
+	testing.expect_value(t, parser.nodes.storage[int(multiply.left)].number_text, "2")
+	testing.expect_value(t, parser.nodes.storage[int(multiply.right)].number_text, "3")
+	modulo := expect_binary_node(t, &parser, less_equal.right, .Modulo, 13, 19, 16, 17)
+	testing.expect_value(t, parser.nodes.storage[int(modulo.left)].kind, Node_Kind.Negate)
+	testing.expect_value(t, parser.nodes.storage[int(comma.right)].number_text, "6")
+	greater := expect_binary_node(t, &parser, pipe.right, .Greater, 25, len(text), 27, 28)
+	testing.expect_value(t, parser.nodes.storage[int(greater.left)].number_text, "7")
+	testing.expect_value(t, parser.nodes.storage[int(greater.right)].number_text, "8")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_comparison_postfix_unary_grouping_and_comments_match_oracle_boundaries :: proc(t: ^testing.T) {
+	Case :: struct { text: string, operator: Binary_Operator }
+	cases := [?]Case{
+		{"1<2", .Less},
+		{"1 <=\n-2", .Less_Equal},
+		{"1<# comment\n2", .Less},
+		{"1# lhs\n==# operator\n1", .Equal},
+		{"1? > 0?", .Greater},
+		{"-(1 < 2)", .Less},
+		{"(1 >= 2)?", .Greater_Equal},
+	}
+	for test_case in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		root := parser.nodes.storage[int(outcome.root)]
+		if root.kind == .Negate || root.kind == .Optional {
+			root = parser.nodes.storage[int(root.child)]
+		}
+		if root.kind == .Parenthesized {
+			root = parser.nodes.storage[int(root.child)]
+		}
+		testing.expect_value(t, root.form, Node_Form.Binary)
+		testing.expect_value(t, root.binary_operator, test_case.operator)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_comparison_operators_are_nonassociative_without_parentheses :: proc(t: ^testing.T) {
+	Case :: struct { text: string, start, end: int, actual: Token_Kind }
+	cases := [?]Case{
+		{"1 < 2 < 3", 6, 7, .Less},
+		{"1 < 2 <= 3", 6, 8, .Less_Equal},
+		{"1 == 1 != 0", 7, 9, .Not_Equal},
+		{"1 + 2 <= 3 * 4 >= 5", 15, 17, .Greater_Equal},
+		{"1 > 2 == 3", 6, 8, .Equal},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+		testing.expect_value(t, outcome.error.expected, Parse_Expectation.End_Of_Input)
+		testing.expect(t, outcome.error.has_actual)
+		testing.expect_value(t, outcome.error.actual, test_case.actual)
+		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_comparison_chain_diagnostic_uses_active_parenthesized_boundary :: proc(t: ^testing.T) {
+	Case :: struct { text: string, start, end: int, actual: Token_Kind }
+	cases := [?]Case{
+		// One, two, and deeper active parenthesized frames.
+		{"(1 < 2 < 3)", 7, 8, .Less},
+		{"((1 < 2 == 3))", 8, 10, .Equal},
+		{"((((1 != 2 >= 3))))", 11, 13, .Greater_Equal},
+		// The group remains the active diagnostic boundary under prefix and postfix forms.
+		{"-(1 < 2 < 3)", 8, 9, .Less},
+		{"(1 < 2 != 3)?", 7, 9, .Not_Equal},
+		{"-(1 < 2 <= 3)?", 8, 10, .Less_Equal},
+		// A grouped chain can occur on either side of supported comma and pipe forms.
+		{"(1 < 2 < 3), .", 7, 8, .Less},
+		{"., (1 < 2 == 3)", 10, 12, .Equal},
+		{"(1 < 2 != 3) | .", 7, 9, .Not_Equal},
+		{". | (1 < 2 >= 3)", 11, 13, .Greater_Equal},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+		testing.expect_value(t, outcome.error.expected, Parse_Expectation.Close_Paren)
+		testing.expect(t, outcome.error.has_actual)
+		testing.expect_value(t, outcome.error.actual, test_case.actual)
+		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_parentheses_explicitly_group_comparison_chains :: proc(t: ^testing.T) {
+	Case :: struct { text: string, outer, inner: Binary_Operator, inner_on_left: bool }
+	cases := [?]Case{
+		{"(1 < 2) < 3", .Less, .Less, true},
+		{"1 == (1 != 0)", .Equal, .Not_Equal, false},
+		{"(1 + 2 <= 4) >= 0", .Greater_Equal, .Less_Equal, true},
+	}
+	for test_case in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		outer := parser.nodes.storage[int(outcome.root)]
+		testing.expect_value(t, outer.form, Node_Form.Binary)
+		testing.expect_value(t, outer.binary_operator, test_case.outer)
+		group_id := outer.left if test_case.inner_on_left else outer.right
+		group := parser.nodes.storage[int(group_id)]
+		testing.expect_value(t, group.kind, Node_Kind.Parenthesized)
+		inner := parser.nodes.storage[int(group.child)]
+		testing.expect_value(t, inner.form, Node_Form.Binary)
+		testing.expect_value(t, inner.binary_operator, test_case.inner)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_comparison_exact_generated_parser_stack_boundaries :: proc(t: ^testing.T) {
+	Case :: struct { prefix: string, minus_count: int, suffix: string, succeeds: bool }
+	cases := [?]Case{
+		{"", 9_995, "1<2", true},
+		{"", 9_996, "1<2", false},
+		{"1<", 9_993, "2", true},
+		{"1<", 9_994, "2", false},
+		{"(1<", 9_992, "2)", true},
+		{"(1<", 9_993, "2)", false},
+		{"1<2+", 9_991, "3", true},
+		{"1<2+", 9_992, "3", false},
+	}
+	for test_case in cases {
+		text := query_binary_minus_filter(t, test_case.prefix, test_case.minus_count, test_case.suffix)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
 test_parser_comma_pipe_precedence_and_associativity :: proc(t: ^testing.T) {
 	parser: Parser
 	_, outcome := parse_test_filter(t, &parser, "., .a, .b | .c | .d")
@@ -1216,6 +1418,14 @@ test_parser_rejects_malformed_delimiters_and_trailing_tokens :: proc(t: ^testing
 		{"1+)", .Lexical_Error, .Expression, 2, 3},
 		{"1 2", .Unexpected_Token, .End_Of_Input, 2, 3},
 		{"1% %2", .Unexpected_Token, .Expression, 3, 4},
+		{"1 ==", .Unexpected_End, .Expression, 4, 4},
+		{"== 1", .Unexpected_Token, .Expression, 0, 2},
+		{"1 < = 2", .Unexpected_Token, .Expression, 4, 5},
+		{"1 <== 2", .Unexpected_Token, .Expression, 4, 5},
+		{"1 !== 2", .Unexpected_Token, .Expression, 4, 5},
+		{"1 <> 2", .Unexpected_Token, .Expression, 3, 4},
+		{"1 <= >= 2", .Unexpected_Token, .Expression, 5, 7},
+		{"1 ! 2", .Lexical_Error, .End_Of_Input, 2, 3},
 	}
 
 	for test_case in cases {
@@ -1602,7 +1812,7 @@ test_parser_rejects_deep_incomplete_forms_like_oracle :: proc(t: ^testing.T) {
 
 @(test)
 test_parser_every_allocation_failure_keeps_cleanup_owner :: proc(t: ^testing.T) {
-	text :: "((((.root + .first?.second)))) | ((.x?.y * .z??.last), (. - . / . % .))"
+	text :: "((((.root + .first?.second < 9)))) | ((.x?.y * .z??.last), (. - . / . % . >= 0))"
 	baseline_data := Test_Allocator{backing = context.allocator, alive = true}
 	baseline: Parser
 	_, baseline_outcome := parse_test_filter(

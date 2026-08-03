@@ -30,6 +30,12 @@ Binary_Operator :: enum u8 {
 	Multiply,
 	Divide,
 	Modulo,
+	Equal,
+	Not_Equal,
+	Less,
+	Less_Equal,
+	Greater,
+	Greater_Equal,
 }
 
 // Node is source-level syntax. form selects either a legacy kinded node or the
@@ -634,6 +640,13 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			has_binary_operator,
 			&live_binary_count,
 		)
+		if has_binary_operator && binary_frame != binary_boundary &&
+		   binary_is_comparison(next_operator) &&
+		   binary_is_comparison(parser.nodes.storage[int(binary_frame)].binary_operator) {
+			expected := Parse_Expectation.Close_Paren if parser.frames.count > 0 else .End_Of_Input
+			fail_at_current(parser, .Unexpected_Token, expected)
+			return {}, false
+		}
 		if has_binary_operator {
 			if parser_stack_budget_exhausted(
 				group_depth+minus_depth,
@@ -837,6 +850,8 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 @(private="package")
 binary_precedence :: proc(operator: Binary_Operator) -> int {
 	switch operator {
+	case .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+		return 0
 	case .Add, .Subtract:
 		return 1
 	case .Multiply, .Divide, .Modulo:
@@ -846,11 +861,34 @@ binary_precedence :: proc(operator: Binary_Operator) -> int {
 }
 
 @(private="package")
+binary_is_comparison :: proc(operator: Binary_Operator) -> bool {
+	switch operator {
+	case .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+		return true
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo:
+		return false
+	}
+	return false
+}
+
+@(private="package")
 binary_from_token :: proc(parser: ^Parser) -> (Binary_Operator, int, bool) {
 	if parser.failed || parser.lookahead.kind != .Token {
 		return {}, 0, false
 	}
 	#partial switch parser.lookahead.token.kind {
+	case .Equal:
+		return .Equal, 0, true
+	case .Not_Equal:
+		return .Not_Equal, 0, true
+	case .Less:
+		return .Less, 0, true
+	case .Less_Equal:
+		return .Less_Equal, 0, true
+	case .Greater:
+		return .Greater, 0, true
+	case .Greater_Equal:
+		return .Greater_Equal, 0, true
 	case .Plus:
 		return .Add, 1, true
 	case .Minus:
@@ -880,6 +918,10 @@ reduce_binary_nodes :: proc(
 	for frame^ != boundary {
 		binary := &parser.nodes.storage[int(frame^)]
 		assert(binary.form == .Binary && binary.has_child)
+		if has_next && binary_is_comparison(binary.binary_operator) &&
+		   binary_precedence(binary.binary_operator) == next_precedence {
+			break
+		}
 		if has_next && binary_precedence(binary.binary_operator) < next_precedence {
 			break
 		}

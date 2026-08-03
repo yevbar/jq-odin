@@ -190,6 +190,62 @@ test_jq_assignment_tokens_stay_distinct :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_comparison_tokens_use_longest_match_and_exact_adjacent_spans :: proc(t: ^testing.T) {
+	text :: "!= == <= < >= > <== !=="
+	source := diagnostic.borrow_source("<comparisons>", text)
+	kinds := [?]Token_Kind{
+		.Not_Equal,
+		.Equal,
+		.Less_Equal,
+		.Less,
+		.Greater_Equal,
+		.Greater,
+		.Less_Equal,
+		.Assign,
+		.Not_Equal,
+		.Assign,
+	}
+	starts := [?]int{0, 3, 6, 9, 11, 14, 16, 18, 20, 22}
+	ends := [?]int{2, 5, 8, 10, 13, 15, 18, 19, 22, 23}
+
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	for kind, index in kinds {
+		expect_token(t, &scanner, source, kind, starts[index], ends[index])
+	}
+	expect_repeated_eof(t, &scanner)
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_comparison_tokens_cross_supported_whitespace_newline_and_comment_boundaries :: proc(t: ^testing.T) {
+	text :: "< # less\n<=\r\n># greater\n>=\t== !="
+	source := diagnostic.borrow_source("<comparison-boundaries>", text)
+	kinds := [?]Token_Kind{.Less, .Less_Equal, .Greater, .Greater_Equal, .Equal, .Not_Equal}
+	starts := [?]int{0, 9, 13, 24, 27, 30}
+	ends := [?]int{1, 11, 14, 26, 29, 32}
+
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	for kind, index in kinds {
+		expect_token(t, &scanner, source, kind, starts[index], ends[index])
+	}
+	expect_repeated_eof(t, &scanner)
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_truncated_not_equal_prefix_is_an_exact_lexical_error :: proc(t: ^testing.T) {
+	source := diagnostic.borrow_source("<truncated-not-equal>", "! !=")
+	scanner: Scanner
+	init_test_scanner(t, &scanner, source)
+	expect_lexical_error(t, &scanner, source, 0, 1)
+	expect_token(t, &scanner, source, .Not_Equal, 2, 4)
+	expect_repeated_eof(t, &scanner)
+	testing.expect_value(t, destroy_scanner(&scanner), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_identifiers_bindings_formats_fields_and_longest_match :: proc(t: ^testing.T) {
 	source := diagnostic.borrow_source(
 		"<names>",
