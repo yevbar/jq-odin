@@ -6,8 +6,10 @@ import eval "jq:eval"
 import program "jq:program"
 import value "jq:value"
 
-EVALUATOR_SIZE :: 256
+EVALUATOR_SIZE :: 264
 EVALUATOR_ALIGNMENT :: 8
+VALUE_SIZE :: 56
+VALUE_ALIGNMENT :: 8
 GUARD_BEFORE :: u64(0x9d_72_43_81_a6_5c_e0_3f)
 GUARD_AFTER :: u64(0x47_1b_f2_6d_90_ca_35_8e)
 
@@ -50,11 +52,13 @@ expect_guards :: proc(t: ^testing.T, wrapper: ^Wrapper) {
 
 @(test)
 typed_wrapper_preserves_adjacent_values_through_complete_lifecycle :: proc(t: ^testing.T) {
+	testing.expect_value(t, size_of(value.Value), VALUE_SIZE)
+	testing.expect_value(t, align_of(value.Value), VALUE_ALIGNMENT)
 	testing.expect_value(t, size_of(eval.Evaluator), EVALUATOR_SIZE)
 	testing.expect_value(t, align_of(eval.Evaluator), EVALUATOR_ALIGNMENT)
 	testing.expect_value(t, offset_of(Wrapper, evaluator), 8)
-	testing.expect_value(t, offset_of(Wrapper, after), 264)
-	testing.expect_value(t, size_of(Wrapper), 272)
+	testing.expect_value(t, offset_of(Wrapper, after), 272)
+	testing.expect_value(t, size_of(Wrapper), 280)
 
 	compiled: program.Program
 	build_program(t, &compiled, .Identity)

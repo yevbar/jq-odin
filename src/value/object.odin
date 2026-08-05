@@ -15,11 +15,13 @@ Object_Error :: enum u8 {
 @(private)
 object_operation_error_storage :: struct {
 	kind:              Object_Error,
+	cause:             Object_Error,
 	constructor_error: Constructor_Error,
 }
 
-// Object_Operation_Error may own a failed temporary allocation cleanup. It
-// must not be copied; use take_object_error and destroy_object_error.
+// Object_Operation_Error may preserve an interrupted Object_Error and own a
+// failed temporary allocation cleanup. It must not be copied; use
+// take_object_error and destroy_object_error.
 Object_Operation_Error :: union {
 	object_operation_error_storage,
 }
@@ -32,11 +34,14 @@ make_object_error :: proc(kind: Object_Error) -> Object_Operation_Error {
 
 @(private)
 make_object_cleanup_error :: proc(
-	kind: Object_Error,
+	cause: Object_Error,
 	cleanup: ^Constructor_Error,
 ) -> Object_Operation_Error {
+	normalized_cause := cause
+	if normalized_cause == .Cleanup_Failed do normalized_cause = .None
 	return object_operation_error_storage{
-		kind = kind,
+		kind = .Cleanup_Failed,
+		cause = normalized_cause,
 		constructor_error = take_constructor_error(cleanup),
 	}
 }
@@ -44,6 +49,15 @@ make_object_cleanup_error :: proc(
 object_error_kind :: proc(err: ^Object_Operation_Error) -> Object_Error {
 	if err == nil || err^ == nil do return .None
 	return err.(object_operation_error_storage).kind
+}
+
+// object_error_cause returns the operation outcome interrupted by cleanup. It
+// is None unless object_error_kind is Cleanup_Failed.
+object_error_cause :: proc(err: ^Object_Operation_Error) -> Object_Error {
+	if err == nil || err^ == nil do return .None
+	storage := &err.(object_operation_error_storage)
+	if storage.kind != .Cleanup_Failed do return .None
+	return storage.cause
 }
 
 object_error_needs_cleanup :: proc(err: ^Object_Operation_Error) -> bool {
@@ -95,6 +109,9 @@ object_slot :: struct {
 @(private)
 OBJECT_INITIAL_CAPACITY :: 8
 
+@(private)
+OBJECT_EMPTY_SLOT_NEXT :: -1
+
 #assert(size_of(payload) % align_of(object_slot) == 0)
 #assert(size_of(object_slot) % align_of(int) == 0)
 #assert(align_of(payload) >= align_of(object_slot))
@@ -126,6 +143,18 @@ object_payload_buckets :: proc(p: ^payload) -> []int {
 }
 
 @(private)
+object_slot_set_empty :: proc(slot: ^object_slot) {
+	assert(slot != nil)
+	slot^ = {next = OBJECT_EMPTY_SLOT_NEXT}
+}
+
+@(private)
+object_slot_is_canonical_empty :: proc(slot: ^object_slot) -> bool {
+	return slot != nil && slot.next == OBJECT_EMPTY_SLOT_NEXT && slot.hash == 0 &&
+	       slot.key == nil && slot.value == nil
+}
+
+@(private)
 allocate_object_payload :: proc(
 	capacity: int,
 	allocator: runtime.Allocator,
@@ -144,8 +173,8 @@ allocate_object_payload :: proc(
 	p.allocation_size = allocation_size
 	p.kind = .Object
 	p.object_capacity = capacity
-	for &slot, i in object_payload_slots(p) {
-		slot.next = i - 1
+	for &slot in object_payload_slots(p) {
+		object_slot_set_empty(&slot)
 	}
 	for &bucket in object_payload_buckets(p) do bucket = -1
 	return p, nil
@@ -156,18 +185,36 @@ allocate_object_payload :: proc(
 object_value :: proc(allocator: runtime.Allocator) -> (Value, Object_Operation_Error) {
 	p, err := allocate_object_payload(OBJECT_INITIAL_CAPACITY, allocator)
 	if object_error_kind(&err) != .None do return {}, err
-	return value_from_storage({kind = .Object, owned_payload = p}), nil
+	return value_from_payload(.Object, p), nil
+}
+
+@(private)
+object_storage_extent_valid :: proc(storage: ^value_storage, allow_retiring := false) -> bool {
+	if storage == nil do return false
+	if storage.kind != .Object || storage.owned_payload == nil ||
+	   storage.owned_payload.kind != .Object ||
+	   (!allow_retiring && storage.owned_payload.object_retiring) {
+		return false
+	}
+	p := storage.owned_payload
+	if p.references <= 0 || p.references == max(int) ||
+	   p.object_capacity < OBJECT_INITIAL_CAPACITY ||
+	   p.object_capacity & (p.object_capacity - 1) != 0 ||
+	   p.object_next_free < 0 || p.object_next_free > p.object_capacity ||
+	   p.object_length < 0 || p.object_length > p.object_next_free {
+		return false
+	}
+	expected_size, size_ok := object_allocation_size(p.object_capacity)
+	return size_ok && payload_bound_matches(storage, expected_size)
 }
 
 @(private)
 object_storage_of :: proc(value: ^Value) -> (^payload, bool) {
 	if value == nil || value^ == nil do return nil, false
 	storage := value_storage_of(value)
-	if storage.kind != .Object || storage.owned_payload == nil ||
-	   storage.owned_payload.kind != .Object || storage.owned_payload.object_retiring {
-		return nil, false
-	}
-	return storage.owned_payload, true
+	if !object_storage_extent_valid(storage) do return nil, false
+	p := storage.owned_payload
+	return p, true
 }
 
 object_length :: proc(value: ^Value) -> (int, bool) {
@@ -252,13 +299,15 @@ object_rehash_unique :: proc(object: ^Value, p: ^payload) -> (^payload, Object_O
 		replacement.object_next_free += 1
 		replacement.object_length += 1
 	}
-	old_memory := ([^]byte)(rawptr(p))[:p.allocation_size]
+	old_size := value_storage_of(object).payload_allocation_bound
+	old_memory := ([^]byte)(rawptr(p))[:old_size]
 	free_error := runtime.mem_free_bytes(old_memory, p.allocator)
 	if free_error != nil && free_error != .Mode_Not_Implemented {
 		replacement_memory := ([^]byte)(rawptr(replacement))[:replacement.allocation_size]
 		return nil, retire_object_temporary(.Cleanup_Failed, replacement_memory, p.allocator)
 	}
 	value_storage_of(object).owned_payload = replacement
+	value_storage_of(object).payload_allocation_bound = replacement.allocation_size
 	return replacement, nil
 }
 
@@ -271,6 +320,7 @@ object_make_writable :: proc(object: ^Value) -> (^payload, Object_Operation_Erro
 	if object_error_kind(&err) != .None do return nil, err
 	p.references -= 1
 	value_storage_of(object).owned_payload = copy_payload
+	value_storage_of(object).payload_allocation_bound = copy_payload.allocation_size
 	return copy_payload, nil
 }
 
@@ -293,7 +343,8 @@ object_set_take :: proc(
 	object, key, value: ^Value,
 ) -> (duplicate_key, displaced: Value, err: Object_Operation_Error) {
 	p, ok := object_storage_of(object)
-	if !ok || kind_of(key) != .String || kind_of(value) == .Invalid ||
+	if !ok || kind_of(key) != .String || !value_local_extent_valid(key) ||
+	   kind_of(value) == .Invalid || !value_local_extent_valid(value) ||
 	   value_is_retiring(value) {
 		return {}, {}, make_object_error(.Wrong_Kind)
 	}
@@ -356,6 +407,7 @@ object_delete_take :: proc(
 			previous^ = slot.next
 			removed_key = take_value(&slot.key)
 			removed_value = take_value(&slot.value)
+			object_slot_set_empty(slot)
 			writable.object_length -= 1
 			return removed_key, removed_value, true, nil
 		}

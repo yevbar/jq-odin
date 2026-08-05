@@ -13,9 +13,10 @@ PACKAGE_DIRS := \
 	src/compiler \
 	src/eval
 TEST_PACKAGE_DIRS := \
+	src/value/external_boundary_test \
 	src/eval/external_layout_test
 
-.PHONY: bootstrap check check-layout check-packages doctor test upstream-status validate
+.PHONY: bootstrap check check-layout check-packages check-value-boundary doctor test upstream-status validate
 
 bootstrap:
 	./scripts/bootstrap-odin.sh
@@ -32,7 +33,10 @@ check-packages:
 		$(ODIN) check "$$package_dir" -no-entry-point $(ODIN_FLAGS); \
 	done
 
-check: check-layout check-packages
+check-value-boundary:
+	@src/value/external_boundary_test/check_compile_fail.sh "$(ODIN)" "$(CURDIR)"
+
+check: check-layout check-packages check-value-boundary
 
 test:
 	@set -e; for package_dir in $(PACKAGE_DIRS) $(TEST_PACKAGE_DIRS); do \

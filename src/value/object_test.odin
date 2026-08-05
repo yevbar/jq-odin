@@ -100,7 +100,12 @@ exercise_object_allocation_failure :: proc(
 	key, _ := string_value(key_text, context.allocator)
 	value := number_value(100)
 	duplicate, displaced, err := object_set_take(operand, &key, &value)
-	testing.expect_value(t, object_error_kind(&err), Object_Error.Out_Of_Memory)
+	expected_kind := Object_Error.Out_Of_Memory
+	if mode == .Short_With_Cleanup_Failure do expected_kind = .Cleanup_Failed
+	testing.expect_value(t, object_error_kind(&err), expected_kind)
+	if expected_kind == .Cleanup_Failed {
+		testing.expect_value(t, object_error_cause(&err), Object_Error.Out_Of_Memory)
+	}
 	testing.expect_value(t, kind_of(&key), Kind.String)
 	key_view, key_ok := string_borrowed(&key)
 	testing.expect(t, key_ok && key_view == key_text)
@@ -252,6 +257,31 @@ object_empty_insert_replace_lookup_and_order :: proc(t: ^testing.T) {
 	testing.expect(t, !next_ok)
 	expect_destroyed(t, &key)
 	expect_destroyed(t, &value)
+}
+
+@(test)
+object_allocation_delete_and_cow_preserve_canonical_empty_slots :: proc(t: ^testing.T) {
+	object, object_error := object_value(context.allocator)
+	testing.expect_value(t, object_error_kind(&object_error), Object_Error.None)
+	p := value_storage_of(&object).owned_payload
+	for &slot in object_payload_slots(p) {
+		testing.expect(t, object_slot_is_canonical_empty(&slot))
+	}
+
+	object_put_number(t, &object, "removed", 1)
+	object_delete_expected(t, &object, "removed")
+	testing.expect(t, object_slot_is_canonical_empty(&object_payload_slots(p)[0]))
+
+	alias := clone_value(&object)
+	object_put_number(t, &alias, "kept", 2)
+	alias_payload := value_storage_of(&alias).owned_payload
+	testing.expect(t, alias_payload != p)
+	testing.expect(t, object_slot_is_canonical_empty(&object_payload_slots(alias_payload)[0]))
+	for i in alias_payload.object_next_free..<alias_payload.object_capacity {
+		testing.expect(t, object_slot_is_canonical_empty(&object_payload_slots(alias_payload)[i]))
+	}
+	testing.expect_value(t, destroy_value(&alias), runtime.Allocator_Error.None)
+	testing.expect_value(t, destroy_value(&object), runtime.Allocator_Error.None)
 }
 
 @(test)
@@ -641,7 +671,8 @@ object_exact_allocation_and_growth_cleanup_failures_are_owned :: proc(t: ^testin
 	}
 	short_object, short_error := object_value(probe_allocator(&short_probe))
 	testing.expect_value(t, kind_of(&short_object), Kind.Invalid)
-	testing.expect_value(t, object_error_kind(&short_error), Object_Error.Out_Of_Memory)
+	testing.expect_value(t, object_error_kind(&short_error), Object_Error.Cleanup_Failed)
+	testing.expect_value(t, object_error_cause(&short_error), Object_Error.Out_Of_Memory)
 	testing.expect(t, object_error_needs_cleanup(&short_error))
 	testing.expect_value(t, short_probe.live, 1)
 	testing.expect_value(t, destroy_object_error(&short_error), runtime.Allocator_Error.None)

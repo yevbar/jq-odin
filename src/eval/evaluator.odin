@@ -242,7 +242,7 @@ evaluator_storage :: struct {
 // Evaluator_Handle fixes the public union payload layout across package
 // boundaries. Its contents are reserved for package eval; callers construct
 // only the nil Evaluator and use the lifecycle procedures below.
-Evaluator_Handle :: distinct [31]u64
+Evaluator_Handle :: distinct [32]u64
 
 // Evaluator is one address-stable owner. Odin assignment is not an ownership
 // operation: step_evaluator and destroy_evaluator reject a shallow copy before
@@ -255,7 +255,7 @@ Evaluator :: union {
 
 #assert(size_of(evaluator_storage) == size_of(Evaluator_Handle))
 #assert(align_of(evaluator_storage) == align_of(Evaluator_Handle))
-#assert(size_of(Evaluator) == 256)
+#assert(size_of(Evaluator) == 264)
 #assert(align_of(Evaluator) == 8)
 
 @(private)

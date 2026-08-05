@@ -7,11 +7,11 @@ import value "jq:value"
 
 @(test)
 evaluator_internal_layout_matches_public_handle :: proc(t: ^testing.T) {
-	testing.expect_value(t, size_of(evaluator_storage), 248)
+	testing.expect_value(t, size_of(evaluator_storage), 256)
 	testing.expect_value(t, align_of(evaluator_storage), 8)
 	testing.expect_value(t, size_of(Evaluator_Handle), size_of(evaluator_storage))
 	testing.expect_value(t, align_of(Evaluator_Handle), align_of(evaluator_storage))
-	testing.expect_value(t, size_of(Evaluator), 256)
+	testing.expect_value(t, size_of(Evaluator), 264)
 	testing.expect_value(t, align_of(Evaluator), 8)
 }
 

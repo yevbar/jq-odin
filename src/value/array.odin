@@ -19,13 +19,14 @@ Array_Error :: enum u8 {
 @(private)
 array_operation_error_storage :: struct {
 	kind:              Array_Error,
+	cause:             Array_Error,
 	constructor_error: Constructor_Error,
 }
 
-// Array_Operation_Error is inert for ordinary failures. If exact allocation
-// validation receives a nonempty mismatched allocation whose Free fails, it
-// owns the existing opaque Constructor_Error cleanup handle until retirement
-// succeeds. It must not be copied.
+// Array_Operation_Error is inert for ordinary failures. Cleanup_Failed may
+// preserve the interrupted Array_Error through array_error_cause and own an
+// opaque Constructor_Error cleanup handle until retirement succeeds. It must
+// not be copied.
 Array_Operation_Error :: union {
 	array_operation_error_storage,
 }
@@ -40,11 +41,14 @@ make_array_operation_error :: proc(kind: Array_Error) -> Array_Operation_Error {
 
 @(private)
 make_array_cleanup_error :: proc(
-	kind: Array_Error,
+	cause: Array_Error,
 	cleanup: ^Constructor_Error,
 ) -> Array_Operation_Error {
+	normalized_cause := cause
+	if normalized_cause == .Cleanup_Failed do normalized_cause = .None
 	return array_operation_error_storage{
-		kind = kind,
+		kind = .Cleanup_Failed,
+		cause = normalized_cause,
 		constructor_error = take_constructor_error(cleanup),
 	}
 }
@@ -54,6 +58,17 @@ array_error_kind :: proc(err: ^Array_Operation_Error) -> Array_Error {
 		return .None
 	}
 	return err.(array_operation_error_storage).kind
+}
+
+// array_error_cause returns the operation outcome interrupted by cleanup. It
+// is None unless array_error_kind is Cleanup_Failed.
+array_error_cause :: proc(err: ^Array_Operation_Error) -> Array_Error {
+	if err == nil || err^ == nil {
+		return .None
+	}
+	storage := &err.(array_operation_error_storage)
+	if storage.kind != .Cleanup_Failed do return .None
+	return storage.cause
 }
 
 array_error_needs_cleanup :: proc(err: ^Array_Operation_Error) -> bool {
@@ -171,7 +186,26 @@ array_value :: proc(allocator: runtime.Allocator) -> (result: Value, err: Array_
 	if array_error_kind(&alloc_error) != .None {
 		return {}, alloc_error
 	}
-	return value_from_storage({kind = .Array, owned_payload = p}), nil
+	return value_from_payload(.Array, p), nil
+}
+
+@(private)
+array_storage_extent_valid :: proc(storage: ^value_storage, allow_retiring := false) -> bool {
+	if storage == nil do return false
+	if storage.kind != .Array || storage.owned_payload == nil ||
+	   storage.owned_payload.kind != .Array ||
+	   (!allow_retiring && storage.owned_payload.array_retiring) {
+		return false
+	}
+	p := storage.owned_payload
+	if p.references <= 0 || p.references == max(int) || p.array_capacity < 0 ||
+	   p.array_initialized_length < 0 ||
+	   p.array_initialized_length > p.array_capacity || p.array_retired_count < 0 ||
+	   p.array_capacity > max(int) - p.array_retired_count {
+		return false
+	}
+	expected_size, size_ok := array_allocation_size(p.array_capacity + p.array_retired_count)
+	return size_ok && payload_bound_matches(storage, expected_size)
 }
 
 @(private)
@@ -180,11 +214,14 @@ array_storage_of :: proc(value: ^Value) -> (^value_storage, ^payload, bool) {
 		return nil, nil, false
 	}
 	storage := value_storage_of(value)
-	if storage.kind != .Array || storage.owned_payload == nil ||
-	   storage.owned_payload.kind != .Array || storage.owned_payload.array_retiring {
+	if !array_storage_extent_valid(storage) do return nil, nil, false
+	p := storage.owned_payload
+	offset := int(storage.array_offset)
+	if offset > p.array_initialized_length || storage.array_length < 0 ||
+	   storage.array_length > p.array_initialized_length - offset {
 		return nil, nil, false
 	}
-	return storage, storage.owned_payload, true
+	return storage, p, true
 }
 
 array_length :: proc(value: ^Value) -> (length: int, ok: bool) {
@@ -252,7 +289,7 @@ array_grow_unique :: proc(
 		return nil, make_array_operation_error(.Size_Overflow)
 	}
 	allocator := p.allocator
-	old_size := p.allocation_size
+	old_size := storage.payload_allocation_bound
 	replacement, allocation_error := allocate_array_payload(capacity, allocator, retired_count)
 	if array_error_kind(&allocation_error) != .None {
 		return nil, allocation_error
@@ -290,6 +327,7 @@ array_grow_unique :: proc(
 		return nil, retire_array_temporary(.Cleanup_Failed, replacement_memory, allocator)
 	}
 	storage.owned_payload = replacement
+	storage.payload_allocation_bound = replacement.allocation_size
 	storage.array_offset = 0
 	return replacement, nil
 }
@@ -343,6 +381,7 @@ array_make_writable :: proc(array: ^Value, required: int) -> (^payload, Array_Op
 	}
 	p.references -= 1
 	storage.owned_payload = copy_payload
+	storage.payload_allocation_bound = copy_payload.allocation_size
 	storage.array_offset = 0
 	return copy_payload, nil
 }
@@ -375,7 +414,7 @@ array_set_take :: proc(
 	index: int,
 	element: ^Value,
 ) -> (displaced: Value, err: Array_Operation_Error) {
-	if element == nil || element^ == nil {
+	if element == nil || element^ == nil || !value_local_extent_valid(element) {
 		return {}, make_array_operation_error(.Wrong_Kind)
 	}
 	if value_is_retiring(element) {
@@ -491,6 +530,7 @@ array_slice :: proc(
 		return value_from_storage({
 			kind = .Array,
 			owned_payload = p,
+			payload_allocation_bound = source_storage.payload_allocation_bound,
 			array_length = length,
 			array_offset = u16(new_offset),
 		}), nil
@@ -511,6 +551,7 @@ array_slice :: proc(
 	return value_from_storage({
 		kind = .Array,
 		owned_payload = copy_payload,
+		payload_allocation_bound = copy_payload.allocation_size,
 		array_length = length,
 	}), nil
 }

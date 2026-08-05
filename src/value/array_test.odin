@@ -1010,7 +1010,8 @@ failed_nonempty_unique_growth_preserves_every_owner_and_retries :: proc(t: ^test
 	backing_probe.behavior = .Short_Success
 	backing_probe.free_failures_remaining = 1
 	failed_error := append_take_no_displaced(&array, &incoming)
-	testing.expect_value(t, array_error_kind(&failed_error), Array_Error.Out_Of_Memory)
+	testing.expect_value(t, array_error_kind(&failed_error), Array_Error.Cleanup_Failed)
+	testing.expect_value(t, array_error_cause(&failed_error), Array_Error.Out_Of_Memory)
 	testing.expect(t, array_error_needs_cleanup(&failed_error))
 	testing.expect(t, value_storage_of(&array).owned_payload == original_payload)
 	testing.expect_value(t, backing_probe.live, 2)
@@ -1124,7 +1125,8 @@ array_constructor_exactness_uses_owning_cleanup_contract :: proc(t: ^testing.T) 
 	}
 	retry_array, retry_error := array_value(probe_allocator(&retry_probe))
 	testing.expect_value(t, kind_of(&retry_array), Kind.Invalid)
-	testing.expect_value(t, array_error_kind(&retry_error), Array_Error.Out_Of_Memory)
+	testing.expect_value(t, array_error_kind(&retry_error), Array_Error.Cleanup_Failed)
+	testing.expect_value(t, array_error_cause(&retry_error), Array_Error.Out_Of_Memory)
 	testing.expect(t, array_error_needs_cleanup(&retry_error))
 	testing.expect_value(t, retry_probe.live, 1)
 	moved_error := take_array_error(&retry_error)
@@ -1161,7 +1163,8 @@ array_growth_cow_and_slice_transfer_failed_allocation_cleanup :: proc(t: ^testin
 	growth_probe.free_failures_remaining = 1
 	growth_incoming := number_value(1)
 	growth_error := append_take_no_displaced(&growing, &growth_incoming)
-	testing.expect_value(t, array_error_kind(&growth_error), Array_Error.Out_Of_Memory)
+	testing.expect_value(t, array_error_kind(&growth_error), Array_Error.Cleanup_Failed)
+	testing.expect_value(t, array_error_cause(&growth_error), Array_Error.Out_Of_Memory)
 	testing.expect(t, array_error_needs_cleanup(&growth_error))
 	growing_length, growing_ok := array_length(&growing)
 	testing.expect(t, growing_ok && growing_length == ARRAY_INITIAL_CAPACITY)
@@ -1184,7 +1187,8 @@ array_growth_cow_and_slice_transfer_failed_allocation_cleanup :: proc(t: ^testin
 	cow_probe.free_failures_remaining = 1
 	cow_incoming := number_value(2)
 	cow_error := append_take_no_displaced(&shared_clone, &cow_incoming)
-	testing.expect_value(t, array_error_kind(&cow_error), Array_Error.Out_Of_Memory)
+	testing.expect_value(t, array_error_kind(&cow_error), Array_Error.Cleanup_Failed)
+	testing.expect_value(t, array_error_cause(&cow_error), Array_Error.Out_Of_Memory)
 	testing.expect(t, array_error_needs_cleanup(&cow_error))
 	testing.expect(t, values_equal(&shared, &shared_clone))
 	testing.expect_value(t, kind_of(&cow_incoming), Kind.Number)
@@ -1222,7 +1226,8 @@ array_growth_cow_and_slice_transfer_failed_allocation_cleanup :: proc(t: ^testin
 	}
 	slice, slice_error := array_slice(&source, 0, 0, probe_allocator(&slice_probe))
 	testing.expect_value(t, kind_of(&slice), Kind.Invalid)
-	testing.expect_value(t, array_error_kind(&slice_error), Array_Error.Out_Of_Memory)
+	testing.expect_value(t, array_error_kind(&slice_error), Array_Error.Cleanup_Failed)
+	testing.expect_value(t, array_error_cause(&slice_error), Array_Error.Out_Of_Memory)
 	testing.expect(t, array_error_needs_cleanup(&slice_error))
 	testing.expect_value(t, array_number_at(t, &source, 0), 3)
 	testing.expect_value(t, destroy_array_error(&slice_error), runtime.Allocator_Error.None)

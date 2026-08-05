@@ -42,6 +42,9 @@ Error :: enum u8 {
 @(private)
 constructor_error_storage :: struct {
 	kind:              Error,
+	// allocator_unsupported preserves allocator-mode provenance without
+	// expanding the source-compatible public Error classification.
+	allocator_unsupported: bool,
 	cleanup_memory:    []byte,
 	cleanup_allocator: runtime.Allocator,
 }
@@ -54,11 +57,17 @@ Constructor_Error :: union {
 }
 
 @(private)
-make_constructor_error :: proc(kind: Error) -> Constructor_Error {
+make_constructor_error :: proc(
+	kind: Error,
+	allocator_unsupported: bool = false,
+) -> Constructor_Error {
 	if kind == .None {
 		return {}
 	}
-	return constructor_error_storage{kind = kind}
+	return constructor_error_storage{
+		kind = kind,
+		allocator_unsupported = allocator_unsupported,
+	}
 }
 
 @(private)
@@ -66,9 +75,11 @@ make_cleanup_constructor_error :: proc(
 	kind: Error,
 	memory: []byte,
 	allocator: runtime.Allocator,
+	allocator_unsupported: bool = false,
 ) -> Constructor_Error {
 	return constructor_error_storage{
 		kind = kind,
+		allocator_unsupported = allocator_unsupported,
 		cleanup_memory = memory,
 		cleanup_allocator = allocator,
 	}
@@ -86,6 +97,12 @@ constructor_error_needs_cleanup :: proc(err: ^Constructor_Error) -> bool {
 		return false
 	}
 	return len(err.(constructor_error_storage).cleanup_memory) > 0
+}
+
+@(private)
+constructor_error_allocator_unsupported :: proc(err: ^Constructor_Error) -> bool {
+	if err == nil || err^ == nil do return false
+	return err.(constructor_error_storage).allocator_unsupported
 }
 
 take_constructor_error :: proc(source: ^Constructor_Error) -> Constructor_Error {
@@ -156,25 +173,122 @@ value_storage :: struct {
 	boolean:        bool,
 	native_number:  f64,
 	owned_payload:  ^payload,
+	// payload_allocation_bound is the exact length returned by the allocator
+	// that created owned_payload. It is immutable for this owning handle:
+	// clone/take/slice copy it, and COW replacement installs a new payload and
+	// bound together. Payload metadata is never an authority for this extent.
+	payload_allocation_bound: int,
 	array_length:   int,
 	array_offset:   u16,
 }
 
-// Value is an owning tagged handle whose only union variant is package-private.
-// The nil union is the inert invalid value. Ordinary assignment of a live Value
-// is not an ownership operation; use clone_value or take_value.
+// Value_Handle fixes the public union payload layout across package boundaries.
+// The compiler must retain its exported spelling so importing packages agree
+// on Value's tag offset, but package privacy prevents callers from naming or
+// constructing the storage variant.
+@(private)
+Value_Handle :: distinct [6]u64
+
+// Value is an owning tagged handle. The nil union is the inert invalid value.
+// Ordinary assignment of a live Value is not an ownership operation; use
+// clone_value or take_value. The public fixed-layout variant gives importers
+// the same payload size, alignment, and tag offset as package value.
 Value :: union {
-	value_storage,
+	Value_Handle,
 }
+
+#assert(size_of(value_storage) == size_of(Value_Handle))
+#assert(align_of(value_storage) == align_of(Value_Handle))
+#assert(size_of(Value) == 56)
+#assert(align_of(Value) == 8)
 
 @(private)
 value_from_storage :: proc(storage: value_storage) -> Value {
-	return storage
+	result: Value = Value_Handle{}
+	value_storage_of(&result)^ = storage
+	return result
+}
+
+@(private)
+value_from_payload :: proc(kind: Kind, p: ^payload) -> Value {
+	assert(p != nil)
+	assert(p.allocation_size >= int(size_of(payload)))
+	return value_from_storage({
+		kind = kind,
+		owned_payload = p,
+		payload_allocation_bound = p.allocation_size,
+	})
+}
+
+@(private)
+payload_bound_matches :: proc(storage: ^value_storage, expected_size: int) -> bool {
+	return storage != nil && storage.owned_payload != nil &&
+	       storage.payload_allocation_bound == expected_size &&
+	       storage.owned_payload.allocation_size == expected_size
+}
+
+@(private)
+literal_storage_valid :: proc(storage: ^value_storage) -> bool {
+	if storage == nil || storage.kind != .Number || storage.owned_payload == nil {
+		return false
+	}
+	p := storage.owned_payload
+	if p.kind != .Literal_Number || p.references <= 0 || p.references == max(int) ||
+	   p.byte_count < 0 || p.coefficient_len < 0 ||
+	   (p.infinite && p.coefficient_len != 0) ||
+	   (!p.infinite && p.coefficient_len == 0) ||
+	   p.byte_count > max(int) - int(size_of(payload)) {
+		return false
+	}
+	minimum_size := int(size_of(payload)) + p.byte_count
+	if p.coefficient_len > max(int) - minimum_size do return false
+	if storage.payload_allocation_bound != p.allocation_size ||
+	   storage.payload_allocation_bound < minimum_size + p.coefficient_len {
+		return false
+	}
+	coefficient_capacity := storage.payload_allocation_bound - minimum_size
+	return literal_metadata_valid(p, coefficient_capacity)
+}
+
+@(private)
+string_storage_valid :: proc(storage: ^value_storage) -> bool {
+	if storage == nil || storage.kind != .String || storage.owned_payload == nil {
+		return false
+	}
+	p := storage.owned_payload
+	if p.kind != .String || p.references <= 0 || p.references == max(int) || p.byte_count < 0 ||
+	   p.coefficient_len != 0 || p.byte_count > max(int) - int(size_of(payload)) {
+		return false
+	}
+	return payload_bound_matches(storage, int(size_of(payload)) + p.byte_count)
+}
+
+@(private)
+value_local_extent_valid :: proc(value: ^Value, allow_retiring := false) -> bool {
+	if value == nil || value^ == nil do return false
+	storage := value_storage_of(value)
+	switch storage.kind {
+	case .Null, .Boolean:
+		return storage.owned_payload == nil && storage.payload_allocation_bound == 0
+	case .Number:
+		if storage.owned_payload == nil do return storage.payload_allocation_bound == 0
+		return literal_storage_valid(storage)
+	case .String:
+		return string_storage_valid(storage)
+	case .Array:
+		return array_storage_extent_valid(storage, allow_retiring)
+	case .Object:
+		return object_storage_extent_valid(storage, allow_retiring)
+	case .Invalid:
+		return false
+	}
+	return false
 }
 
 @(private)
 value_storage_of :: proc(value: ^Value) -> ^value_storage {
-	return &value.(value_storage)
+	handle := &value.(Value_Handle)
+	return cast(^value_storage)rawptr(handle)
 }
 
 @(private)
@@ -217,6 +331,9 @@ boolean_value_get :: proc(value: ^Value) -> (result: bool, ok: bool) {
 	if storage.kind != .Boolean {
 		return false, false
 	}
+	if storage.owned_payload != nil || storage.payload_allocation_bound != 0 {
+		return false, false
+	}
 	return storage.boolean, true
 }
 
@@ -229,8 +346,10 @@ number_kind :: proc(value: ^Value) -> (result: Number_Kind, ok: bool) {
 		return {}, false
 	}
 	if storage.owned_payload != nil {
+		if !literal_storage_valid(storage) do return {}, false
 		return .Literal, true
 	}
+	if storage.payload_allocation_bound != 0 do return {}, false
 	return .Native, true
 }
 
@@ -243,8 +362,10 @@ number_value_get :: proc(value: ^Value) -> (result: f64, ok: bool) {
 		return 0, false
 	}
 	if storage.owned_payload != nil {
+		if !literal_storage_valid(storage) do return 0, false
 		return storage.owned_payload.native_cache, true
 	}
+	if storage.payload_allocation_bound != 0 do return 0, false
 	return storage.native_number, true
 }
 
@@ -287,13 +408,19 @@ allocate_payload :: proc(
 		allocator,
 	)
 	if alloc_error != nil || len(memory) != allocation_size {
+		allocator_unsupported := alloc_error == .Mode_Not_Implemented
 		if len(memory) > 0 {
 			free_error := runtime.mem_free_bytes(memory, allocator)
 			if free_error != nil && free_error != .Mode_Not_Implemented {
-				return nil, make_cleanup_constructor_error(.Out_Of_Memory, memory, allocator)
+				return nil, make_cleanup_constructor_error(
+					.Out_Of_Memory,
+					memory,
+					allocator,
+					allocator_unsupported,
+				)
 			}
 		}
-		return nil, make_constructor_error(.Out_Of_Memory)
+		return nil, make_constructor_error(.Out_Of_Memory, allocator_unsupported)
 	}
 	p = cast(^payload)(raw_data(memory))
 	p.references = 1
@@ -315,7 +442,7 @@ string_value :: proc(bytes: string, allocator: runtime.Allocator) -> (
 	if len(bytes) > 0 {
 		copy(payload_bytes(p), transmute([]byte)bytes)
 	}
-	return value_from_storage({kind = .String, owned_payload = p}), nil
+	return value_from_payload(.String, p), nil
 }
 
 // string_borrowed returns a length-delimited immutable view. It remains valid
@@ -325,10 +452,11 @@ string_borrowed :: proc(value: ^Value) -> (result: string, ok: bool) {
 		return "", false
 	}
 	storage := value_storage_of(value)
-	if storage.kind != .String || storage.owned_payload == nil {
+	if !string_storage_valid(storage) {
 		return "", false
 	}
-	bytes := payload_bytes(storage.owned_payload)
+	p := storage.owned_payload
+	bytes := payload_bytes(p)
 	if len(bytes) == 0 {
 		return "", true
 	}
@@ -498,6 +626,176 @@ scan_literal :: proc(literal: string) -> (scan: decimal_scan, ok: bool) {
 		scan.significant_len = digit_count
 	}
 	return scan, true
+}
+
+@(private)
+literal_coefficient_capacity_borrowed :: proc(p: ^payload, capacity: int) -> []byte {
+	if p == nil || capacity <= 0 do return nil
+	data := cast([^]byte)(uintptr(p) + size_of(payload) + uintptr(p.byte_count))
+	return data[:capacity]
+}
+
+@(private)
+literal_significant_byte :: proc(literal: string, scan: decimal_scan, at: int) -> (
+	byte,
+	bool,
+) {
+	seen := 0
+	for i in scan.significant_at..<scan.mantissa_end {
+		if literal[i] == '.' do continue
+		if seen == at do return literal[i], true
+		seen += 1
+	}
+	return 0, false
+}
+
+@(private)
+literal_rounded_coefficient_matches :: proc(
+	literal: string,
+	scan: decimal_scan,
+	discard: i64,
+	coefficient: []byte,
+	exponent: i64,
+) -> bool {
+	if discard < 0 || len(coefficient) == 0 {
+		return false
+	}
+	keep := i64(scan.significant_len) - discard
+	expected_len := int(keep) if keep > 0 else 1
+	if len(coefficient) != expected_len do return false
+
+	round_up := false
+	carry_at := -1
+	if discard > 0 && keep >= 0 {
+		first_discarded_at := int(keep) if keep > 0 else 0
+		seen := 0
+		found_discarded := false
+		for i in scan.significant_at..<scan.mantissa_end {
+			digit := literal[i]
+			if digit == '.' do continue
+			if seen < first_discarded_at && digit != '9' do carry_at = seen
+			if seen == first_discarded_at {
+				round_up = digit >= '5'
+				found_discarded = true
+				break
+			}
+			seen += 1
+		}
+		if !found_discarded do return false
+		if !round_up do carry_at = -1
+	}
+	carry_overflow := round_up && keep > 0 && carry_at < 0
+	expected_exponent := i128(scan.exponent) + i128(discard)
+	if carry_overflow do expected_exponent += 1
+	if i128(exponent) != expected_exponent do return false
+
+	if keep <= 0 {
+		expected := byte('1') if round_up else byte('0')
+		return coefficient[0] == expected
+	}
+	coefficient_at := 0
+	for spelling_at in scan.significant_at..<scan.mantissa_end {
+		digit := literal[spelling_at]
+		if digit == '.' do continue
+		if coefficient_at == int(keep) do break
+		expected := digit
+		if carry_overflow {
+			expected = '1' if coefficient_at == 0 else '0'
+		} else if carry_at >= 0 {
+			if coefficient_at == carry_at {
+				expected += 1
+			} else if coefficient_at > carry_at {
+				expected = '0'
+			}
+		}
+		if coefficient[coefficient_at] != expected do return false
+		coefficient_at += 1
+	}
+	return coefficient_at == int(keep)
+}
+
+@(private)
+literal_zero_exponent_valid :: proc(scan_exponent, exponent: i64) -> bool {
+	if scan_exponent > DECIMAL_EMAX do return exponent == DECIMAL_EMAX
+	if scan_exponent >= DECIMAL_ETINY do return exponent == scan_exponent
+	// Private precision constructors have an etiny between the default etiny
+	// and emin. A zero below that context is clamped to that exact etiny.
+	return exponent >= DECIMAL_ETINY && exponent <= DECIMAL_EMIN &&
+	       exponent > scan_exponent
+}
+
+@(private)
+literal_metadata_valid :: proc(p: ^payload, coefficient_capacity: int) -> bool {
+	if p == nil || coefficient_capacity < 0 do return false
+	spelling_bytes := payload_bytes(p)
+	literal := transmute(string)spelling_bytes
+	special_negative, special_infinite, special_nan, special_ok := special_literal(literal)
+	expected_positive_sign := len(literal) > 0 && literal[0] == '+'
+	if p.explicit_positive_sign != expected_positive_sign do return false
+
+	if special_ok {
+		// Direct infinity construction has exponent zero. Canonical negation of
+		// an overflowed finite literal preserves its overflowing exponent while
+		// replacing the retained spelling and dropping the no-longer-live tail.
+		valid_exponent := p.exponent == 0 || p.exponent > DECIMAL_EMAX
+		if special_nan || !special_infinite || !p.infinite || p.coefficient_len != 0 ||
+		   coefficient_capacity != 0 || p.negative != special_negative || !valid_exponent {
+			return false
+		}
+		return transmute(u64)p.native_cache == transmute(u64)decimal_to_binary64(p)
+	}
+
+	scan, scan_ok := scan_literal(literal)
+	if !scan_ok || p.negative != scan.negative do return false
+	coefficient := literal_coefficient_capacity_borrowed(p, coefficient_capacity)
+	if scan.significant_len == 1 {
+		first, first_ok := literal_significant_byte(literal, scan, 0)
+		if !first_ok do return false
+		if first == '0' {
+			if p.infinite || coefficient_capacity != 1 || p.coefficient_len != 1 ||
+			   coefficient[0] != '0' || !literal_zero_exponent_valid(scan.exponent, p.exponent) {
+				return false
+			}
+			return transmute(u64)p.native_cache == transmute(u64)decimal_to_binary64(p)
+		}
+	}
+
+	if coefficient_capacity <= 0 || coefficient_capacity > scan.significant_len {
+		return false
+	}
+	if p.infinite {
+		if p.coefficient_len != 0 do return false
+	} else if p.coefficient_len != coefficient_capacity {
+		return false
+	}
+
+	// The constructor's discarded count is reflected in the stored exponent.
+	// A rounding carry is the only operation that can add one more.
+	discard_wide := i128(p.exponent) - i128(scan.exponent)
+	if discard_wide < 0 || discard_wide > i128(max(i64)) do return false
+	discard_from_exponent := i64(discard_wide)
+	matched := literal_rounded_coefficient_matches(
+		literal, scan, discard_from_exponent, coefficient, p.exponent,
+	)
+	if !matched && discard_from_exponent > 0 {
+		matched = literal_rounded_coefficient_matches(
+			literal, scan, discard_from_exponent - 1, coefficient, p.exponent,
+		)
+	}
+	if !matched do return false
+	if discard_wide > i128(scan.significant_len) + 1 {
+		if p.infinite || coefficient_capacity != 1 || coefficient[0] != '0' ||
+		   p.exponent < DECIMAL_ETINY || p.exponent > DECIMAL_EMIN {
+			return false
+		}
+	}
+	adjusted := i128(p.exponent) + i128(coefficient_capacity) - 1
+	if p.infinite {
+		if adjusted <= i128(DECIMAL_EMAX) do return false
+	} else if adjusted > i128(DECIMAL_EMAX) {
+		return false
+	}
+	return transmute(u64)p.native_cache == transmute(u64)decimal_to_binary64(p)
 }
 
 @(private)
@@ -708,7 +1006,7 @@ literal_number_value_with_context :: proc(
 	p.infinite = special_infinite
 	if special_infinite {
 		p.native_cache = decimal_to_binary64(p)
-		return value_from_storage({kind = .Number, owned_payload = p}), nil
+		return value_from_payload(.Number, p), nil
 	}
 
 	etiny := context_emin - i64(context_digits) + 1
@@ -750,7 +1048,7 @@ literal_number_value_with_context :: proc(
 	}
 	finalize_decimal(p, context_digits, context_emin, context_emax)
 	p.native_cache = decimal_to_binary64(p)
-	return value_from_storage({kind = .Number, owned_payload = p}), nil
+	return value_from_payload(.Number, p), nil
 }
 
 @(private)
@@ -792,8 +1090,7 @@ literal_spelling_borrowed :: proc(value: ^Value) -> (result: string, ok: bool) {
 		return "", false
 	}
 	storage := value_storage_of(value)
-	if storage.kind != .Number || storage.owned_payload == nil ||
-	   storage.owned_payload.kind != .Literal_Number {
+	if !literal_storage_valid(storage) {
 		return "", false
 	}
 	bytes := payload_bytes(storage.owned_payload)
@@ -948,8 +1245,10 @@ number_negate :: proc(
 		return {}, nil, false
 	}
 	if storage.owned_payload == nil {
+		if storage.payload_allocation_bound != 0 do return {}, nil, false
 		return number_value(toggle_f64_sign(storage.native_number)), nil, true
 	}
+	if !literal_storage_valid(storage) do return {}, nil, false
 
 	source_payload := storage.owned_payload
 	literal_zero := coefficient_is_zero(payload_coefficient(source_payload))
@@ -988,7 +1287,7 @@ number_negate :: proc(
 		destination_payload.native_cache = toggle_f64_sign(source_payload.native_cache)
 	}
 	copy(payload_coefficient(destination_payload), payload_coefficient(source_payload))
-	return value_from_storage({kind = .Number, owned_payload = destination_payload}), nil, true
+	return value_from_payload(.Number, destination_payload), nil, true
 }
 
 // number_add borrows both operands for the complete call and returns a new
@@ -1171,7 +1470,7 @@ clone_value :: proc(value: ^Value) -> Value {
 		return {}
 	}
 	storage := value_storage_of(value)
-	if storage.kind == .Invalid {
+	if storage.kind == .Invalid || !value_local_extent_valid(value) {
 		return {}
 	}
 	if storage.owned_payload != nil {
@@ -1223,15 +1522,10 @@ teardown_next_owner :: proc(p: ^payload) -> (^Value, bool) {
 	}
 	if p.kind == .Object {
 		slots := object_payload_slots(p)
-		for p.object_cleanup_at < p.object_next_free {
+		for p.object_cleanup_at < p.object_capacity {
 			slot := &slots[p.object_cleanup_at]
-			if p.object_cleanup_key_done {
-				return &slot.value, true
-			}
-			if kind_of(&slot.key) == .String {
-				return &slot.key, true
-			}
-			p.object_cleanup_at += 1
+			if !p.object_cleanup_key_done do return &slot.key, true
+			return &slot.value, true
 		}
 	}
 	return nil, false
@@ -1269,6 +1563,9 @@ destroy_value :: proc(value: ^Value) -> runtime.Allocator_Error {
 			teardown_advance(current_parent)
 		} else {
 			storage := value_storage_of(current_owner)
+			if !value_local_extent_valid(current_owner, true) {
+				return .Invalid_Pointer
+			}
 			p := storage.owned_payload
 			if p == nil {
 				current_owner^ = {}
@@ -1294,7 +1591,9 @@ destroy_value :: proc(value: ^Value) -> runtime.Allocator_Error {
 				}
 
 				parent := p.teardown_parent
-				free_error := runtime.mem_free_with_size(p, p.allocation_size, p.allocator)
+				free_error := runtime.mem_free_with_size(
+					p, storage.payload_allocation_bound, p.allocator,
+				)
 				if free_error != nil && free_error != .Mode_Not_Implemented {
 					return free_error
 				}
@@ -1304,7 +1603,9 @@ destroy_value :: proc(value: ^Value) -> runtime.Allocator_Error {
 				current_parent = parent
 				teardown_advance(parent)
 			} else {
-				free_error := runtime.mem_free_with_size(p, p.allocation_size, p.allocator)
+				free_error := runtime.mem_free_with_size(
+					p, storage.payload_allocation_bound, p.allocator,
+				)
 				if free_error != nil && free_error != .Mode_Not_Implemented {
 					return free_error
 				}
@@ -1456,6 +1757,9 @@ compare_numbers :: proc(a, b: ^Value) -> (result: int, ok: bool) {
 	if a_storage.kind != .Number || b_storage.kind != .Number {
 		return 0, false
 	}
+	if !value_local_extent_valid(a) || !value_local_extent_valid(b) {
+		return 0, false
+	}
 	a_literal := a_storage.owned_payload != nil
 	b_literal := b_storage.owned_payload != nil
 	if a_literal && b_literal {
@@ -1484,6 +1788,9 @@ values_equal :: proc(a, b: ^Value) -> bool {
 	}
 	a_storage := value_storage_of(a)
 	b_storage := value_storage_of(b)
+	if !value_local_extent_valid(a) || !value_local_extent_valid(b) {
+		return false
+	}
 	if a_storage.kind != b_storage.kind {
 		return false
 	}

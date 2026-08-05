@@ -139,6 +139,7 @@ allocator_probe :: struct {
 	wrong_free_size: bool,
 	last_size:     int,
 	free_failures_remaining: int,
+	failure_error: runtime.Allocator_Error,
 	nil_success:   bool,
 	short_success: bool,
 	tracked_pointers: [128]rawptr,
@@ -163,7 +164,9 @@ allocator_probe_proc :: proc(
 	case .Alloc, .Alloc_Non_Zeroed:
 		if probe.allocations == probe.fail_after {
 			probe.allocations += 1
-			return nil, .Out_Of_Memory
+			failure_error := probe.failure_error
+			if failure_error == nil do failure_error = .Out_Of_Memory
+			return nil, failure_error
 		}
 		probe.allocations += 1
 		if probe.nil_success {
