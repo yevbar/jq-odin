@@ -1203,6 +1203,220 @@ test_comparison_exact_generated_parser_stack_boundaries :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_boolean_and_alternative_operators_have_exact_ast_and_source_spans :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		operator: Binary_Operator,
+		operator_start, operator_end: int,
+	}
+	cases := [?]Case{
+		{"true and false", .And, 5, 8},
+		{"false or true", .Or, 6, 8},
+		{"null // 42", .Defined_Or, 5, 7},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		root := expect_binary_node(
+			t,
+			&parser,
+			outcome.root,
+			test_case.operator,
+			0,
+			len(test_case.text),
+			test_case.operator_start,
+			test_case.operator_end,
+		)
+		_, _, left_span_ok := diagnostic.span_offsets(source, parser.nodes.storage[int(root.left)].span)
+		_, _, right_span_ok := diagnostic.span_offsets(source, parser.nodes.storage[int(root.right)].span)
+		testing.expect(t, left_span_ok && right_span_ok)
+		distinct_source := diagnostic.borrow_source("<distinct-boolean>", test_case.text)
+		_, _, distinct_ok := diagnostic.span_offsets(distinct_source, root.operator_span)
+		testing.expect(t, !distinct_ok)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_boolean_and_alternative_precedence_matches_jq_grammar :: proc(t: ^testing.T) {
+	text :: "1 // 2 or 3 and 4 == 5 + 6 * 7, 8 | 9 // 10"
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	expect_parse_success(t, &parser, outcome)
+
+	pipe := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, pipe.kind, Node_Kind.Pipe)
+	comma := parser.nodes.storage[int(pipe.left)]
+	testing.expect_value(t, comma.kind, Node_Kind.Comma)
+	alternative := expect_binary_node(t, &parser, comma.left, .Defined_Or, 0, 30, 2, 4)
+	boolean_or := expect_binary_node(t, &parser, alternative.right, .Or, 5, 30, 7, 9)
+	boolean_and := expect_binary_node(t, &parser, boolean_or.right, .And, 10, 30, 12, 15)
+	comparison := expect_binary_node(t, &parser, boolean_and.right, .Equal, 16, 30, 18, 20)
+	add := expect_binary_node(t, &parser, comparison.right, .Add, 21, 30, 23, 24)
+	multiply := expect_binary_node(t, &parser, add.right, .Multiply, 25, 30, 27, 28)
+	testing.expect_value(t, parser.nodes.storage[int(comma.right)].number_text, "8")
+	right_alternative := expect_binary_node(t, &parser, pipe.right, .Defined_Or, 36, len(text), 38, 40)
+	testing.expect_value(t, parser.nodes.storage[int(right_alternative.left)].number_text, "9")
+	testing.expect_value(t, parser.nodes.storage[int(right_alternative.right)].number_text, "10")
+	testing.expect_value(t, parser.nodes.storage[int(multiply.left)].number_text, "6")
+	testing.expect_value(t, parser.nodes.storage[int(multiply.right)].number_text, "7")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_boolean_is_left_associative_and_alternative_is_right_associative :: proc(t: ^testing.T) {
+	Case :: struct { text: string, operator: Binary_Operator, right_associative: bool }
+	cases := [?]Case{
+		{"true and false and true", .And, false},
+		{"false or false or true", .Or, false},
+		{"null // false // true", .Defined_Or, true},
+	}
+	for test_case in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		outer := parser.nodes.storage[int(outcome.root)]
+		testing.expect_value(t, outer.form, Node_Form.Binary)
+		testing.expect_value(t, outer.binary_operator, test_case.operator)
+		nested_id := outer.right if test_case.right_associative else outer.left
+		nested := parser.nodes.storage[int(nested_id)]
+		testing.expect_value(t, nested.form, Node_Form.Binary)
+		testing.expect_value(t, nested.binary_operator, test_case.operator)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_boolean_and_alternative_grouping_comments_newlines_and_postfix :: proc(t: ^testing.T) {
+	cases := [?]string{
+		"(true or false) and true",
+		"true# lhs\n and# operator\n false",
+		"null //\n-1?",
+		"(null // false)? or true",
+		"-(1 == 1 and 2 < 3)",
+	}
+	for text in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		expect_parse_success(t, &parser, outcome)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_boolean_and_alternative_malformed_diagnostics_are_structured :: proc(t: ^testing.T) {
+	Case :: struct { text: string, start, end: int, actual: Token_Kind, expected: Parse_Expectation }
+	cases := [?]Case{
+		{"and true", 0, 3, .And, .Expression},
+		{"or false", 0, 2, .Or, .Expression},
+		{"// null", 0, 2, .Defined_Or, .Expression},
+		{"true and or false", 9, 11, .Or, .Expression},
+		{"false or // true", 9, 11, .Defined_Or, .Expression},
+		{"null // and true", 8, 11, .And, .Expression},
+		{"1 / / 2", 4, 5, .Divide, .Expression},
+		{"1 /// 2", 4, 5, .Divide, .Expression},
+		{"(true and)", 9, 10, .Close_Paren, .Expression},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+		testing.expect_value(t, outcome.error.expected, test_case.expected)
+		testing.expect(t, outcome.error.has_actual)
+		testing.expect_value(t, outcome.error.actual, test_case.actual)
+		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+
+	missing_rhs := [?]string{"true and", "false or", "null //"}
+	for text in missing_rhs {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_End)
+		testing.expect_value(t, outcome.error.expected, Parse_Expectation.Expression)
+		expect_span(t, source, outcome.error.span, len(text), len(text))
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(private="package")
+alternative_filter :: proc(operator_count: int) -> string {
+	prefix, prefix_error := strings.repeat("null//", operator_count)
+	assert(prefix_error == nil)
+	result, result_error := strings.concatenate([]string{prefix, "null"})
+	assert(result_error == nil)
+	delete(prefix)
+	return result
+}
+
+@(test)
+test_boolean_and_alternative_exact_generated_parser_stack_boundaries :: proc(t: ^testing.T) {
+	for operator_count in 4_997..=4_998 {
+		text := alternative_filter(operator_count)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if operator_count == 4_997 {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+
+	Case :: struct { prefix: string, minus_count: int, suffix: string, succeeds: bool }
+	cases := [?]Case{
+		{"true and ", 9_993, "1", true},
+		{"true and ", 9_994, "1", false},
+		{"false or ", 9_993, "1", true},
+		{"false or ", 9_994, "1", false},
+		{"null // ", 9_993, "1", true},
+		{"null // ", 9_994, "1", false},
+	}
+	for test_case in cases {
+		text := query_binary_minus_filter(t, test_case.prefix, test_case.minus_count, test_case.suffix)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		if test_case.succeeds {
+			expect_parse_success(t, &parser, outcome)
+		} else {
+			testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+			testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+		}
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_alternative_stack_limit_failure_cleanup_is_retryable :: proc(t: ^testing.T) {
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	allocator_data := Test_Allocator{
+		backing = mem.tracking_allocator(&tracker),
+		alive = true,
+	}
+	text := alternative_filter(4_998)
+	defer delete(text)
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text, test_allocator(&allocator_data))
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	allocator_data.free_failures_remaining = 1
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.Invalid_Pointer)
+	testing.expect_value(t, parser.state, Parser_State.Cleanup_Failed)
+	testing.expect(t, len(tracker.allocation_map) > 0)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	testing.expect_value(t, len(tracker.allocation_map), 0)
+	mem.tracking_allocator_destroy(&tracker)
+}
+
+@(test)
 test_parser_comma_pipe_precedence_and_associativity :: proc(t: ^testing.T) {
 	parser: Parser
 	_, outcome := parse_test_filter(t, &parser, "., .a, .b | .c | .d")
@@ -1463,6 +1677,7 @@ test_parser_1818_filter_acceptance_corpus :: proc(t: ^testing.T) {
 		"(.a?).b",
 		"., .a | .b",
 		".a | .b, .c",
+		". // .",
 	}
 	rejected := [?]string{
 		"",
@@ -1472,7 +1687,6 @@ test_parser_1818_filter_acceptance_corpus :: proc(t: ^testing.T) {
 		".a..b",
 		".a?name",
 		"[]",
-		". // .",
 		".a.b,",
 	}
 	filter_count := 0
@@ -1515,7 +1729,6 @@ test_parser_rejects_every_unsupported_token_class_and_lexer_errors :: proc(t: ^t
 		{"name", .Unexpected_Token, 0, 4},
 		{"[]", .Unexpected_Token, 0, 1},
 		{"..", .Unexpected_Token, 0, 2},
-		{". // .", .Unexpected_Token, 2, 4},
 		{"\x00.", .Lexical_Error, 0, 1},
 		{". \xff", .Lexical_Error, 2, 3},
 	}
@@ -1812,7 +2025,7 @@ test_parser_rejects_deep_incomplete_forms_like_oracle :: proc(t: ^testing.T) {
 
 @(test)
 test_parser_every_allocation_failure_keeps_cleanup_owner :: proc(t: ^testing.T) {
-	text :: "((((.root + .first?.second < 9)))) | ((.x?.y * .z??.last), (. - . / . % . >= 0))"
+	text :: "((((.root + .first?.second < 9 and true)))) // false or .fallback | ((.x?.y * .z??.last), (. - . / . % . >= 0))"
 	baseline_data := Test_Allocator{backing = context.allocator, alive = true}
 	baseline: Parser
 	_, baseline_outcome := parse_test_filter(
