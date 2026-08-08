@@ -537,8 +537,63 @@ dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("value(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "( (7))")
+	testing.expect_value(t, strings.to_string(builder), "(7 |  .)")
 	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+dollar_parameters_preserve_value_cardinality_and_order :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def dup($x): $x, $x;", "dup(1,2)", "(1,2 |  ., .)",
+	)
+}
+
+@(test)
+unbound_dollar_name_is_not_a_definition_call :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def name: 42;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source("$name", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "$name")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_call_argument_comments_do_not_split_semicolons :: proc(t: ^testing.T) {
+	args: [16]string
+	close, count, ok := module_call_arguments(
+		"identity(1 # ; this is a comment\n)", len("identity"), &args,
+	)
+	testing.expect(t, ok)
+	testing.expect_value(t, close, len("identity(1 # ; this is a comment\n)")-1)
+	testing.expect_value(t, count, 1)
+	testing.expect_value(t, args[0], "1 # ; this is a comment\n")
+}
+
+@(test)
+module_boundary_write_failure_releases_cloned_arguments :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def identity(x): x;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	state := test_allocator_state{backing = context.allocator, allocation_at = 3}
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, test_allocator(&state))
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source(
+		"identity(1)", definitions, &builder, &stack, 0, "", {}, 0,
+		test_allocator(&state),
+	)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.Read_Failure)
+	strings.builder_destroy(&builder)
+	testing.expect_value(t, state.live, 0)
 	destroy_module_definitions(&definitions, context.allocator)
 }
 

@@ -421,6 +421,9 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 		}
 		return -1
 	}
+	// A plain jq binding is always a variable reference.  It must not become
+	// a definition call merely because a definition has the same spelling.
+	if dollar_qualified do return -1
 	next := name_end
 	for next < len(input) && (input[next] == ' ' || input[next] == '\t' || input[next] == '\r' || input[next] == '\n') do next += 1
 	if next < len(input) && input[next] == ':' do return -1
@@ -452,25 +455,41 @@ module_trim :: proc(text: string) -> string {
 	return text[start:end]
 }
 
+module_trim_argument :: proc(text: string) -> string {
+	start := 0
+	for start < len(text) && (text[start] == ' ' || text[start] == '\t' || text[start] == '\r' || text[start] == '\n') do start += 1
+	end := len(text)
+	// Keep a terminating newline: it closes a jq line comment and is part of
+	// the argument's source boundary.
+	for end > start && (text[end-1] == ' ' || text[end-1] == '\t' || text[end-1] == '\r') do end -= 1
+	return text[start:end]
+}
+
 module_call_arguments :: proc(input: string, open: int, args: ^[16]string) -> (close: int, count: int, ok: bool) {
 	depth := 1
 	start := open+1
 	in_string := false
+	in_comment := false
 	escaped := false
 	count = 0
 	for at := open+1; at < len(input); at += 1 {
 		byte := input[at]
+		if in_comment {
+			if byte == '\n' do in_comment = false
+			continue
+		}
 		if in_string {
 			if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
 			continue
 		}
 		if byte == '"' { in_string = true; continue }
+		if byte == '#' { in_comment = true; continue }
 		if byte == '(' { depth += 1; continue }
 		if byte == ')' {
 			depth -= 1
 			if depth == 0 {
 				if count >= len(args^) do return 0, 0, false
-				argument := module_trim(input[start:at])
+				argument := module_trim_argument(input[start:at])
 				if len(argument) == 0 do return 0, 0, false
 				args^[count] = argument
 				return at, count+1, true
@@ -479,7 +498,7 @@ module_call_arguments :: proc(input: string, open: int, args: ^[16]string) -> (c
 		}
 		if byte == ';' && depth == 1 {
 			if count >= len(args^) do return 0, 0, false
-			args^[count] = module_trim(input[start:at])
+			args^[count] = module_trim_argument(input[start:at])
 			count += 1
 			start = at+1
 		}
@@ -500,6 +519,35 @@ module_parameter :: proc(parameters, name: string) -> int {
 		}
 	}
 	return -1
+}
+
+module_parameter_is_value :: proc(parameters, name: string) -> bool {
+	ordinal := 0
+	start := 0
+	for at := 0; at <= len(parameters); at += 1 {
+		if at == len(parameters) || parameters[at] == ';' {
+			candidate := module_trim(parameters[start:at])
+			is_value := len(candidate) > 0 && candidate[0] == '$'
+			if is_value && candidate[1:] == name do return true
+			ordinal += 1
+			start = at+1
+		}
+	}
+	return false
+}
+
+module_parameter_ordinal_is_value :: proc(parameters: string, wanted: int) -> bool {
+	ordinal := 0
+	start := 0
+	for at := 0; at <= len(parameters); at += 1 {
+		if at == len(parameters) || parameters[at] == ';' {
+			candidate := module_trim(parameters[start:at])
+			if ordinal == wanted do return len(candidate) > 0 && candidate[0] == '$'
+			ordinal += 1
+			start = at+1
+		}
+	}
+	return false
 }
 
 module_parameter_count :: proc(parameters: string) -> int {
@@ -578,7 +626,16 @@ module_expand_source :: proc(
 		}
 		parameter_index := module_parameter(parameters, name)
 		bare_identifier := start == 0 || (input[start-1] != '$' && input[start-1] != '.' && input[start-1] != '@')
-		if (bare_identifier || (parameter_index >= 0 && input[start-1] == '$')) && parameter_index >= 0 && parameter_index < arg_count {
+		value_parameter := module_parameter_is_value(parameters, name)
+		if parameter_index >= 0 && parameter_index < arg_count &&
+			((!value_parameter && bare_identifier) || (value_parameter && input[start-1] == '$')) {
+			if value_parameter {
+				// jq value parameters bind each output of the argument before
+				// evaluating the body.  The caller below supplies that binding's
+				// input stream; references therefore become identity filters here.
+				if !module_write(builder, ".") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+				continue
+			}
 			// Arguments are filter source, not opaque text. Re-enter the
 			// expansion path so module-defined filters in an argument are
 			// resolved before the containing definition continues. Keep the
@@ -665,7 +722,27 @@ module_expand_source :: proc(
 		// A definition body is an expression boundary.  Keep that boundary in
 		// the expanded source: without it, `def value: 1 + 2; value * 3`
 		// becomes `1 + 2 * 3`, changing jq's call precedence.
-		if !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+		if !module_write(builder, "(") {
+			for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
+			return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+		}
+		// Lower jq's value parameters to the stream-binding form supported by
+		// the current driver pipeline.  This preserves cardinality and order:
+		// `dup(1,2)` becomes `(1,2) | ., .`, not `(1,2), (1,2)`.
+		value_parameter_count := 0
+		for value_index := 0; value_index < call_count; value_index += 1 {
+			if module_parameter_ordinal_is_value(definition.parameters, value_index) {
+				if value_parameter_count > 0 && !module_write(builder, " | ") {
+					for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
+					return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+				}
+				if !module_write(builder, expanded_args[value_index]) || !module_write(builder, " | ") {
+					for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
+					return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+				}
+				value_parameter_count += 1
+			}
+		}
 		outcome := module_expand_source(
 			definition.body, definitions, builder, stack, depth+1,
 			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
