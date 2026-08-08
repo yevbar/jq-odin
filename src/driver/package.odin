@@ -45,6 +45,8 @@ Run_Options :: struct {
 	max_inputs: int,
 	emitter: Output_Emitter,
 	emitter_data: rawptr,
+	compiled_filter: ^Compiled_Filter,
+	retain_compilation: bool,
 }
 
 // Run_Error is non-owning. runtime_key borrows Run_Result storage and remains
@@ -101,6 +103,42 @@ Run_Result :: struct {
 	serialized:        json.Compact_Result,
 	current_output:    value.Value,
 	json_error:        json.Scalar_Parse_Error,
+	shared_compiled:   ^Compiled_Filter,
+	owns_compilation:  bool,
+	preserve_compilation: bool,
+}
+
+// Compiled_Filter owns the parser/program produced once for one CLI
+// invocation. Input evaluation borrows this object until it is destroyed.
+Compiled_Filter :: struct {
+	owner: Run_Result,
+}
+
+prepare_filter :: proc(
+	prepared: ^Compiled_Filter,
+	filter: string,
+	allocator: runtime.Allocator,
+	options: Run_Options = {},
+) -> Run_Error {
+	if prepared == nil do return {kind = .Misuse}
+	prepared^ = {}
+	compile_options := options
+	compile_options.retain_compilation = true
+	err := run_with_options(&prepared.owner, filter, "", allocator, compile_options)
+	if err.kind != .None {
+		prepared.owner.preserve_compilation = false
+		_ = destroy_run_result(&prepared.owner)
+		return err
+	}
+	return {}
+}
+
+destroy_compiled_filter :: proc(prepared: ^Compiled_Filter) -> runtime.Allocator_Error {
+	if prepared == nil do return nil
+	prepared.owner.preserve_compilation = false
+	if err := destroy_run_result(&prepared.owner); err != nil do return err
+	prepared^ = {}
+	return nil
 }
 
 // evaluator_allocation_layout reports the exact allocation contract used by
@@ -138,9 +176,11 @@ record_cleanup_error :: proc(result: ^Run_Result, err: runtime.Allocator_Error) 
 cleanup_execution :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 	if err := cleanup_input(result); err != nil do return err
 	if err := json.destroy_compact_serializer(&result.serializer); err != nil do return err
-	if err := program.destroy_program(&result.compiled); err != nil do return err
-	if err := syntax.destroy_parser(&result.parser); err != nil do return err
-	if err := free_owned(&result.filter_memory, result.allocator); err != nil do return err
+	if result.owns_compilation && !result.preserve_compilation {
+		if err := program.destroy_program(&result.compiled); err != nil do return err
+		if err := syntax.destroy_parser(&result.parser); err != nil do return err
+		if err := free_owned(&result.filter_memory, result.allocator); err != nil do return err
+	}
 	return nil
 }
 
@@ -500,54 +540,60 @@ run_with_options :: proc(
 	result.self = result
 	result.state = .Running
 	result.allocator = allocator
-	filter_source := filter
-	filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
-	if module_outcome.kind != .None {
-		if module_outcome.resource_error != nil {
-			return allocation_error(result, module_outcome.resource_error)
+	result.owns_compilation = options.compiled_filter == nil
+	result.preserve_compilation = options.retain_compilation
+	if options.compiled_filter != nil {
+		result.shared_compiled = options.compiled_filter
+	} else {
+		filter_source := filter
+		filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
+		if module_outcome.kind != .None {
+			if module_outcome.resource_error != nil {
+				return allocation_error(result, module_outcome.resource_error)
+			}
+			return finish(result, {kind = .Module, module_kind = module_outcome.kind,
+				resource_error = module_outcome.resource_error})
 		}
-		return finish(result, {kind = .Module, module_kind = module_outcome.kind,
-			resource_error = module_outcome.resource_error})
-	}
-	if len(filter_memory) > 0 {
-		result.filter_memory = filter_memory
-		filter_source = transmute(string)filter_memory
-	}
+		if len(filter_memory) > 0 {
+			result.filter_memory = filter_memory
+			filter_source = transmute(string)filter_memory
+		}
 
-	source := diagnostic.borrow_source("<filter>", filter_source)
-	if !syntax.init_parser(&result.parser, source, allocator) {
-		return finish(result, {kind = .Misuse})
-	}
-	parsed := syntax.parse_filter(&result.parser)
-	switch parsed.kind {
-	case .Input_Error:
-		start, end, _ := diagnostic.span_offsets(source, parsed.error.span)
-		return finish(result, {
-			kind = .Filter_Parse,
-			filter_parse_kind = parsed.error.kind,
-			filter_expected = parsed.error.expected,
-			filter_actual = parsed.error.actual,
-			filter_has_actual = parsed.error.has_actual,
-			filter_start = start,
-			filter_end = end,
-		})
-	case .Resource_Failure:
-		return allocation_error(result, parsed.resource_error)
-	case .Misuse:
-		return finish(result, {kind = .Misuse})
-	case .Success:
-	}
+		source := diagnostic.borrow_source("<filter>", filter_source)
+		if !syntax.init_parser(&result.parser, source, allocator) {
+			return finish(result, {kind = .Misuse})
+		}
+		parsed := syntax.parse_filter(&result.parser)
+		switch parsed.kind {
+		case .Input_Error:
+			start, end, _ := diagnostic.span_offsets(source, parsed.error.span)
+			return finish(result, {
+				kind = .Filter_Parse,
+				filter_parse_kind = parsed.error.kind,
+				filter_expected = parsed.error.expected,
+				filter_actual = parsed.error.actual,
+				filter_has_actual = parsed.error.has_actual,
+				filter_start = start,
+				filter_end = end,
+			})
+		case .Resource_Failure:
+			return allocation_error(result, parsed.resource_error)
+		case .Misuse:
+			return finish(result, {kind = .Misuse})
+		case .Success:
+		}
 
-	lowered := compiler.lower_filter(
-		&result.compiled,
-		syntax.parser_nodes(&result.parser),
-		parsed.root,
-		source,
-		allocator,
-	)
-	if lowered.kind != .None {
-		if lowered.kind == .Resource_Failure do return allocation_error(result, lowered.resource_error)
-		return finish(result, {kind = .Filter_Compile, compile_kind = lowered.kind})
+		lowered := compiler.lower_filter(
+			&result.compiled,
+			syntax.parser_nodes(&result.parser),
+			parsed.root,
+			source,
+			allocator,
+		)
+		if lowered.kind != .None {
+			if lowered.kind == .Resource_Failure do return allocation_error(result, lowered.resource_error)
+			return finish(result, {kind = .Filter_Compile, compile_kind = lowered.kind})
+		}
 	}
 
 	if !json.init_compact_serializer(&result.serializer, allocator) {
@@ -590,7 +636,9 @@ run_with_options :: proc(
 		if evaluator_error := allocate_evaluator(result); evaluator_error != nil {
 			return allocation_or_cleanup_error(result, evaluator_error)
 		}
-		initialized := eval.init_evaluator(result.evaluator, &result.compiled, &result.input, allocator)
+		compiled := &result.compiled
+		if result.shared_compiled != nil do compiled = &result.shared_compiled.owner.compiled
+		initialized := eval.init_evaluator(result.evaluator, compiled, &result.input, allocator)
 		if initialized.kind != .None {
 			if initialized.kind == .Resource_Failure {
 				// A non-nil evaluator after rejected initialization is a cleanup-only

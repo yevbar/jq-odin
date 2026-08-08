@@ -654,12 +654,17 @@ module_expand_source :: proc(
 				break
 			}
 		}
+		// A definition body is an expression boundary.  Keep that boundary in
+		// the expanded source: without it, `def value: 1 + 2; value * 3`
+		// becomes `1 + 2 * 3`, changing jq's call precedence.
+		if !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 		outcome := module_expand_source(
 			definition.body, definitions, builder, stack, depth+1,
 			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
 		)
 		for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 		if outcome.kind != .None do return outcome
+		if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 	}
 	return {}
 }

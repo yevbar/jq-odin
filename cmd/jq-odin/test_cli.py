@@ -136,6 +136,14 @@ def expect_module_loading(
         if got != missing:
             raise AssertionError(f"missing module: expected {missing!r}, got {got!r}")
 
+        # Definition expansion must retain jq's call boundary. Without the
+        # parentheses, the body of value would make this `1 + 2 * 3`.
+        (root / "precedence.jq").write_text("def value: 1 + 2;\n", encoding="utf-8")
+        expect_oracle_case(
+            "definition body precedence",
+            ["-L", directory, "-n", 'include "precedence"; value * 3'],
+        )
+
         # Parameterized definitions are accepted and substitute filter
         # arguments before the ordinary syntax/compiler pipeline runs.
         (root / "parameter.jq").write_text("def identity(x): x;\n", encoding="utf-8")
@@ -459,6 +467,33 @@ def expect_kept_open_stdin(candidate: pathlib.Path) -> None:
         raise AssertionError(f"kept-open stdin completion: got {actual!r}")
 
 
+def expect_kept_open_module_snapshot(candidate: pathlib.Path) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        module = pathlib.Path(directory) / "mutable.jq"
+        module.write_text("def value: 1;\n", encoding="utf-8")
+        process = subprocess.Popen(
+            [str(candidate), "-L", directory, "-c", 'include "mutable"; value'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=STABLE_ENV,
+            bufsize=0,
+        )
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write(b"0\n")
+        process.stdin.flush()
+        first = read_exact_with_deadline(process.stdout, 2, 1.0)
+        module.write_text("def value: 2;\n", encoding="utf-8")
+        process.stdin.write(b"0\n")
+        process.stdin.flush()
+        second = read_exact_with_deadline(process.stdout, 2, 1.0)
+        process.stdin.close()
+        process.stdin = None
+        _, stderr = process.communicate(timeout=5)
+        if process.returncode != 0 or first != b"1\n" or second != b"1\n":
+            raise AssertionError(
+                f"kept-open module snapshot: got {(process.returncode, first, second, stderr)!r}"
+            )
 def expect_prompt_malformed_closers(candidate: pathlib.Path) -> int:
     cases = [
         [b"[{]"],
@@ -1402,6 +1437,7 @@ def main() -> int:
     expect_stderr_failure(candidate)
     expect_stdin_failure(candidate)
     expect_kept_open_stdin(candidate)
+    expect_kept_open_module_snapshot(candidate)
     expect_module_loading(candidate, oracle)
     if oracle is not None:
         expect_module_arity_and_definition_scanner(candidate, oracle)

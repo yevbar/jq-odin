@@ -195,19 +195,19 @@ emit_stdout :: proc(data: rawptr, bytes: string) -> bool {
 }
 
 run_input :: proc(
-	filter, input: string,
+	input: string,
 	compact: bool,
-	module_paths: []string,
+	prepared: ^driver.Compiled_Filter,
 	sink: ^output_sink,
 ) -> int {
 	mode := driver.Output_Mode.Pretty
 	if compact do mode = .Compact
 	result: driver.Run_Result
 	err := driver.run_with_options(
-		&result, filter, input, context.allocator,
+		&result, "", input, context.allocator,
 		{
 			output_mode = mode,
-			module_paths = module_paths,
+			compiled_filter = prepared,
 			emitter = emit_stdout,
 			emitter_data = sink,
 		},
@@ -724,7 +724,7 @@ process_available :: proc(
 	buffer: ^input_buffer,
 	filter: string,
 	compact, eof, had_open_error: bool,
-	module_paths: []string,
+	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
 	sink: ^output_sink,
 ) -> (status: int, stop: bool) {
@@ -792,7 +792,7 @@ process_available :: proc(
 			return 4, true
 		}
 		status = run_input(
-			filter, transmute(string)buffer.memory[:end], compact, module_paths, sink,
+			transmute(string)buffer.memory[:end], compact, prepared, sink,
 		)
 		consume_prefix(buffer, end)
 		reset_framer(&buffer.framer)
@@ -809,7 +809,7 @@ read_source :: proc(
 	file: ^os.File,
 	filter: string,
 	compact, had_open_error: bool,
-	module_paths: []string,
+	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
 	buffer: ^input_buffer,
 	sink: ^output_sink,
@@ -820,7 +820,7 @@ read_source :: proc(
 		if count > 0 {
 			if !append_input(buffer, chunk[:count]) do return 2, true, false
 			status, stop = process_available(
-				buffer, filter, compact, false, had_open_error, module_paths,
+				buffer, filter, compact, false, had_open_error, prepared,
 				values_after_open_error, sink,
 			)
 			if stop do return status, true, true
@@ -844,28 +844,35 @@ run_main :: proc() -> int {
 		return 0 if write_all(os.stdout, CANDIDATE_VERSION) else 2
 	}
 	sink: output_sink
-	if parsed.null_input {
-		return run_input(parsed.filter, "null", parsed.compact, parsed.module_paths[:], &sink)
+	prepared: driver.Compiled_Filter
+	prepare_error := driver.prepare_filter(
+		&prepared, parsed.filter, context.allocator,
+		{module_paths = parsed.module_paths[:]},
+	)
+	if prepare_error.kind != .None {
+		status := error_status(prepare_error.kind)
+		if !write_driver_error(prepare_error) do status = 2
+		return status
 	}
-	// jq compiles its filter before pulling the first input. Preserve filter
-	// diagnostics for empty/whitespace-only sources with one empty preflight.
-	if preflight_status := run_input(
-		parsed.filter, "", parsed.compact, parsed.module_paths[:], &sink,
-	);
-	   preflight_status != 0 {
-		return preflight_status
+	defer {
+		if driver.destroy_compiled_filter(&prepared) != nil {
+			_ = write_all(os.stderr, "jq-odin: cleanup error\n")
+		}
+	}
+	if parsed.null_input {
+		return run_input("null", parsed.compact, &prepared, &sink)
 	}
 
 	if len(parsed.input_paths) == 0 {
 		buffer := input_buffer{bom_eligible = true}
 		status, _, read_ok := read_source(
-			os.stdin, parsed.filter, parsed.compact, false, parsed.module_paths[:],
+			os.stdin, parsed.filter, parsed.compact, false, &prepared,
 			nil, &buffer, &sink,
 		)
 		if status == 0 && read_ok {
 			status, _ = process_available(
 				&buffer, parsed.filter, parsed.compact, true, false,
-				parsed.module_paths[:], nil, &sink,
+				&prepared, nil, &sink,
 			)
 		}
 		if !read_ok {
@@ -905,7 +912,7 @@ run_main :: proc() -> int {
 		}
 		file_status, stop, read_ok := read_source(
 			file, parsed.filter, parsed.compact, had_open_error,
-			parsed.module_paths[:], &values_after_open_error, &buffer, &sink,
+			&prepared, &values_after_open_error, &buffer, &sink,
 		)
 		if arg != "-" {
 			if close_error := os.close(file); close_error != nil {
@@ -925,7 +932,7 @@ run_main :: proc() -> int {
 	if status == 0 || status == 2 && had_open_error && values_after_open_error == 0 {
 		final_status, _ := process_available(
 			&buffer, parsed.filter, parsed.compact, true, had_open_error,
-			parsed.module_paths[:], &values_after_open_error, &sink,
+			&prepared, &values_after_open_error, &sink,
 		)
 		if final_status != 0 do status = final_status
 	}
