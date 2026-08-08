@@ -140,9 +140,44 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 }
 
 @(test)
+scalar_literals_lower_to_owned_literal_metadata :: proc(t: ^testing.T) {
+	Case :: struct {
+		text: string,
+		kind: program.Literal_Kind,
+		boolean: bool,
+		payload: string,
+	}
+	cases := [?]Case{
+		{"null", .Null, false, ""},
+		{"true", .Boolean, true, ""},
+		{"false", .Boolean, false, ""},
+		{"01", .Number, false, "01"},
+		{`"x"`, .String, false, "x"},
+		{`""`, .String, false, ""},
+	}
+	for test_case in cases {
+		parser: syntax.Parser
+		compiled: program.Program
+		_, parsed, lowered := parse_and_lower(t, test_case.text, &parser, &compiled)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+		instruction := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+		testing.expect_value(t, instruction.opcode, program.Opcode.Identity)
+		testing.expect(t, instruction.has_literal)
+		testing.expect_value(t, instruction.literal_kind, test_case.kind)
+		testing.expect_value(t, instruction.literal_boolean, test_case.boolean)
+		if test_case.payload != "" || test_case.kind == .String {
+			operand := instruction_operand(&compiled, instruction, 0)
+			payload, ok := program.operand_text(&compiled, operand)
+			testing.expect(t, ok)
+			testing.expect_value(t, payload, test_case.payload)
+		}
+		expect_cleanup(t, &parser, &compiled)
+	}
+}
+
+@(test)
 scalar_and_general_negate_ast_nodes_validate_without_lowering_or_allocation :: proc(t: ^testing.T) {
 	texts := [?]string{
-		"null", "true", "false", "0", "- 1.25e+2", "--1", `"x"`, `""`,
 		"-.", "-.a", "-(.)", "-(.a)", "-(. | .)", "-(., .)",
 		"-(.a?)", "-(.a)?", "--(. | .)",
 	}
@@ -160,13 +195,19 @@ scalar_and_general_negate_ast_nodes_validate_without_lowering_or_allocation :: p
 		if root.kind == .Negate {
 			testing.expect(t, node_reference_valid(root.child, len(nodes)), text)
 		}
-		expect_invalid_ast_without_program_owner(
-			t,
+		compiled: program.Program
+		probe := Compiler_Fail_Allocator{backing = context.allocator}
+		lowered := lower_filter(
+			&compiled,
 			nodes,
 			parsed.root,
 			syntax.parser_source(&parser),
-			true,
+			runtime.Allocator{procedure = compiler_fail_allocator_proc, data = &probe},
 		)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.Invalid_AST)
+		testing.expect_value(t, probe.allocations, 0)
+		testing.expect(t, !program.program_is_active(&compiled))
+		testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
 		testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
 }
@@ -357,7 +398,10 @@ number_payload_header_and_presence_inconsistencies_are_rejected :: proc(t: ^test
 
 	completed := syntax.Node{kind = .Number, span = span, number_text = "1", has_number_text = true}
 	testing.expect(t, node_payload_shape_valid(completed))
-	expect_invalid_ast_without_program_owner(t, []syntax.Node{completed}, 0, source, true)
+	compiled: program.Program
+	lowered := lower_filter(&compiled, []syntax.Node{completed}, 0, source, context.allocator)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
 
 	cases := [?]syntax.Node{
 		{kind = .Number, span = span},
@@ -394,8 +438,10 @@ string_payload_hostile_shapes_are_rejected :: proc(t: ^testing.T) {
 	}
 	for node in valid {
 		testing.expect(t, node_payload_shape_valid(node))
-		// String lowering remains intentionally unsupported and allocation-free.
-		expect_invalid_ast_without_program_owner(t, []syntax.Node{node}, 0, source, true)
+		compiled: program.Program
+		lowered := lower_filter(&compiled, []syntax.Node{node}, 0, source, context.allocator)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+		testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
 	}
 
 	hostile := [?]syntax.Node{
@@ -431,13 +477,16 @@ string_payload_hostile_shapes_are_rejected :: proc(t: ^testing.T) {
 		nodes := syntax.parser_nodes(&parser)
 		testing.expect_value(t, len(nodes), 1)
 		testing.expect(t, node_payload_shape_valid(nodes[0]))
-		expect_invalid_ast_without_program_owner(
-			t,
+		compiled: program.Program
+		lowered := lower_filter(
+			&compiled,
 			nodes,
 			parsed.root,
 			syntax.parser_source(&parser),
-			true,
+			context.allocator,
 		)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+		testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
 		testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
 }

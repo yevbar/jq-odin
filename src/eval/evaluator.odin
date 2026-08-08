@@ -188,6 +188,9 @@ seal_program :: proc(compiled: ^program.Program) -> (program_seal, bool) {
 		if !ok do return {}, false
 		seal_mix_u64(&seal, 0x494e535452554354)
 		seal_mix_u64(&seal, u64(instruction.opcode))
+		seal_mix_u64(&seal, 1 if instruction.has_literal else 0)
+		seal_mix_u64(&seal, u64(instruction.literal_kind))
+		seal_mix_u64(&seal, 1 if instruction.literal_boolean else 0)
 		seal_mix_u64(&seal, u64(instruction.operands_start))
 		seal_mix_u64(&seal, u64(instruction.operands_count))
 		seal_mix_u64(&seal, u64(instruction.span.start))
@@ -232,7 +235,10 @@ evaluator_storage :: struct {
 	suppress_at:      int,
 	pending_terminal: terminal_kind,
 	runtime_error:    Runtime_Error,
-	runtime_key_memory: []byte,
+	pending_constructor_error: ^value.Constructor_Error,
+	// Keeps the public fixed-layout handle stable while diagnostic ownership
+	// uses the existing Runtime_Error key view as its allocation anchor.
+	layout_padding: u64,
 	// A generated Value that could not be transferred after live Program
 	// corruption remains reachable here until terminal cleanup retires it.
 	pending_value:    value.Value,
@@ -500,6 +506,83 @@ field_text :: proc(
 }
 
 @(private)
+literal_value :: proc(
+	storage: ^evaluator_storage,
+	instruction: program.Instruction,
+) -> (value.Value, value.Error, runtime.Allocator_Error) {
+	if !instruction.has_literal || instruction.opcode != .Identity {
+		return {}, .Invalid_Number_Literal, nil
+	}
+
+	switch instruction.literal_kind {
+	case .Null:
+		if instruction.operands_count != 0 do return {}, .Invalid_Number_Literal, nil
+		return value.null_value(), .None, nil
+	case .Boolean:
+		if instruction.operands_count != 0 do return {}, .Invalid_Number_Literal, nil
+		return value.boolean_value(instruction.literal_boolean), .None, nil
+	case .Number, .String:
+		if instruction.operands_count != 1 do return {}, .Invalid_Number_Literal, nil
+		operand, operand_ok := program.program_operand(
+			storage.compiled,
+			program.Operand_Index(u32(instruction.operands_start)),
+		)
+		if !operand_ok || operand.kind != .Text do return {}, .Invalid_Number_Literal, nil
+		text, text_ok := program.operand_text(storage.compiled, operand)
+		if !text_ok do return {}, .Invalid_Number_Literal, nil
+
+		result: value.Value
+		err: value.Constructor_Error
+		if instruction.literal_kind == .Number {
+			result, err = value.literal_number_value(text, storage.allocator)
+		} else {
+			result, err = value.string_value(text, storage.allocator)
+		}
+		err_kind := value.constructor_error_kind(&err)
+		if err_kind == .None do return result, .None, nil
+		if value.constructor_error_needs_cleanup(&err) {
+			memory, allocation_error := runtime.mem_alloc_bytes(
+				size_of(value.Constructor_Error),
+				align_of(value.Constructor_Error),
+				storage.allocator,
+			)
+			if allocation_error != nil || len(memory) != size_of(value.Constructor_Error) {
+				// The public evaluator layout cannot grow to embed a
+				// Constructor_Error. Keep the error in the invalid pending_value
+				// storage until terminal cleanup instead of dropping its cleanup
+				// handle when this holder allocation fails. A short allocation is
+				// also retained by the normal pending-memory retry path.
+				assert(storage.pending_constructor_error == nil)
+				assert(value.kind_of(&storage.pending_value) == .Invalid)
+				if len(memory) > 0 {
+					assert(len(storage.temporary_memory) == 0)
+					storage.temporary_memory = memory
+				}
+				storage.pending_constructor_error = cast(^value.Constructor_Error)rawptr(&storage.pending_value)
+				storage.pending_constructor_error^ = value.take_constructor_error(&err)
+				storage.pending = .Terminal_Cleanup
+				storage.pending_terminal = .Misuse
+				storage.misuse = .Malformed_Program
+				return {}, err_kind, allocation_error if allocation_error != nil else .Out_Of_Memory
+			}
+			storage.pending_constructor_error = cast(^value.Constructor_Error)raw_data(memory)
+			storage.pending_constructor_error^ = value.take_constructor_error(&err)
+			cleanup_error := retire_pending_constructor_error(storage)
+			if cleanup_error != nil {
+				storage.pending = .Terminal_Cleanup
+				storage.pending_terminal = .Misuse
+				storage.misuse = .Malformed_Program
+				return {}, err_kind, cleanup_error
+			}
+		} else {
+			_ = value.destroy_constructor_error(&err)
+		}
+		return {}, err_kind, nil
+	}
+	return {}, .Invalid_Number_Literal, nil
+}
+
+@(private)
 capture_composite_instruction :: proc(
 	storage: ^evaluator_storage,
 	frame: ^eval_frame,
@@ -622,6 +705,30 @@ misuse_step :: proc(kind: Misuse_Kind) -> Step_Result {
 }
 
 @(private)
+retire_pending_constructor_error :: proc(
+	storage: ^evaluator_storage,
+) -> runtime.Allocator_Error {
+	if storage.pending_constructor_error == nil {
+		return nil
+	}
+	inline := cast(^value.Constructor_Error)rawptr(&storage.pending_value)
+	if storage.pending_constructor_error == inline {
+		free_error := value.destroy_constructor_error(storage.pending_constructor_error)
+		if free_error != nil do return free_error
+		storage.pending_constructor_error = nil
+		storage.pending_value = {}
+		return nil
+	}
+	free_error := value.destroy_constructor_error(storage.pending_constructor_error)
+	if free_error != nil do return free_error
+	memory := (cast([^]byte)rawptr(storage.pending_constructor_error))[:size_of(value.Constructor_Error)]
+	free_error = runtime.mem_free_bytes(memory, storage.allocator)
+	if free_error != nil && free_error != .Mode_Not_Implemented do return free_error
+	storage.pending_constructor_error = nil
+	return nil
+}
+
+@(private)
 destroy_frames_to :: proc(storage: ^evaluator_storage, target_count: int) -> runtime.Allocator_Error {
 	for storage.frame_count > target_count {
 		index := storage.frame_count-1
@@ -663,7 +770,7 @@ retain_runtime_error :: proc(
 	storage: ^evaluator_storage,
 	err: Runtime_Error,
 ) -> runtime.Allocator_Error {
-	assert(len(storage.runtime_key_memory) == 0)
+	assert(len(storage.runtime_error.key) == 0)
 	if len(err.key) == 0 {
 		storage.runtime_error = err
 		storage.runtime_error.key = ""
@@ -685,18 +792,19 @@ retain_runtime_error :: proc(
 		return allocation_error if allocation_error != nil else .Out_Of_Memory
 	}
 	copy(memory, transmute([]byte)err.key)
-	storage.runtime_key_memory = memory
 	storage.runtime_error = err
-	storage.runtime_error.key = transmute(string)storage.runtime_key_memory
+	storage.runtime_error.key = transmute(string)memory
 	return nil
 }
 
 @(private)
 release_runtime_error :: proc(storage: ^evaluator_storage) -> runtime.Allocator_Error {
-	if len(storage.runtime_key_memory) > 0 {
-		free_error := runtime.mem_free_bytes(storage.runtime_key_memory, storage.allocator)
+	if len(storage.runtime_error.key) > 0 {
+		free_error := runtime.mem_free_bytes(
+			transmute([]byte)storage.runtime_error.key,
+			storage.allocator,
+		)
 		if free_error != nil && free_error != .Mode_Not_Implemented do return free_error
-		storage.runtime_key_memory = nil
 	}
 	storage.runtime_error = {}
 	return nil
@@ -778,6 +886,8 @@ terminal_step :: proc(storage: ^evaluator_storage) -> Step_Result {
 @(private)
 complete_terminal_cleanup :: proc(storage: ^evaluator_storage) -> Step_Result {
 	free_error := retire_pending_memory(storage)
+	if free_error != nil do return resource_step(free_error)
+	free_error = retire_pending_constructor_error(storage)
 	if free_error != nil do return resource_step(free_error)
 	free_error = value.destroy_value(&storage.pending_value)
 	if free_error != nil do return resource_step(free_error)
@@ -1014,6 +1124,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 	if pending_error := retire_pending_memory(storage); pending_error != nil {
 		return resource_step(pending_error)
 	}
+	if pending_error := retire_pending_constructor_error(storage); pending_error != nil {
+		return resource_step(pending_error)
+	}
 	if storage.pending == .Terminal_Cleanup do return complete_terminal_cleanup(storage)
 	if storage.pending == .Suppress_Runtime {
 		result, ready := continue_suppression(storage)
@@ -1056,11 +1169,29 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 			switch instruction.opcode {
 			case .Identity:
-				if instruction.operands_count != 0 do return begin_terminal_misuse(storage, .Malformed_Program)
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
-				output := value.clone_value(&frame.input)
+				output: value.Value
+				if instruction.has_literal {
+					literal, literal_error, cleanup_error := literal_value(storage, instruction)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					if literal_error != .None {
+						// Constructor allocation failures are retryable evaluator
+						// resources, not malformed program metadata. A cleanup-bearing
+						// failure has already returned above with its retry state intact.
+						if literal_error == .Out_Of_Memory || literal_error == .Size_Overflow {
+							return resource_step(.Out_Of_Memory)
+						}
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					output = literal
+				} else {
+					if instruction.operands_count != 0 {
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					output = value.clone_value(&frame.input)
+				}
 				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
@@ -1174,6 +1305,8 @@ destroy_evaluator :: proc(evaluator: ^Evaluator) -> runtime.Allocator_Error {
 	storage := storage_of(evaluator)
 	if storage.self != evaluator do return .Invalid_Pointer
 	free_error := retire_pending_memory(storage)
+	if free_error != nil do return free_error
+	free_error = retire_pending_constructor_error(storage)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&storage.pending_value)
 	if free_error != nil do return free_error

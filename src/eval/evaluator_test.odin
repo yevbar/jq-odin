@@ -389,6 +389,231 @@ core_identity_parentheses_and_fields_are_resumable :: proc(t: ^testing.T) {
 }
 
 @(test)
+scalar_literal_identity_replaces_input_and_owns_strings :: proc(t: ^testing.T) {
+	Case :: struct {
+		kind:    program.Literal_Kind,
+		boolean: bool,
+		text:    string,
+	}
+	cases := [?]Case{
+		{.Null, false, ""},
+		{.Boolean, true, ""},
+		{.Boolean, false, ""},
+		{.Number, false, "9007199254740993"},
+		{.String, false, "literal\x00value"},
+	}
+	for test_case in cases {
+		instruction := program.Instruction{
+			opcode = .Identity,
+			has_literal = true,
+			literal_kind = test_case.kind,
+			literal_boolean = test_case.boolean,
+			operands_count = 1 if test_case.kind == .Number ||
+				test_case.kind == .String else 0,
+		}
+		operands: [1]program.Operand
+		if instruction.operands_count == 1 {
+			operands[0] = text_operand(0, u32(len(test_case.text)))
+		}
+		compiled: program.Program
+		build_program(
+			t,
+			&compiled,
+			[]program.Instruction{instruction},
+			operands[:int(instruction.operands_count)],
+			test_case.text,
+			0,
+		)
+		input := value.number_value(123)
+		evaluator: Evaluator
+		testing.expect_value(
+			t,
+			init_evaluator(&evaluator, &compiled, &input, context.allocator).kind,
+			Init_Error_Kind.None,
+		)
+		output := step_take(t, &evaluator)
+		switch test_case.kind {
+		case .Null:
+			expect_null(t, &output)
+		case .Boolean:
+			actual, ok := value.boolean_value_get(&output)
+			testing.expect(t, ok)
+			testing.expect_value(t, actual, test_case.boolean)
+			testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		case .Number:
+			actual, ok := value.number_value_get(&output)
+			testing.expect(t, ok)
+			testing.expect_value(t, actual, 9007199254740993.0)
+			spelling, spelling_ok := value.literal_spelling_borrowed(&output)
+			testing.expect(t, spelling_ok)
+			testing.expect_value(t, spelling, test_case.text)
+			testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		case .String:
+			actual, ok := value.string_borrowed(&output)
+			testing.expect(t, ok)
+			testing.expect_value(t, actual, test_case.text)
+			testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		}
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(private)
+literal_cleanup_failure_state :: struct {
+	backing:       runtime.Allocator,
+	alloc_calls:   int,
+	short_on_call: int,
+	fail_on_call:  int,
+	free_calls:    int,
+	reject_frees:  int,
+}
+
+@(private)
+literal_cleanup_failure_allocator_proc :: proc(
+	data: rawptr,
+	mode: runtime.Allocator_Mode,
+	size, alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	loc := #caller_location,
+) -> ([]byte, runtime.Allocator_Error) {
+	state := cast(^literal_cleanup_failure_state)data
+	if mode == .Alloc || mode == .Alloc_Non_Zeroed {
+		state.alloc_calls += 1
+		if state.alloc_calls == state.fail_on_call {
+			return nil, .Out_Of_Memory
+		}
+		memory, err := state.backing.procedure(
+			state.backing.data, mode, size, alignment, old_memory, old_size, loc,
+		)
+		if err == nil && state.alloc_calls == state.short_on_call && len(memory) > 0 {
+			return memory[:len(memory)-1], nil
+		}
+		return memory, err
+	}
+	if mode == .Free {
+		state.free_calls += 1
+		if state.reject_frees > 0 {
+			state.reject_frees -= 1
+			return nil, .Invalid_Pointer
+		}
+	}
+	return state.backing.procedure(
+		state.backing.data, mode, size, alignment, old_memory, old_size, loc,
+	)
+}
+
+@(test)
+scalar_literal_holder_failure_preserves_cleanup_and_terminal_error :: proc(t: ^testing.T) {
+	scope: allocation_scope
+	allocation_scope_begin(&scope)
+	instruction := program.Instruction{
+		opcode = .Identity,
+		has_literal = true,
+		literal_kind = .String,
+		operands_count = 1,
+	}
+	compiled: program.Program
+	build_program(t, &compiled, []program.Instruction{instruction},
+		[]program.Operand{text_operand(0, 5)}, "retry", 0)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t,
+		init_evaluator(&evaluator, &compiled, &input, context.allocator).kind,
+		Init_Error_Kind.None)
+	allocator_state := literal_cleanup_failure_state{
+		backing = context.allocator,
+		short_on_call = 1,
+		fail_on_call = 2,
+		reject_frees = 1,
+	}
+	storage_of(&evaluator).allocator = runtime.Allocator{
+		procedure = literal_cleanup_failure_allocator_proc,
+		data = &allocator_state,
+	}
+	first := step_evaluator(&evaluator)
+	testing.expect_value(t, first.kind, Step_Kind.Resource_Error)
+	testing.expect_value(t, first.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect_value(t, allocator_state.alloc_calls, 2)
+	testing.expect_value(t, allocator_state.free_calls, 1)
+	testing.expect(t, storage_of(&evaluator).pending_constructor_error != nil)
+
+	second := step_evaluator(&evaluator)
+	testing.expect_value(t, second.kind, Step_Kind.Misuse)
+	testing.expect_value(t, second.misuse, Misuse_Kind.Malformed_Program)
+	testing.expect_value(t, allocator_state.free_calls, 3)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Misuse)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+	allocation_scope_end(t, &scope)
+}
+
+@(test)
+scalar_literal_ordinary_allocation_failure_is_retryable :: proc(t: ^testing.T) {
+	scope: allocation_scope
+	allocation_scope_begin(&scope)
+	instruction := program.Instruction{
+		opcode = .Identity,
+		has_literal = true,
+		literal_kind = .String,
+		operands_count = 1,
+	}
+	compiled: program.Program
+	build_program(t, &compiled, []program.Instruction{instruction},
+		[]program.Operand{text_operand(0, 5)}, "retry", 0)
+	input := value.null_value()
+	evaluator: Evaluator
+	allocator_state := literal_cleanup_failure_state{
+		backing = context.allocator,
+		fail_on_call = 1,
+	}
+	testing.expect_value(t,
+		init_evaluator(&evaluator, &compiled, &input, context.allocator).kind,
+		Init_Error_Kind.None)
+	storage_of(&evaluator).allocator = runtime.Allocator{
+		procedure = literal_cleanup_failure_allocator_proc,
+		data = &allocator_state,
+	}
+
+	first := step_evaluator(&evaluator)
+	testing.expect_value(t, first.kind, Step_Kind.Resource_Error)
+	testing.expect_value(t, first.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect_value(t, allocator_state.alloc_calls, 1)
+
+	second := step_evaluator(&evaluator)
+	testing.expect_value(t, second.kind, Step_Kind.Output)
+	output := take_step_output(&second)
+	text, ok := value.string_borrowed(&output)
+	testing.expect(t, ok)
+	testing.expect_value(t, text, "retry")
+	testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+	allocation_scope_end(t, &scope)
+}
+
+@(test)
+malformed_scalar_literal_metadata_is_terminal_misuse :: proc(t: ^testing.T) {
+	instructions := [1]program.Instruction{{opcode = .Identity}}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], nil, "", 0)
+	input := value.number_value(1)
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	compiled.instructions[0].has_literal = true
+	compiled.instructions[0].literal_kind = cast(program.Literal_Kind)(255)
+	result := step_evaluator(&evaluator)
+	testing.expect_value(t, result.kind, Step_Kind.Misuse)
+	testing.expect_value(t, result.misuse, Misuse_Kind.Malformed_Program)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Misuse)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 identity_parenthesized_and_optional_identity_each_yield_once :: proc(t: ^testing.T) {
 	instructions := [3]program.Instruction{
 		{opcode = .Identity},

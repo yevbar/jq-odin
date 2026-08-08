@@ -31,13 +31,24 @@ Operand_Kind :: enum u8 {
 	Text,
 }
 
+Literal_Kind :: enum u8 {
+	Null,
+	Boolean,
+	Number,
+	String,
+}
+
 // Instruction operands are stored consecutively beginning at operands_start.
 // Sequence operands are ordered left then right. Fork operands are likewise
 // left then right, but describe independently resumable generator branches.
 // Field has an optional leading Instruction operand followed by one Text
-// operand. Parenthesized and Optional have one Instruction operand.
+// operand. Literal has one Text operand for Number/String and none for
+// Null/Boolean. Parenthesized and Optional have one Instruction operand.
 Instruction :: struct {
 	opcode:         Opcode,
+	has_literal:    bool,
+	literal_kind:   Literal_Kind,
+	literal_boolean: bool,
 	operands_start: Operand_Index,
 	operands_count: Count,
 	span:           Source_Span,
@@ -269,11 +280,26 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	if start > u64(len(program.operands)) || count > u64(len(program.operands))-start {
 		return false
 	}
+	// Literal metadata belongs to the Identity literal carrier. Other
+	// opcodes must not reinterpret one of their operands as literal text.
+	if instruction.has_literal && instruction.opcode != .Identity {
+		return false
+	}
 
 	expected_count: u64
 	switch instruction.opcode {
 	case .Identity:
-		expected_count = 0
+		if instruction.has_literal {
+			if instruction.literal_kind == .Number || instruction.literal_kind == .String {
+				expected_count = 1
+			} else if instruction.literal_kind == .Null || instruction.literal_kind == .Boolean {
+				expected_count = 0
+			} else {
+				return false
+			}
+		} else {
+			expected_count = 0
+		}
 	case .Field:
 		if count != 1 && count != 2 {
 			return false
@@ -289,11 +315,20 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	if count != expected_count {
 		return false
 	}
+	if !instruction.has_literal &&
+	   (instruction.literal_kind != .Null || instruction.literal_boolean) {
+		return false
+	}
+	if instruction.has_literal && instruction.literal_kind != .Boolean &&
+	   instruction.literal_boolean {
+		return false
+	}
 
 	for offset in 0..<count {
 		operand := program.operands[int(start+offset)]
 		expected_kind := Operand_Kind.Instruction
-		if instruction.opcode == .Field && offset == count-1 {
+		if (instruction.opcode == .Field && offset == count-1) ||
+		   (instruction.has_literal && offset == 0) {
 			expected_kind = .Text
 		}
 		if operand.kind != expected_kind {

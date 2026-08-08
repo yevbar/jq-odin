@@ -232,6 +232,53 @@ finalization_rejects_unknown_opcodes_and_operand_kinds :: proc(t: ^testing.T) {
 }
 
 @(test)
+literal_payloads_are_sealed_with_their_text_ranges :: proc(t: ^testing.T) {
+	valid: Program
+	testing.expect_value(t, init_program(&valid, 1, 1, 2, context.allocator).kind, Init_Error_Kind.None)
+	testing.expect(t, set_text(&valid, 0, "01"))
+	testing.expect(t, set_operand(&valid, 0, {kind = .Text, text_count = 2}))
+	testing.expect(t, set_instruction(&valid, 0, {
+		opcode = .Identity,
+		has_literal = true,
+		literal_kind = .Number,
+		operands_count = 1,
+	}))
+	testing.expect(t, set_root(&valid, 0))
+	testing.expect(t, finalize_program(&valid))
+	testing.expect_value(t, destroy_program(&valid), runtime.Allocator_Error.None)
+
+	invalid: Program
+	testing.expect_value(t, init_program(&invalid, 1, 0, 0, context.allocator).kind, Init_Error_Kind.None)
+	testing.expect(t, set_instruction(&invalid, 0, {
+		opcode = .Identity,
+		has_literal = true,
+		literal_kind = cast(Literal_Kind)(int(max(Literal_Kind))+1),
+	}))
+	testing.expect(t, set_root(&invalid, 0))
+	testing.expect(t, !finalize_program(&invalid))
+	testing.expect_value(t, destroy_program(&invalid), runtime.Allocator_Error.None)
+}
+
+@(test)
+literal_metadata_is_rejected_on_non_identity_instructions :: proc(t: ^testing.T) {
+	forged: Program
+	testing.expect_value(t, init_program(&forged, 1, 1, 1, context.allocator).kind, Init_Error_Kind.None)
+	testing.expect(t, set_text(&forged, 0, "x"))
+	testing.expect(t, set_operand(&forged, 0, {kind = .Text, text_count = 1}))
+	testing.expect(t, set_instruction(&forged, 0, {
+		opcode = .Field,
+		has_literal = true,
+		literal_kind = .Number,
+		operands_count = 1,
+	}))
+	testing.expect(t, set_root(&forged, 0))
+	testing.expect(t, !finalize_program(&forged))
+	testing.expect(t, program_is_building(&forged))
+	testing.expect(t, !program_is_active(&forged))
+	testing.expect_value(t, destroy_program(&forged), runtime.Allocator_Error.None)
+}
+
+@(test)
 selected_root_survives_multiple_and_unreachable_nodes :: proc(t: ^testing.T) {
 	for _ in 0..<2 {
 		p: Program

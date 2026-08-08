@@ -183,8 +183,17 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 			has_unlowered_node = true
-		case .Null, .Boolean, .Number, .String:
-			has_unlowered_node = true
+		case .Null, .Boolean:
+		case .Number:
+			if !checked_count_add(&text_count, u64(len(node.number_text))) ||
+			   !checked_count_add(&operand_count, 1) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
+		case .String:
+			if !checked_count_add(&text_count, u64(len(node.string_text))) ||
+			   !checked_count_add(&operand_count, 1) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
 		case:
 			return Lower_Outcome{kind = .Invalid_AST}
 		}
@@ -291,7 +300,28 @@ lower_filter :: proc(
 			})
 			assert(right_ok)
 			operand_at += 1
-		case .Null, .Boolean, .Number, .String, .Negate:
+		case .Null, .Boolean, .Number, .String:
+			instruction.opcode = .Identity
+			instruction.has_literal = true
+			if node.kind == .Boolean do instruction.literal_kind = .Boolean
+			if node.kind == .Number do instruction.literal_kind = .Number
+			if node.kind == .String do instruction.literal_kind = .String
+			instruction.literal_boolean = node.boolean_value
+			if node.kind == .Number || node.kind == .String {
+				literal := node.number_text if node.kind == .Number else node.string_text
+				text_ok := program.set_text(output, program.Byte_Offset(text_at), literal)
+				assert(text_ok)
+				operand_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+					kind = .Text,
+					text_start = program.Byte_Offset(text_at),
+					text_count = program.Count(len(literal)),
+				})
+				assert(operand_ok)
+				operand_at += 1
+				text_at += u32(len(literal))
+				instruction.operands_count = 1
+			}
+		case .Negate:
 			cleanup_error := program.destroy_program(output)
 			if cleanup_error != nil {
 				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}
