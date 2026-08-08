@@ -333,6 +333,32 @@ number_add_repeated_calls_round_after_each_operation :: proc(t: ^testing.T) {
 }
 
 @(test)
+number_decimal_parity_boundary_keeps_jq_binary64_result :: proc(t: ^testing.T) {
+	// jq 1.8.1 rounds each arithmetic operation as binary64. The value
+	// boundary therefore ends with these bits; any textual difference for
+	// this result belongs to the JSON serializer, not literal preservation or
+	// arithmetic rounding in value.
+	first, first_error := literal_number_value("1e-19", context.allocator)
+	second, second_error := literal_number_value("1e-20", context.allocator)
+	third, third_error := literal_number_value("5e-21", context.allocator)
+	defer destroy_value(&first)
+	defer destroy_value(&second)
+	defer destroy_value(&third)
+	defer destroy_constructor_error(&first_error)
+	defer destroy_constructor_error(&second_error)
+	defer destroy_constructor_error(&third_error)
+
+	sum, sum_ok := number_add(&first, &second)
+	result, result_kind := number_subtract(&sum, &third)
+	defer destroy_value(&sum)
+	defer destroy_value(&result)
+
+	result_number, number_ok := number_value_get(&result)
+	testing.expect(t, sum_ok && result_kind == .Success && number_ok)
+	testing.expect_value(t, transmute(u64)result_number, u64(0x3bfefd93607ff6ce))
+}
+
+@(test)
 number_add_borrows_aliases_clones_and_owners_independently :: proc(t: ^testing.T) {
 	probe := allocator_probe{backing = context.allocator, fail_after = max(int)}
 	source, source_error := literal_number_value("9007199254740993", probe_allocator(&probe))
