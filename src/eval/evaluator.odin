@@ -93,6 +93,10 @@ frame_phase :: enum u8 {
 	Constructor_Start,
 	Constructor_Child_Active,
 	Constructor_Emit,
+	Binary_Start_Left,
+	Binary_Left_Active,
+	Binary_Start_Right,
+	Binary_Right_Active,
 	Complete,
 }
 
@@ -126,6 +130,8 @@ eval_frame :: struct {
 	pending_object_error: value.Object_Operation_Error,
 	constructor_pending_failure: bool,
 	binding_value: value.Value,
+	// Binary operators retain the left result while the right generator runs.
+	binary_left: value.Value,
 }
 
 @(private)
@@ -987,6 +993,12 @@ capture_composite_instruction :: proc(
 		_, left_ok := child_instruction(storage, instruction, 0)
 		_, right_ok := child_instruction(storage, instruction, 1)
 		if !left_ok || !right_ok do return false
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
+	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+		if instruction.operands_count != 2 do return false
+		_, left_ok := child_instruction(storage, instruction, 0)
+		_, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok do return false
 	case .Array, .Object:
 		// Constructor operands are validated by Program; only the live
 		// instruction/operand snapshot is needed for mutation detection here.
@@ -1037,6 +1049,8 @@ resumed_composite_instruction_valid :: proc(
 			return false
 		}
 		return frame.has_saved_instruction && instruction.opcode == frame.saved_instruction.opcode
+	case .Binary_Start_Left, .Binary_Left_Active, .Binary_Start_Right, .Binary_Right_Active:
+		if frame.mode != .Normal || !is_binary_opcode(instruction.opcode) do return false
 	case:
 		return true
 	}
@@ -1047,6 +1061,8 @@ resumed_composite_instruction_valid :: proc(
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
 		expected_operand_count = 3
+	} else if frame.phase == .Binary_Start_Left || frame.phase == .Binary_Left_Active || frame.phase == .Binary_Start_Right || frame.phase == .Binary_Right_Active {
+		expected_operand_count = 2
 	} else do expected_operand_count = 2
 	if !frame.has_saved_instruction ||
 	   frame.saved_operand_count != expected_operand_count ||
@@ -1260,7 +1276,7 @@ output_needs_frame :: proc(storage: ^evaluator_storage, producer: int) -> bool {
 		parent := storage.frames[current].parent
 		if parent < 0 do return false
 		phase := storage.frames[parent].phase
-		if phase == .Sequence_Left_Active || phase == .Field_Child_Active do return true
+		if phase == .Sequence_Left_Active || phase == .Field_Child_Active || phase == .Binary_Left_Active do return true
 		current = parent
 	}
 	return false
@@ -1344,6 +1360,11 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Field_Result_Active:
 		frame.phase = .Field_Child_Active
+	case .Binary_Left_Active:
+		frame.phase = .Complete
+	case .Binary_Right_Active:
+		_ = value.destroy_value(&frame.binary_left)
+		frame.phase = .Binary_Start_Left
 	case .Binding_Left_Active:
 		frame.phase = .Complete
 	case .Binding_Body_Active:
@@ -1413,6 +1434,8 @@ finish_top_frame :: proc(storage: ^evaluator_storage) -> (runtime.Allocator_Erro
 	free_error := value.destroy_value(&storage.frames[index].input)
 	if free_error != nil do return free_error, true
 	free_error = constructor_frame_destroy(&storage.frames[index])
+	if free_error != nil do return free_error, true
+	free_error = value.destroy_value(&storage.frames[index].binary_left)
 	if free_error != nil do return free_error, true
 	storage.frames[index] = {}
 	storage.frame_count -= 1
@@ -1523,6 +1546,32 @@ propagate_output :: proc(
 			return {}, false
 		case .Field_Result_Active:
 			current = parent
+		case .Binary_Left_Active:
+			if value.kind_of(&frame.binary_left) != .Invalid {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			}
+			frame.binary_left = value.take_value(owned)
+			child, ok := child_instruction(storage, instruction, 1)
+			input_copy := value.clone_value(&frame.input)
+			if !ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, parent, &input_copy) {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true
+			}
+			frame.phase = .Binary_Right_Active
+			return {}, false
+		case .Binary_Right_Active:
+			result, runtime_kind, resource_error := apply_binary(instruction.opcode, &frame.binary_left, owned, instruction.operator_span, storage.allocator)
+			if resource_error != nil {
+				_ = value.destroy_value(&frame.binary_left)
+				return resource_step(resource_error), true
+			}
+			if runtime_kind != .None {
+				_ = value.destroy_value(owned)
+				result_step, ready := raise_runtime(storage, parent, {kind = runtime_kind, input_kind = value.kind_of(&frame.binary_left), span = instruction.operator_span})
+				return result_step, ready
+			}
+			_ = value.destroy_value(owned)
+			_ = value.destroy_value(&frame.binary_left)
+			return propagate_output(storage, parent, &result)
 		case .Binding_Left_Active:
 			// Each output of the bound expression starts the body with the
 			// original input, while the yielded value becomes the nearest lexical
@@ -1594,6 +1643,99 @@ begin_terminal_misuse_owned :: proc(
 	assert(value.kind_of(&storage.pending_value) == .Invalid)
 	storage.pending_value = value.take_value(owned)
 	return begin_terminal_misuse(storage, kind)
+}
+
+@(private)
+is_binary_opcode :: proc(opcode: program.Opcode) -> bool {
+	#partial switch opcode {
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+		return true
+	}
+	return false
+}
+
+@(private)
+apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: program.Source_Span, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	_ = span
+	#partial switch opcode {
+	case .Add:
+		result, err := value.value_add(left, right, allocator)
+		kind := value.value_add_error_kind(&err)
+		if kind == .None do return result, .None, nil
+		cleanup_error := value.destroy_value_add_error(&err)
+		if cleanup_error != nil do return {}, .None, cleanup_error
+		if kind == .Out_Of_Memory || kind == .Size_Overflow || kind == .Allocator_Unsupported do return {}, .None, .Out_Of_Memory
+		return {}, .Cannot_Add, nil
+	case .Subtract:
+		if value.kind_of(left) == .Array && value.kind_of(right) == .Array do return {}, .Cannot_Subtract, nil
+		result, kind := value.number_subtract(left, right)
+		if kind == .Success do return result, .None, nil
+		return {}, .Cannot_Subtract, nil
+	case .Multiply:
+		result, kind := value.number_multiply(left, right)
+		if kind == .Success do return result, .None, nil
+		return {}, .Cannot_Multiply, nil
+	case .Divide:
+		result, kind := value.number_divide(left, right)
+		if kind == .Success do return result, .None, nil
+		return {}, .Cannot_Divide, nil
+	case .Modulo:
+		result, kind := value.number_modulo(left, right)
+		if kind == .Success do return result, .None, nil
+		return {}, .Cannot_Modulo, nil
+	case .Equal: return value.boolean_value(value.values_equal(left, right)), .None, nil
+	case .Not_Equal: return value.boolean_value(!value.values_equal(left, right)), .None, nil
+	case .Less, .Less_Equal, .Greater, .Greater_Equal:
+		comparison, ok := compare_values(left, right)
+		if !ok do return {}, .None, .Out_Of_Memory
+		#partial switch opcode {
+		case .Less: return value.boolean_value(comparison < 0), .None, nil
+		case .Less_Equal: return value.boolean_value(comparison <= 0), .None, nil
+		case .Greater: return value.boolean_value(comparison > 0), .None, nil
+		case .Greater_Equal: return value.boolean_value(comparison >= 0), .None, nil
+		}
+	}
+	return {}, .None, .Out_Of_Memory
+}
+
+@(private)
+compare_values :: proc(left, right: ^value.Value) -> (int, bool) {
+	left_kind := value.kind_of(left); right_kind := value.kind_of(right)
+	if left_kind != right_kind do return int(left_kind)-int(right_kind), true
+	#partial switch left_kind {
+	case .Null: return 0, true
+	case .Boolean:
+		l, lok := value.boolean_value_get(left); r, rok := value.boolean_value_get(right)
+		if !lok || !rok do return 0, false
+		return (1 if l else 0)-(1 if r else 0), true
+	case .Number:
+		l, lok := value.number_value_get(left); r, rok := value.number_value_get(right)
+		if !lok || !rok do return 0, false
+		if math.is_nan(l) { return -1 if !math.is_nan(r) else 0, true }
+		if math.is_nan(r) do return 1, true
+		return value.compare_numbers(left, right)
+	case .String:
+		l, lok := value.string_borrowed(left); r, rok := value.string_borrowed(right)
+		if !lok || !rok do return 0, false
+		if l < r do return -1, true; if l > r do return 1, true; return 0, true
+	case .Array:
+		ll, lok := value.array_length(left); rl, rok := value.array_length(right)
+		if !lok || !rok do return 0, false
+		limit := ll if ll < rl else rl
+		for i in 0..<limit {
+			lv, l_ok := value.array_element_copy(left, i); rv, r_ok := value.array_element_copy(right, i)
+			if !l_ok || !r_ok { _ = value.destroy_value(&lv); _ = value.destroy_value(&rv); return 0, false }
+			cmp, ok := compare_values(&lv, &rv); _ = value.destroy_value(&lv); _ = value.destroy_value(&rv)
+			if !ok || cmp != 0 do return cmp, ok
+		}
+		if ll < rl do return -1, true; if ll > rl do return 1, true; return 0, true
+	case .Object:
+		if value.values_equal(left, right) do return 0, true
+		ll, lok := value.object_length(left); rl, rok := value.object_length(right)
+		if !lok || !rok do return 0, false
+		return (-1 if ll < rl else 1), true
+	}
+	return 0, false
 }
 
 // step_evaluator advances only until one independently owned output or one
@@ -1777,12 +1919,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Fork_Start_Left
 			case .Add, .Subtract, .Multiply, .Divide, .Modulo,
 			     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
-				// Binary instructions are valid compiler output, but arithmetic and
-				// comparison evaluation is not part of this resumable prototype yet.
-				// Return a structured terminal result rather than yielding an
-				// unchanged or fabricated value. The frame cleanup below still owns
-				// and releases the input before terminal replay.
-				return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Binary_Start_Left
 			case .Array, .Object:
 				if !capture_composite_instruction(storage, frame, instruction) ||
 				   !constructor_start(storage, frame, instruction) {
@@ -1792,7 +1930,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Field_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left:
+		case .Field_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -1811,6 +1949,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				offset, next_phase = 0, .Sequence_Left_Active
 			case .Binding_Start_Left:
 				offset, next_phase = 0, .Binding_Left_Active
+			case .Binary_Start_Left:
+				offset, next_phase = 0, .Binary_Left_Active
+			case .Binary_Start_Right:
+				offset, next_phase = 1, .Binary_Right_Active
 			case:
 			}
 			child, ok := child_instruction(storage, instruction, offset)
@@ -1937,7 +2079,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		case .Unary_Active, .Fork_Left_Active, .Fork_Right_Active,
 		     .Sequence_Left_Active, .Sequence_Right_Active,
-		     .Field_Child_Active, .Field_Result_Active,
+		     .Field_Child_Active, .Field_Result_Active, .Binary_Left_Active, .Binary_Right_Active,
 		     .Binding_Left_Active, .Binding_Body_Active, .Constructor_Child_Active:
 			// An active consumer is never the top frame: its producer is above it.
 			return begin_terminal_misuse(storage, .Malformed_Program)

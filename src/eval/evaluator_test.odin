@@ -16,7 +16,7 @@ evaluator_internal_layout_matches_public_handle :: proc(t: ^testing.T) {
 }
 
 @(test)
-binary_opcodes_report_structured_unsupported_result :: proc(t: ^testing.T) {
+binary_opcodes_execute_and_replay_terminal_state :: proc(t: ^testing.T) {
 	opcodes := [?]program.Opcode{
 		.Add, .Subtract, .Multiply, .Divide, .Modulo,
 		.Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal,
@@ -42,11 +42,79 @@ binary_opcodes_report_structured_unsupported_result :: proc(t: ^testing.T) {
 		init := init_evaluator(&evaluator, &compiled, &input, context.allocator)
 		testing.expect_value(t, init.kind, Init_Error_Kind.None)
 		result := step_evaluator(&evaluator)
-		testing.expect_value(t, result.kind, Step_Kind.Misuse)
-		testing.expect_value(t, result.misuse, Misuse_Kind.Unsupported_Opcode)
+		testing.expect_value(t, result.kind, Step_Kind.Output)
+		output := take_step_output(&result)
+		#partial switch opcode {
+		case .Add: expect_number(t, &output, 14)
+		case .Subtract: expect_number(t, &output, 0)
+		case .Multiply: expect_number(t, &output, 49)
+		case .Divide: expect_number(t, &output, 1)
+		case .Modulo: expect_number(t, &output, 0)
+		case .Equal, .Less_Equal, .Greater_Equal:
+			actual, ok := value.boolean_value_get(&output)
+			testing.expect(t, ok && actual)
+			testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		case .Not_Equal, .Less, .Greater:
+			actual, ok := value.boolean_value_get(&output)
+			testing.expect(t, ok && !actual)
+			testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		}
 		replayed := step_evaluator(&evaluator)
-		testing.expect_value(t, replayed.kind, Step_Kind.Misuse)
-		testing.expect_value(t, replayed.misuse, Misuse_Kind.Unsupported_Opcode)
+		testing.expect_value(t, replayed.kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
+binary_arithmetic_invalid_operands_are_runtime_errors :: proc(t: ^testing.T) {
+	// jq builtin.c:342-377 distinguishes type errors from the divisor-zero
+	// error; both are evaluator runtime terminals and replay identically.
+	cases := [?]struct {
+		opcode: program.Opcode,
+		right_kind: program.Literal_Kind,
+		right_boolean: bool,
+		expected: Runtime_Error_Kind,
+	}{
+		{.Add, .Boolean, true, .Cannot_Add},
+		{.Subtract, .Boolean, true, .Cannot_Subtract},
+		{.Multiply, .Boolean, true, .Cannot_Multiply},
+		{.Divide, .Boolean, true, .Cannot_Divide},
+		{.Modulo, .Boolean, true, .Cannot_Modulo},
+	}
+	for test_case in cases {
+		instructions := [3]program.Instruction{
+			{opcode = .Identity, span = {start = 0, end = 1}},
+			{
+				opcode = .Identity,
+				has_literal = true,
+				operands_start = 0,
+				operands_count = 0,
+				literal_kind = test_case.right_kind,
+				literal_boolean = test_case.right_boolean,
+				span = {start = 4, end = 5},
+			},
+			{
+				opcode = test_case.opcode,
+				operands_count = 2,
+				span = {start = 0, end = 5},
+				operator_span = {start = 2, end = 3},
+				has_operator_span = true,
+			},
+		}
+		operands := [2]program.Operand{instruction_operand(0), instruction_operand(1)}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], operands[:], "", 2)
+		input := value.number_value(7)
+		evaluator: Evaluator
+		init := init_evaluator(&evaluator, &compiled, &input, context.allocator)
+		testing.expect_value(t, init.kind, Init_Error_Kind.None)
+		result := step_evaluator(&evaluator)
+		testing.expect_value(t, result.kind, Step_Kind.Runtime_Error)
+		testing.expect_value(t, result.runtime_error.kind, test_case.expected)
+		replayed := step_evaluator(&evaluator)
+		testing.expect_value(t, replayed.kind, Step_Kind.Runtime_Error)
+		testing.expect_value(t, replayed.runtime_error.kind, test_case.expected)
 		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
 		destroy_program_test(t, &compiled)
 	}
