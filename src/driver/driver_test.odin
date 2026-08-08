@@ -550,7 +550,7 @@ dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("value(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "( (7))")
+	testing.expect_value(t, strings.to_string(builder), "((7) as $x |  $x)")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -558,7 +558,7 @@ dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
 @(test)
 dollar_parameters_preserve_value_cardinality_and_order :: proc(t: ^testing.T) {
 	module_expansion_matches(
-		t, "def dup($x): $x, $x;", "dup(1,2)", "( (1,2), (1,2))",
+		t, "def dup($x): $x, $x;", "dup(1,2)", "((1,2) as $x |  $x, $x)",
 	)
 }
 
@@ -566,7 +566,15 @@ dollar_parameters_preserve_value_cardinality_and_order :: proc(t: ^testing.T) {
 multiple_dollar_parameters_use_independent_bindings :: proc(t: ^testing.T) {
 	module_expansion_matches(
 		t, "def pair($x;$y): [$x,$y];", "pair(1;2)",
-		"( [(1),(2)])",
+		"((1) as $x | (2) as $y |  [$x,$y])",
+	)
+}
+
+@(test)
+module_value_parameter_binding_handles_start_and_nested_filter_calls :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def x: 42; def f($x): x;", "f(1)",
+		"((1) as $x |  ( 42))",
 	)
 }
 
@@ -728,6 +736,14 @@ module_expansion_preserves_object_shorthand :: proc(t: ^testing.T) {
 	testing.expect_value(t, strings.to_string(builder), "{x}")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_expansion_does_not_treat_filter_commas_as_object_shorthand :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def f: 1; def g: 2; def h: 3;", "f, g, h",
+		"( 1), ( 2), ( 3)",
+	)
 }
 
 @(test)

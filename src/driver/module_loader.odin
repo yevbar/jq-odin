@@ -575,6 +575,21 @@ module_parameter_ordinal_is_value :: proc(parameters: string, wanted: int) -> bo
 	return false
 }
 
+module_parameter_name_at :: proc(parameters: string, wanted: int) -> string {
+	ordinal := 0
+	start := 0
+	for at := 0; at <= len(parameters); at += 1 {
+		if at == len(parameters) || parameters[at] == ';' {
+			candidate := module_trim(parameters[start:at])
+			if len(candidate) > 0 && candidate[0] == '$' do candidate = candidate[1:]
+			if ordinal == wanted do return candidate
+			ordinal += 1
+			start = at+1
+		}
+	}
+	return ""
+}
+
 module_parameter_count :: proc(parameters: string) -> int {
 	if len(parameters) == 0 do return 0
 	count := 1
@@ -586,6 +601,73 @@ module_parameter_count :: proc(parameters: string) -> int {
 
 module_write :: proc(builder: ^strings.Builder, text: string) -> bool {
 	return strings.write_string(builder, text) == len(text)
+}
+
+module_object_shorthand :: proc(input: string, start, end: int) -> bool {
+	Object_Frame :: struct { parens, brackets: int, expect_key: bool }
+	frames: [64]Object_Frame
+	frame_count := 0
+	parens := 0
+	brackets := 0
+	at := 0
+	for at < start {
+		byte := input[at]
+		if byte == '"' {
+			at += 1
+			escaped := false
+			for at < start {
+				quoted := input[at]; at += 1
+				if escaped { escaped = false } else if quoted == '\\' { escaped = true } else if quoted == '"' { break }
+			}
+			if frame_count > 0 && frames[frame_count-1].expect_key {
+				look := at
+				for look < start && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
+				if look < start && input[look] == ':' do frames[frame_count-1].expect_key = false
+			}
+			continue
+		}
+		if byte == '#' {
+			for at < start && input[at] != '\n' do at += 1
+			continue
+		}
+		if byte == '(' { parens += 1; at += 1; continue }
+		if byte == ')' { if parens > 0 do parens -= 1; at += 1; continue }
+		if byte == '[' { brackets += 1; at += 1; continue }
+		if byte == ']' { if brackets > 0 do brackets -= 1; at += 1; continue }
+		if byte == '{' {
+			if frame_count >= len(frames) do return false
+			frames[frame_count] = {parens = parens, brackets = brackets, expect_key = true}
+			frame_count += 1
+			at += 1
+			continue
+		}
+		if byte == '}' {
+			if frame_count > 0 do frame_count -= 1
+			at += 1
+			continue
+		}
+		if frame_count > 0 && parens == frames[frame_count-1].parens && brackets == frames[frame_count-1].brackets {
+			if byte == ',' || byte == ':' {
+				frames[frame_count-1].expect_key = byte == ','
+				at += 1
+				continue
+			}
+			if frames[frame_count-1].expect_key && is_module_identifier_start(byte) {
+				key_end := at+1
+				for key_end < start && is_module_identifier_byte(input[key_end]) do key_end += 1
+				look := key_end
+				for look < start && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
+				if look < start && input[look] == ':' do frames[frame_count-1].expect_key = false
+				at = key_end
+				continue
+			}
+		}
+		at += 1
+	}
+	if frame_count == 0 || !frames[frame_count-1].expect_key do return false
+	look := end
+	for look < len(input) && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
+	return look < len(input) && (input[look] == '}' || input[look] == ',')
 }
 
 module_expand_source :: proc(
@@ -639,12 +721,7 @@ module_expand_source :: proc(
 		start := at
 		for at < len(input) && is_module_identifier_byte(input[at]) do at += 1
 		name := input[start:at]
-		previous := start-1
-		for previous >= 0 && (input[previous] == ' ' || input[previous] == '\t' || input[previous] == '\r' || input[previous] == '\n') do previous -= 1
-		next := at
-		for next < len(input) && (input[next] == ' ' || input[next] == '\t' || input[next] == '\r' || input[next] == '\n') do next += 1
-		object_shorthand := previous >= 0 && (input[previous] == '{' || input[previous] == ',') &&
-			next < len(input) && (input[next] == '}' || input[next] == ',')
+		object_shorthand := module_object_shorthand(input, start, at)
 		if object_shorthand {
 			if !module_write(builder, name) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			continue
@@ -653,13 +730,12 @@ module_expand_source :: proc(
 		bare_identifier := start == 0 || (input[start-1] != '$' && input[start-1] != '.' && input[start-1] != '@')
 		value_parameter := module_parameter_is_value(parameters, name)
 		if parameter_index >= 0 && parameter_index < arg_count &&
-			((!value_parameter && bare_identifier) || (value_parameter && input[start-1] == '$')) {
+			((!value_parameter && bare_identifier) || (value_parameter && start > 0 && input[start-1] == '$')) {
 			if value_parameter {
-				// The current integrated syntax/evaluator pipeline has no variable
-				// binding node. Lower each value reference as a parenthesized filter
-				// argument, preserving its stream and precedence without inserting
-				// a pipe between independent parameters.
-				if (!module_write(builder, "(") || !module_write(builder, args[parameter_index]) || !module_write(builder, ")")) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+				// Value parameters are bound below, once per generated argument
+				// value. Preserve the jq variable reference in the body instead of
+				// inserting the whole argument source at every occurrence.
+				if (!module_write(builder, input[start-1:start]) || !module_write(builder, input[start:at])) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 				continue
 			}
 			// Arguments are filter source, not opaque text. Re-enter the
@@ -752,6 +828,16 @@ module_expand_source :: proc(
 		if !module_write(builder, "(") {
 			for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 			return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+		}
+		for binding_index := 0; binding_index < call_count; binding_index += 1 {
+			if !module_parameter_ordinal_is_value(definition.parameters, binding_index) do continue
+			parameter_name := module_parameter_name_at(definition.parameters, binding_index)
+			if !module_write(builder, "(") || !module_write(builder, expanded_args[binding_index]) ||
+				!module_write(builder, ") as $") || !module_write(builder, parameter_name) ||
+				!module_write(builder, " | ") {
+				for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
+				return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+			}
 		}
 		outcome := module_expand_source(
 			definition.body, definitions, builder, stack, depth+1,
