@@ -1669,6 +1669,42 @@ parse_one_value_at :: proc(input: string, start: int, allocator: runtime.Allocat
 	return result, start, err
 }
 
+// parse_next_value parses at most one value from a borrowed JSON text stream.
+// start is an absolute byte offset returned by the preceding successful call.
+// Leading and trailing JSON whitespace are consumed, and next is always an
+// absolute byte offset. done is true only when no value remains. A UTF-8 BOM is
+// accepted only at offset zero, matching the beginning of one jq input source.
+parse_next_value :: proc(input: string, start: int, allocator: runtime.Allocator) -> (
+	result: value.Value,
+	next: int,
+	done: bool,
+	err: Scalar_Parse_Error,
+) {
+	if start < 0 || start > len(input) {
+		result, err = parse_failure(.Expected_Value, max(0, min(start, len(input))))
+		return result, start, false, err
+	}
+	next = start
+	if next == 0 && len(input) > 0 && input[0] == 0xef {
+		bom := [3]byte{0xef, 0xbb, 0xbf}
+		matched := 1
+		for matched < len(bom) && matched < len(input) && input[matched] == bom[matched] {
+			matched += 1
+		}
+		if matched != len(bom) {
+			_, err = parse_scalar(input, allocator)
+			return value.invalid_value(), start, false, err
+		}
+		next = len(bom)
+	}
+	for next < len(input) && is_whitespace(input[next]) do next += 1
+	if next == len(input) do return value.invalid_value(), next, true, {}
+	result, next, err = parse_one_value_at(input, next, allocator)
+	if err.kind != .None do return value.invalid_value(), next, false, err
+	for next < len(input) && is_whitespace(input[next]) do next += 1
+	return result, next, false, {}
+}
+
 // parse_value is jq's one-shot wrapper above the single-result parser. A
 // second valid result is an extra-value error, while a later syntax or
 // unsupported-object error supersedes the already completed first value.
