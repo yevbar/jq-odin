@@ -1699,8 +1699,43 @@ parse_next_value :: proc(input: string, start: int, allocator: runtime.Allocator
 	}
 	for next < len(input) && is_whitespace(input[next]) do next += 1
 	if next == len(input) do return value.invalid_value(), next, true, {}
+	value_at := next
 	result, next, err = parse_one_value_at(input, next, allocator)
 	if err.kind != .None do return value.invalid_value(), next, false, err
+	// jq finalizes a top-level literal or number when it observes the next
+	// delimiter. Invalid root separators therefore fail this pull instead of
+	// yielding the scalar and deferring the error to a later pull. Quoted
+	// scalars finish at their closing quote, while an opener begins a separate
+	// value and remains a valid next boundary.
+	if input[value_at] != '"' && input[value_at] != '[' && input[value_at] != '{' {
+		boundary_kind: Scalar_Parse_Error_Kind
+		switch next < len(input) ? input[next] : 0 {
+		case ',': boundary_kind = .Expected_Value_Before_Separator
+		case ']': boundary_kind = .Unmatched_Array_Closer
+		case '}': boundary_kind = .Unmatched_Object_Closer
+		case ':': boundary_kind = .Expected_String_Key_Before_Colon
+		}
+		if boundary_kind != .None {
+			cleanup_error := value.destroy_value(&result)
+			if cleanup_error != nil {
+				return value.invalid_value(), next, false, {
+					kind = .Scratch_Cleanup_Failure,
+					detection_offset = next,
+					cause_offset = next,
+					has_cause_offset = true,
+					cause_kind = boundary_kind,
+					cleanup_value = value.take_value(&result),
+				}
+			}
+			boundary_error := Scalar_Parse_Error{
+				kind = boundary_kind,
+				detection_offset = next,
+				cause_offset = next,
+				has_cause_offset = true,
+			}
+			return value.invalid_value(), next, false, boundary_error
+		}
+	}
 	for next < len(input) && is_whitespace(input[next]) do next += 1
 	return result, next, false, {}
 }

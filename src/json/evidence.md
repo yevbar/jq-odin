@@ -2,8 +2,12 @@
 
 - `upstream/jq/src/jv_parse.c:722-752` retains unconsumed parser-buffer bytes
   after a completed value, establishing the absolute-offset pull boundary.
-- `upstream/jq/src/jv_parse.c:767-820` returns one completed value per parser
-  pull and reports parse failure independently from end-of-input.
+- `upstream/jq/src/jv_parse.c:125-143` finalizes a literal at the observed
+  delimiter and rejects a root separator before returning that value;
+  `upstream/jq/src/jv_parse.c:644-692` shows that delimiter processing happens
+  in the same scan pull. `upstream/jq/src/jv_parse.c:767-820` returns one
+  completed value per parser pull and reports parse failure independently from
+  end-of-input.
 - `upstream/jq/src/util.c:395-444` repeatedly feeds input buffers to the parser
   and emits values in source order; newline splitting is not the framing rule.
 - `upstream/jq/src/jv_parse.c:446-503` decodes JSON escapes into owned string

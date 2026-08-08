@@ -48,6 +48,15 @@ parse_next_value_reports_stream_errors_without_consuming_a_later_value :: proc(t
 }
 
 @(test)
+parse_next_value_reports_literal_delimiter_error_in_same_pull :: proc(t: ^testing.T) {
+	parsed, next, done, err := parse_next_value("true,", 0, context.allocator)
+	testing.expect_value(t, value.kind_of(&parsed), value.Kind.Invalid)
+	testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.Expected_Value_Before_Separator)
+	testing.expect(t, !done && next == 4)
+	testing.expect_value(t, destroy_scalar_parse_error(&err), nil)
+}
+
+@(test)
 parse_next_value_rejects_bom_outside_source_boundary :: proc(t: ^testing.T) {
 	input := "1 \ufeff 2"
 	first, next, _, first_error := parse_next_value(input, 0, context.allocator)
