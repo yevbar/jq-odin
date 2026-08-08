@@ -1,5 +1,6 @@
 package json
 
+import "base:runtime"
 import "core:testing"
 import "jq:value"
 
@@ -54,6 +55,40 @@ parse_next_value_reports_literal_delimiter_error_in_same_pull :: proc(t: ^testin
 	testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.Expected_Value_Before_Separator)
 	testing.expect(t, !done && next == 4)
 	testing.expect_value(t, destroy_scalar_parse_error(&err), nil)
+}
+
+@(test)
+parse_next_value_retires_owned_number_on_root_separator :: proc(t: ^testing.T) {
+	success_probe := allocator_probe{
+		backing = context.allocator,
+		fail_after = max(int),
+	}
+	parsed, next, done, err := parse_next_value("1,", 0, probe_allocator(&success_probe))
+	testing.expect_value(t, value.kind_of(&parsed), value.Kind.Invalid)
+	testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.Expected_Value_Before_Separator)
+	testing.expect(t, !done && next == 1)
+	testing.expect_value(t, success_probe.allocations, 1)
+	testing.expect_value(t, success_probe.frees, 1)
+	testing.expect_value(t, success_probe.live, 0)
+
+	retry_probe := allocator_probe{
+		backing = context.allocator,
+		fail_after = max(int),
+		free_failures_remaining = 1,
+	}
+	parsed, next, done, err = parse_next_value("1,", 0, probe_allocator(&retry_probe))
+	testing.expect_value(t, value.kind_of(&parsed), value.Kind.Invalid)
+	testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.Scratch_Cleanup_Failure)
+	testing.expect_value(t, err.cause_kind, Scalar_Parse_Error_Kind.Expected_Value_Before_Separator)
+	testing.expect(t, err.has_cause_offset && err.cause_offset == 1)
+	testing.expect(t, !done && next == 1)
+	testing.expect_value(t, retry_probe.allocations, 1)
+	testing.expect_value(t, retry_probe.frees, 1)
+	testing.expect_value(t, retry_probe.live, 1)
+	testing.expect_value(t, destroy_scalar_parse_error(&err), runtime.Allocator_Error.None)
+	testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.None)
+	testing.expect_value(t, retry_probe.frees, 2)
+	testing.expect_value(t, retry_probe.live, 0)
 }
 
 @(test)
