@@ -483,6 +483,38 @@ module_expansion_rejects_wrong_arity :: proc(
 	strings.builder_destroy(&builder)
 }
 
+module_expansion_matches :: proc(
+	t: ^testing.T,
+	definition_source, call_source, expected: string,
+) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions(definition_source, &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source(call_source, definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), expected)
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_definition_bodies_keep_filter_boundaries :: proc(t: ^testing.T) {
+	// A definition body is one jq filter expression, even when its caller
+	// continues with a lower-precedence operator.
+	module_expansion_matches(t, "def value: 1 + 2;", "value * 3", "( 1 + 2) * 3")
+	module_expansion_matches(t, "def value: (1 + 2);", "value", "( (1 + 2))")
+	module_expansion_matches(t, "def values: 1, 2 | .;", "values", "( 1, 2 | .)")
+}
+
+@(test)
+module_definition_call_arguments_keep_filter_boundaries :: proc(t: ^testing.T) {
+	module_expansion_matches(t, "def identity(x): x;", "identity(1, 2)", "( (1, 2))")
+}
+
 @(test)
 parameterized_module_calls_require_exact_arity :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition

@@ -172,11 +172,31 @@ def expect_module_loading(
             ["-L", directory, "-n", 'include "precedence"; value * 3'],
         )
 
+        (root / "parenthesized-body.jq").write_text(
+            "def value: (1 + 2);\n", encoding="utf-8"
+        )
+        expect_oracle_case(
+            "parenthesized definition body",
+            ["-L", directory, "-n", 'include "parenthesized-body"; value'],
+        )
+
+        (root / "pipe-comma-body.jq").write_text(
+            "def values: 1, 2 | .;\n", encoding="utf-8"
+        )
+        expect_oracle_case(
+            "pipe and comma definition body",
+            ["-L", directory, "-n", 'include "pipe-comma-body"; values'],
+        )
+
         # Parameterized definitions are accepted and substitute filter
         # arguments before the ordinary syntax/compiler pipeline runs.
         (root / "parameter.jq").write_text("def identity(x): x;\n", encoding="utf-8")
         arguments = ["-L", directory, "-n", 'include "parameter"; identity(7)']
         expect_oracle_case("parameterized definition", arguments)
+        expect_oracle_case(
+            "parameterized filter argument",
+            ["-L", directory, "-n", 'include "parameter"; identity(1, 2)'],
+        )
 
         (root / "dollar-parameter.jq").write_text(
             "def value($x): $x;\n", encoding="utf-8"
