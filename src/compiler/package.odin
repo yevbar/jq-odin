@@ -33,6 +33,26 @@ node_reference_valid :: proc(id: syntax.Node_Id, node_count: int) -> bool {
 }
 
 @(private="package")
+binary_opcode :: proc(operator: syntax.Binary_Operator) -> (program.Opcode, bool) {
+	switch operator {
+	case .Add:          return .Add, true
+	case .Subtract:     return .Subtract, true
+	case .Multiply:     return .Multiply, true
+	case .Divide:       return .Divide, true
+	case .Modulo:       return .Modulo, true
+	case .Equal:        return .Equal, true
+	case .Not_Equal:    return .Not_Equal, true
+	case .Less:         return .Less, true
+	case .Less_Equal:   return .Less_Equal, true
+	case .Greater:      return .Greater, true
+	case .Greater_Equal: return .Greater_Equal, true
+	case .Defined_Or, .Or, .And:
+		return {}, false
+	}
+	return {}, false
+}
+
+@(private="package")
 string_header_absent :: proc(text: string) -> bool {
 	header := transmute(runtime.Raw_String)text
 	return header.data == nil && header.len == 0
@@ -48,7 +68,13 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 			return false
 		}
 	case .Binary:
-		return false
+		return node.kind == .Identity &&
+		       !node.has_child && node.child == 0 &&
+		       node.left >= 0 && node.right >= 0 &&
+		       !node.has_name_span && node.name_span == (diagnostic.Span{}) &&
+		       !node.boolean_value && !node.has_number_text && string_header_absent(node.number_text) &&
+		       !node.has_string_text && string_header_absent(node.string_text) &&
+		       node.has_operator_span
 	case:
 		return false
 	}
@@ -137,7 +163,6 @@ lower_filter :: proc(
 		switch node.form {
 		case .Kinded:
 		case .Binary:
-			return Lower_Outcome{kind = .Invalid_AST}
 		case:
 			return Lower_Outcome{kind = .Invalid_AST}
 		}
@@ -147,6 +172,25 @@ lower_filter :: proc(
 		}
 		if !node_payload_shape_valid(node) {
 			return Lower_Outcome{kind = .Invalid_AST}
+		}
+		if node.form == .Binary {
+			_, operator_error := span_to_program(source, node.operator_span)
+			if operator_error != .None {
+				return Lower_Outcome{kind = operator_error}
+			}
+			node_start, node_end, node_ok := diagnostic.span_offsets(source, node.span)
+			operator_start, operator_end, operator_ok := diagnostic.span_offsets(source, node.operator_span)
+			_, supported := binary_opcode(node.binary_operator)
+			if !node_ok || !operator_ok || operator_start >= operator_end ||
+			   operator_start < node_start || operator_end > node_end || !supported ||
+			   !node_reference_valid(node.left, len(nodes)) ||
+			   !node_reference_valid(node.right, len(nodes)) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+			if !checked_count_add(&operand_count, 2) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
+			continue
 		}
 
 		switch node.kind {
@@ -224,11 +268,6 @@ lower_filter :: proc(
 		switch node.form {
 		case .Kinded:
 		case .Binary:
-			cleanup_error := program.destroy_program(output)
-			if cleanup_error != nil {
-				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}
-			}
-			return Lower_Outcome{kind = .Invalid_AST}
 		case:
 			cleanup_error := program.destroy_program(output)
 			if cleanup_error != nil {
@@ -249,7 +288,25 @@ lower_filter :: proc(
 			operands_start = program.Operand_Index(operand_at),
 			span = span,
 		}
-
+		if node.form == .Binary {
+			opcode, supported := binary_opcode(node.binary_operator)
+			assert(supported)
+			instruction.opcode = opcode
+			instruction.has_operator_span = true
+			operator_span, operator_error := span_to_program(source, node.operator_span)
+			assert(operator_error == .None)
+			instruction.operator_span = operator_span
+			instruction.operands_count = 2
+			children := [2]syntax.Node_Id{node.left, node.right}
+			for child in children {
+				write_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+					kind = .Instruction,
+					instruction = program.Instruction_Index(child),
+				})
+				assert(write_ok)
+				operand_at += 1
+			}
+		} else {
 		switch node.kind {
 		case .Identity:
 			instruction.opcode = .Identity
@@ -333,6 +390,7 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error}
 			}
 			return Lower_Outcome{kind = .Invalid_AST}
+		}
 		}
 		instruction_ok := program.set_instruction(output, program.Instruction_Index(node_at), instruction)
 		assert(instruction_ok)

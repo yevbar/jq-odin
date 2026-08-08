@@ -140,6 +140,35 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 }
 
 @(test)
+binary_arithmetic_and_comparison_lower_to_two_instruction_operands :: proc(t: ^testing.T) {
+	Case :: struct { text: string, opcode: program.Opcode, operator_start: int, operator_end: int }
+	cases := [?]Case{
+		{". + .", .Add, 2, 3},
+		{". * .", .Multiply, 2, 3},
+		{". == .", .Equal, 2, 4},
+		{". >= .", .Greater_Equal, 2, 4},
+	}
+	for test_case in cases {
+		parser: syntax.Parser
+		compiled: program.Program
+		source, parsed, lowered := parse_and_lower(t, test_case.text, &parser, &compiled)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+		root := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+		testing.expect_value(t, root.opcode, test_case.opcode)
+		testing.expect_value(t, root.operands_count, program.Count(2))
+		testing.expect(t, root.has_operator_span)
+		operator, operator_made := diagnostic.make_span(source, test_case.operator_start, test_case.operator_end)
+		operator_start, operator_end, operator_ok := diagnostic.span_offsets(source, operator)
+		testing.expect(t, operator_made && operator_ok)
+		testing.expect_value(t, root.operator_span.start, program.Source_Offset(operator_start))
+		testing.expect_value(t, root.operator_span.end, program.Source_Offset(operator_end))
+		testing.expect_value(t, instruction_child(&compiled, root, 0).opcode, program.Opcode.Identity)
+		testing.expect_value(t, instruction_child(&compiled, root, 1).opcode, program.Opcode.Identity)
+		expect_cleanup(t, &parser, &compiled)
+	}
+}
+
+@(test)
 scalar_literals_lower_to_owned_literal_metadata :: proc(t: ^testing.T) {
 	Case :: struct {
 		text: string,
@@ -736,6 +765,8 @@ binary_and_cross_form_nodes_never_activate_program_output :: proc(t: ^testing.T)
 		{kind = .Identity, span = span, operator_span = operator_span},
 		{kind = .Identity, span = span, has_operator_span = true},
 		{kind = .Identity, span = span, operator_span = operator_span, has_operator_span = true},
+		{form = .Binary, kind = .String, span = span, left = 0, right = 0,
+		 binary_operator = .Add, operator_span = operator_span, has_operator_span = true},
 	}
 	for node in cases {
 		testing.expect(t, !node_payload_shape_valid(node))
@@ -748,13 +779,21 @@ binary_and_cross_form_nodes_never_activate_program_output :: proc(t: ^testing.T)
 	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
 	nodes := syntax.parser_nodes(&parser)
 	testing.expect_value(t, nodes[int(parsed.root)].form, syntax.Node_Form.Binary)
-	expect_invalid_ast_without_program_owner(
-		t,
+	compiled: program.Program
+	lowered := lower_filter(
+		&compiled,
 		nodes,
 		parsed.root,
 		syntax.parser_source(&parser),
-		true,
+		context.allocator,
 	)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	root, root_ok := program.program_root(&compiled)
+	testing.expect(t, root_ok)
+	root_instruction, instruction_ok := program.program_instruction(&compiled, root)
+	testing.expect(t, instruction_ok)
+	testing.expect_value(t, root_instruction.opcode, program.Opcode.Add)
+	testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
 	testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
 }
 

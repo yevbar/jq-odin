@@ -26,6 +26,7 @@ Misuse_Kind :: enum u8 {
 	Copied_Evaluator,
 	Invalid_Program_Lifetime,
 	Malformed_Program,
+	Unsupported_Opcode,
 }
 
 Step_Kind :: enum u8 {
@@ -195,6 +196,9 @@ seal_program :: proc(compiled: ^program.Program) -> (program_seal, bool) {
 		seal_mix_u64(&seal, u64(instruction.operands_count))
 		seal_mix_u64(&seal, u64(instruction.span.start))
 		seal_mix_u64(&seal, u64(instruction.span.end))
+		seal_mix_u64(&seal, 1 if instruction.has_operator_span else 0)
+		seal_mix_u64(&seal, u64(instruction.operator_span.start))
+		seal_mix_u64(&seal, u64(instruction.operator_span.end))
 	}
 	for index: u64 = 0; index < u64(operand_count); index += 1 {
 		operand, ok := program.program_operand(compiled, program.Operand_Index(index))
@@ -1250,6 +1254,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Fork_Start_Left
+			case .Add, .Subtract, .Multiply, .Divide, .Modulo,
+			     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+				// Binary instructions are valid compiler output, but arithmetic and
+				// comparison evaluation is not part of this resumable prototype yet.
+				// Return a structured terminal result rather than yielding an
+				// unchanged or fabricated value. The frame cleanup below still owns
+				// and releases the input before terminal replay.
+				return begin_terminal_misuse(storage, .Unsupported_Opcode)
 			case:
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}

@@ -15,6 +15,43 @@ evaluator_internal_layout_matches_public_handle :: proc(t: ^testing.T) {
 	testing.expect_value(t, align_of(Evaluator), 8)
 }
 
+@(test)
+binary_opcodes_report_structured_unsupported_result :: proc(t: ^testing.T) {
+	opcodes := [?]program.Opcode{
+		.Add, .Subtract, .Multiply, .Divide, .Modulo,
+		.Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal,
+	}
+	for opcode in opcodes {
+		instructions := [3]program.Instruction{
+			{opcode = .Identity, span = {start = 0, end = 1}},
+			{opcode = .Identity, span = {start = 4, end = 5}},
+			{
+				opcode = opcode,
+				operands_count = 2,
+				span = {start = 0, end = 5},
+				operator_span = {start = 2, end = 3},
+				has_operator_span = true,
+			},
+		}
+		operands := [2]program.Operand{instruction_operand(0), instruction_operand(1)}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], operands[:], "", 2)
+
+		input := value.number_value(7)
+		evaluator: Evaluator
+		init := init_evaluator(&evaluator, &compiled, &input, context.allocator)
+		testing.expect_value(t, init.kind, Init_Error_Kind.None)
+		result := step_evaluator(&evaluator)
+		testing.expect_value(t, result.kind, Step_Kind.Misuse)
+		testing.expect_value(t, result.misuse, Misuse_Kind.Unsupported_Opcode)
+		replayed := step_evaluator(&evaluator)
+		testing.expect_value(t, replayed.kind, Step_Kind.Misuse)
+		testing.expect_value(t, replayed.misuse, Misuse_Kind.Unsupported_Opcode)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
 @(private)
 build_program :: proc(
 	t: ^testing.T,
@@ -1315,6 +1352,9 @@ seal_mutation :: enum u8 {
 	Instruction_Operands_Count,
 	Instruction_Span_Start,
 	Instruction_Span_End,
+	Instruction_Has_Operator_Span,
+	Instruction_Operator_Span_Start,
+	Instruction_Operator_Span_End,
 	Operand_Length,
 	Operand_Kind,
 	Operand_Instruction_Value,
@@ -1345,6 +1385,12 @@ apply_seal_mutation :: proc(compiled: ^program.Program, mutation: seal_mutation)
 		compiled.instructions[1].span.start = 9
 	case .Instruction_Span_End:
 		compiled.instructions[1].span.end = 12
+	case .Instruction_Has_Operator_Span:
+		compiled.instructions[1].has_operator_span = true
+	case .Instruction_Operator_Span_Start:
+		compiled.instructions[1].operator_span.start = 9
+	case .Instruction_Operator_Span_End:
+		compiled.instructions[1].operator_span.end = 12
 	case .Operand_Length:
 		compiled.operands = compiled.operands[:2]
 	case .Operand_Kind:
@@ -1383,6 +1429,10 @@ restore_seal_mutation :: proc(compiled: ^program.Program, mutation: seal_mutatio
 		compiled.instructions[1].span.start = 10
 	case .Instruction_Span_End:
 		compiled.instructions[1].span.end = 11
+	case .Instruction_Has_Operator_Span:
+		compiled.instructions[1].has_operator_span = false
+	case .Instruction_Operator_Span_Start, .Instruction_Operator_Span_End:
+		compiled.instructions[1].operator_span = {}
 	case .Operand_Kind:
 		compiled.operands[0].kind = .Text
 	case .Operand_Instruction_Value:
@@ -1491,7 +1541,7 @@ complete_program_seal_mutation_matrix_preserves_pending_order_and_ownership :: p
 	pending_states := [3]seal_pending_state{
 		.Output, .Runtime_Error_Work, .Terminal_Cleanup_Retry,
 	}
-	mutations := [16]seal_mutation{
+	mutations := [19]seal_mutation{
 		.Has_Root_True_To_False,
 		.Root,
 		.Memory_Length,
@@ -1501,6 +1551,9 @@ complete_program_seal_mutation_matrix_preserves_pending_order_and_ownership :: p
 		.Instruction_Operands_Count,
 		.Instruction_Span_Start,
 		.Instruction_Span_End,
+		.Instruction_Has_Operator_Span,
+		.Instruction_Operator_Span_Start,
+		.Instruction_Operator_Span_End,
 		.Operand_Length,
 		.Operand_Kind,
 		.Operand_Instruction_Value,

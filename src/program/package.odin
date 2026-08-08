@@ -24,6 +24,17 @@ Opcode :: enum u8 {
 	Sequence,
 	Fork,
 	Optional,
+	Add,
+	Subtract,
+	Multiply,
+	Divide,
+	Modulo,
+	Equal,
+	Not_Equal,
+	Less,
+	Less_Equal,
+	Greater,
+	Greater_Equal,
 }
 
 Operand_Kind :: enum u8 {
@@ -52,6 +63,8 @@ Instruction :: struct {
 	operands_start: Operand_Index,
 	operands_count: Count,
 	span:           Source_Span,
+	operator_span:  Source_Span,
+	has_operator_span: bool,
 }
 
 // Exactly one payload is meaningful according to kind. Text selects a
@@ -271,6 +284,18 @@ set_root :: proc(program: ^Program, root: Instruction_Index) -> bool {
 }
 
 @(private="package")
+opcode_is_binary :: proc(opcode: Opcode) -> bool {
+	switch opcode {
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
+	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+		return true
+	case .Identity, .Field, .Parenthesized, .Sequence, .Fork, .Optional:
+		return false
+	}
+	return false
+}
+
+@(private="package")
 instruction_structure_valid :: proc(program: ^Program, instruction: Instruction, next_text: ^u64) -> bool {
 	if instruction.span.start > instruction.span.end {
 		return false
@@ -307,12 +332,26 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		expected_count = count
 	case .Parenthesized, .Optional:
 		expected_count = 1
-	case .Sequence, .Fork:
+	case .Sequence, .Fork,
+	     .Add, .Subtract, .Multiply, .Divide, .Modulo,
+	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		expected_count = 2
 	case:
 		return false
 	}
 	if count != expected_count {
+		return false
+	}
+	binary := opcode_is_binary(instruction.opcode)
+	if binary != instruction.has_operator_span {
+		return false
+	}
+	if !binary && instruction.operator_span != (Source_Span{}) {
+		return false
+	}
+	if binary && (instruction.operator_span.start >= instruction.operator_span.end ||
+	              instruction.operator_span.start < instruction.span.start ||
+	              instruction.operator_span.end > instruction.span.end) {
 		return false
 	}
 	if !instruction.has_literal &&
@@ -360,7 +399,9 @@ instruction_child_count :: proc(instruction: Instruction) -> u8 {
 		return 1 if instruction.operands_count == 2 else 0
 	case .Parenthesized, .Optional:
 		return 1
-	case .Sequence, .Fork:
+	case .Sequence, .Fork,
+	     .Add, .Subtract, .Multiply, .Divide, .Modulo,
+	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		return 2
 	}
 	return 0

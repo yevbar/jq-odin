@@ -201,6 +201,42 @@ finalization_rejects_incomplete_invalid_and_out_of_range_construction :: proc(t:
 }
 
 @(test)
+finalization_rejects_empty_binary_operator_span :: proc(t: ^testing.T) {
+	p: Program
+	testing.expect_value(t, init_program(&p, 3, 2, 0, context.allocator).kind, Init_Error_Kind.None)
+	testing.expect(t, set_operand(&p, 0, {kind = .Instruction, instruction = 1}))
+	testing.expect(t, set_operand(&p, 1, {kind = .Instruction, instruction = 2}))
+	testing.expect(t, set_instruction(&p, 0, {
+		opcode = .Add,
+		operands_count = 2,
+		span = {start = 4, end = 6},
+		operator_span = {start = 5, end = 5},
+		has_operator_span = true,
+	}))
+	testing.expect(t, set_instruction(&p, 1, {opcode = .Identity, span = {start = 0, end = 1}}))
+	testing.expect(t, set_instruction(&p, 2, {opcode = .Identity, span = {start = 1, end = 2}}))
+	testing.expect(t, set_root(&p, 0))
+	testing.expect(t, !finalize_program(&p))
+	testing.expect(t, program_is_building(&p))
+	testing.expect_value(t, destroy_program(&p), runtime.Allocator_Error.None)
+}
+
+@(test)
+finalization_rejects_operator_span_on_nonbinary_instruction :: proc(t: ^testing.T) {
+	p: Program
+	testing.expect_value(t, init_program(&p, 1, 0, 0, context.allocator).kind, Init_Error_Kind.None)
+	testing.expect(t, set_instruction(&p, 0, {
+		opcode = .Identity,
+		span = {start = 0, end = 1},
+		operator_span = {start = 0, end = 1},
+	}))
+	testing.expect(t, set_root(&p, 0))
+	testing.expect(t, !finalize_program(&p))
+	testing.expect(t, program_is_building(&p))
+	testing.expect_value(t, destroy_program(&p), runtime.Allocator_Error.None)
+}
+
+@(test)
 finalization_rejects_unknown_opcodes_and_operand_kinds :: proc(t: ^testing.T) {
 	invalid_opcode: Program
 	testing.expect_value(t, init_program(&invalid_opcode, 1, 0, 0, context.allocator).kind, Init_Error_Kind.None)
