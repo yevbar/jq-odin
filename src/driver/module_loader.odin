@@ -531,6 +531,12 @@ module_expand_source :: proc(
 	at := 0
 	for at < len(input) {
 		if input[at] == '$' && at+1 < len(input) && is_module_identifier_start(input[at+1]) {
+			parameter_end := at+1
+			for parameter_end < len(input) && is_module_identifier_byte(input[parameter_end]) do parameter_end += 1
+			if module_parameter(parameters, input[at+1:parameter_end]) >= 0 {
+				at += 1
+				continue
+			}
 			// Defer the dollar while scanning a qualified module reference.  If
 			// it is not a module reference, write it as the ordinary variable
 			// token and let the next iteration preserve the source exactly.
@@ -572,17 +578,19 @@ module_expand_source :: proc(
 		}
 		parameter_index := module_parameter(parameters, name)
 		bare_identifier := start == 0 || (input[start-1] != '$' && input[start-1] != '.' && input[start-1] != '@')
-		if bare_identifier && parameter_index >= 0 && parameter_index < arg_count {
+		if (bare_identifier || (parameter_index >= 0 && input[start-1] == '$')) && parameter_index >= 0 && parameter_index < arg_count {
 			// Arguments are filter source, not opaque text. Re-enter the
 			// expansion path so module-defined filters in an argument are
 			// resolved before the containing definition continues. Keep the
 			// current depth: the containing definition remains active on the
 			// cycle stack while the argument is expanded.
+			if !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			outcome := module_expand_source(
 				args[parameter_index], definitions, builder, stack, depth,
 				parameters, args, arg_count, allocator, namespace,
 			)
 			if outcome.kind != .None do return outcome
+			if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			continue
 		}
 		index := module_definition_at(input, start, definitions, namespace)

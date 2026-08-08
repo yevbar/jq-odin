@@ -495,6 +495,38 @@ parameterized_module_calls_require_exact_arity :: proc(t: ^testing.T) {
 }
 
 @(test)
+dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def value($x): $x;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source("value(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "( (7))")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+filter_parameter_arguments_preserve_expression_precedence :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def twice(x): x * 2;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source("twice(.a + .b)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "( (.a + .b) * 2)")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
 parameterized_module_arguments_expand_nested_definitions :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def one: 1; def id(x): x;", &definitions, context.allocator)
@@ -505,7 +537,7 @@ parameterized_module_arguments_expand_nested_definitions :: proc(t: ^testing.T) 
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("id(one)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "( ( 1))")
+	testing.expect_value(t, strings.to_string(builder), "( (( 1)))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -521,7 +553,7 @@ nested_parameterized_module_calls_preserve_caller_arguments :: proc(t: ^testing.
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("outer(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "( ( 7))")
+	testing.expect_value(t, strings.to_string(builder), "( ( ((7))))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -537,7 +569,7 @@ parameterized_module_arguments_preserve_caller_environment :: proc(t: ^testing.T
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("outer(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "( ( 7))")
+	testing.expect_value(t, strings.to_string(builder), "( ( ((7))))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -569,7 +601,7 @@ qualified_parameterized_module_arguments_preserve_caller_environment :: proc(t: 
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("m::outer(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "( ( 7))")
+	testing.expect_value(t, strings.to_string(builder), "( ( ((7))))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }

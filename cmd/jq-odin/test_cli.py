@@ -27,12 +27,16 @@ STABLE_ENV = {
 
 ISOLATED_CANDIDATE: IsolatedCandidate | None = None
 ISOLATED_CANDIDATE_PATH: pathlib.Path | None = None
+ISOLATED_RUN_CALLS = 0
+ISOLATED_POPEN_CALLS = 0
 
 
 def run_program(
     program: pathlib.Path, args: list[str], stdin: bytes = b""
 ) -> subprocess.CompletedProcess[bytes]:
+    global ISOLATED_RUN_CALLS
     if ISOLATED_CANDIDATE is not None and program == ISOLATED_CANDIDATE_PATH:
+        ISOLATED_RUN_CALLS += 1
         return ISOLATED_CANDIDATE.run(args, stdin)
     return subprocess.run(
         [str(program), *args],
@@ -43,6 +47,30 @@ def run_program(
         check=False,
         timeout=5,
     )
+
+
+def candidate_popen(
+    candidate: pathlib.Path | list[str],
+    args: list[str] | None = None,
+    **kwargs: object,
+) -> subprocess.Popen[bytes]:
+    """Launch a candidate process through the configured isolation wrapper."""
+    global ISOLATED_POPEN_CALLS
+    if args is None:
+        command = candidate
+        if not isinstance(command, list) or not command:
+            raise AssertionError("candidate_popen requires a candidate command")
+        candidate = pathlib.Path(command[0])
+        args = command[1:]
+    if ISOLATED_CANDIDATE is not None and candidate == ISOLATED_CANDIDATE_PATH:
+        ISOLATED_POPEN_CALLS += 1
+        popen = getattr(ISOLATED_CANDIDATE, "popen", None)
+        if popen is None:
+            raise AssertionError(
+                "candidate isolation wrapper must provide popen for stream checks"
+            )
+        return popen(args, **kwargs)
+    return subprocess.Popen([str(candidate), *args], **kwargs)
 
 
 def run(
@@ -149,6 +177,14 @@ def expect_module_loading(
         (root / "parameter.jq").write_text("def identity(x): x;\n", encoding="utf-8")
         arguments = ["-L", directory, "-n", 'include "parameter"; identity(7)']
         expect_oracle_case("parameterized definition", arguments)
+
+        (root / "dollar-parameter.jq").write_text(
+            "def value($x): $x;\n", encoding="utf-8"
+        )
+        expect_oracle_case(
+            "dollar-prefixed value parameter",
+            ["-L", directory, "-n", 'include "dollar-parameter"; value(7)'],
+        )
 
         (root / "nested-parameter.jq").write_text(
             "def one: 1;\ndef id(x): x;\n", encoding="utf-8"
@@ -365,7 +401,7 @@ def expect_stdout_failure(candidate: pathlib.Path) -> None:
     read_fd, write_fd = os.pipe()
     os.close(read_fd)
     try:
-        process = subprocess.Popen(
+        process = candidate_popen(
             [str(candidate), "., ."],
             stdin=subprocess.PIPE,
             stdout=write_fd,
@@ -385,7 +421,7 @@ def expect_stderr_failure(candidate: pathlib.Path) -> None:
     read_fd, write_fd = os.pipe()
     os.close(read_fd)
     try:
-        process = subprocess.Popen(
+        process = candidate_popen(
             [str(candidate), "--unsupported"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -405,18 +441,18 @@ def expect_stdin_failure(candidate: pathlib.Path) -> None:
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     directory_fd = os.open(".", flags)
     try:
-        process = subprocess.run(
-            [str(candidate), "."],
+        process = candidate_popen(
+            candidate,
+            ["."],
             stdin=directory_fd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=STABLE_ENV,
-            check=False,
-            timeout=5,
         )
+        stdout, stderr = process.communicate(timeout=5)
     finally:
         os.close(directory_fd)
-    actual = (process.returncode, process.stdout, process.stderr)
+    actual = (process.returncode, stdout, stderr)
     wanted = (2, b"", b"jq-odin: stdin I/O error\n")
     if actual != wanted:
         raise AssertionError(f"directory stdin: expected {wanted!r}, got {actual!r}")
@@ -444,7 +480,7 @@ def read_exact_with_deadline(file, size: int, timeout: float) -> bytes:
 
 
 def expect_kept_open_stdin(candidate: pathlib.Path) -> None:
-    process = subprocess.Popen(
+    process = candidate_popen(
         [str(candidate), "-c", "."],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -471,7 +507,7 @@ def expect_kept_open_module_snapshot(candidate: pathlib.Path) -> None:
     with tempfile.TemporaryDirectory() as directory:
         module = pathlib.Path(directory) / "mutable.jq"
         module.write_text("def value: 1;\n", encoding="utf-8")
-        process = subprocess.Popen(
+        process = candidate_popen(
             [str(candidate), "-L", directory, "-c", 'include "mutable"; value'],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -505,7 +541,7 @@ def expect_prompt_malformed_closers(candidate: pathlib.Path) -> int:
         [b'{"a":[', b"}"],
     ]
     for chunks in cases:
-        process = subprocess.Popen(
+        process = candidate_popen(
             [str(candidate), "-c", "."],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -536,7 +572,7 @@ def expect_prompt_malformed_closers(candidate: pathlib.Path) -> int:
 
 
 def prompt_error(candidate: pathlib.Path, chunks: list[bytes], name: str) -> None:
-    process = subprocess.Popen(
+    process = candidate_popen(
         [str(candidate), "-c", "."],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -611,7 +647,7 @@ def expect_valid_partial_splits(candidate: pathlib.Path) -> int:
     checks = 0
     for document, wanted in cases:
         for split in range(1, len(document)):
-            process = subprocess.Popen(
+            process = candidate_popen(
                 [str(candidate), "-c", "."],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -640,7 +676,7 @@ def expect_valid_partial_splits(candidate: pathlib.Path) -> int:
 
 
 def expect_invalid_prefix_backpressure(candidate: pathlib.Path) -> None:
-    process = subprocess.Popen(
+    process = candidate_popen(
         [str(candidate), "-c", "."],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -706,7 +742,7 @@ def expect_nesting_boundary(candidate: pathlib.Path) -> int:
         b"",
     )
 
-    process = subprocess.Popen(
+    process = candidate_popen(
         [str(candidate), "-c", "."],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -733,7 +769,7 @@ def expect_nesting_boundary(candidate: pathlib.Path) -> int:
             f"kept-open nesting over limit: expected {wanted!r}, got {actual!r}"
         )
 
-    keyed = subprocess.Popen(
+    keyed = candidate_popen(
         [str(candidate), "-c", "."],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -768,7 +804,7 @@ def expect_chunk_boundaries(candidate: pathlib.Path) -> int:
         ([b'{"a":"x', b'\\', b'\\', b'y"', b'}'], b'{"a":"x\\\\y"}\n'),
     ]
     for chunks, wanted in cases:
-        process = subprocess.Popen(
+        process = candidate_popen(
             [str(candidate), "-c", "."],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -785,7 +821,7 @@ def expect_chunk_boundaries(candidate: pathlib.Path) -> int:
         if actual != (0, wanted, b""):
             raise AssertionError(f"chunked {chunks!r}: got {actual!r}")
 
-    number = subprocess.Popen(
+    number = candidate_popen(
         [str(candidate), "-c", "."],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -845,7 +881,7 @@ def expect_bom_stream_state(candidate: pathlib.Path) -> int:
     ]
     chunkings.append([bytes([byte]) for byte in prefix] + [b'{"ready":true}'])
     for chunks in chunkings:
-        initial_chunked = subprocess.Popen(
+        initial_chunked = candidate_popen(
             [str(candidate), "-c", "."],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -893,7 +929,7 @@ def expect_bom_stream_state(candidate: pathlib.Path) -> int:
         ("complete BOM", [bom[:1], bom[1:2], bom[2:]]),
         ("BOM and whitespace", [bom, b" ", b"\n", b"\t", b"\r"]),
     ]:
-        incomplete = subprocess.Popen(
+        incomplete = candidate_popen(
             [str(candidate), "-c", "."],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -925,7 +961,7 @@ def expect_bom_stream_state(candidate: pathlib.Path) -> int:
         prompt_error(candidate, chunks, name)
         checks += 1
 
-    chunked = subprocess.Popen(
+    chunked = candidate_popen(
         [str(candidate), "-c", "."],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -995,7 +1031,7 @@ def expect_bounded_backpressure(candidate: pathlib.Path) -> None:
         source = pathlib.Path(directory) / "many.json"
         count = 30_000
         source.write_bytes(b"{}\n" * count)
-        process = subprocess.Popen(
+        process = candidate_popen(
             [str(candidate), "-c", ".", str(source)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -1457,6 +1493,12 @@ def main() -> int:
     differential_checks = 0
     if oracle is not None:
         differential_checks = expect_differential(candidate, oracle)
+    if ISOLATED_CANDIDATE is not None and (
+        ISOLATED_RUN_CALLS == 0 or ISOLATED_POPEN_CALLS == 0
+    ):
+        raise AssertionError(
+            "--isolate-candidate bypassed the isolation wrapper for a candidate path"
+        )
     print(
         f"CLI subprocess checks passed: {len(cases) + 7 + closer_checks + grammar_checks + valid_split_checks + depth_checks + chunk_checks + bom_checks + file_checks}; "
         f"differential checks passed: {differential_checks}"
