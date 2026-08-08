@@ -60,3 +60,34 @@ parse_next_value_rejects_bom_outside_source_boundary :: proc(t: ^testing.T) {
 	testing.expect(t, !done)
 	testing.expect_value(t, destroy_scalar_parse_error(&err), nil)
 }
+
+@(test)
+parse_next_value_owns_result_after_borrowed_source_is_released :: proc(t: ^testing.T) {
+	input_text := `{"text":"é","items":[null,2]}`
+	input_bytes := make([]byte, len(input_text))
+	copy(input_bytes, input_text)
+	parsed, next, done, err := parse_next_value(
+		transmute(string)input_bytes,
+		0,
+		context.allocator,
+	)
+	// Poison the source allocation before releasing it. A result that borrows
+	// input_bytes would serialize the marker bytes instead of the original text.
+	for &byte in input_bytes do byte = 0xA5
+	testing.expect_value(t, err.kind, Scalar_Parse_Error_Kind.None)
+	testing.expect(t, !done && next > 0)
+	defer value.destroy_value(&parsed)
+
+	serializer: Compact_Serializer
+	testing.expect(t, init_compact_serializer(&serializer, context.allocator))
+	defer destroy_compact_serializer(&serializer)
+	result: Compact_Result
+	print_error := serialize_compact(&serializer, &parsed, &result)
+	testing.expect_value(t, print_error.kind, Compact_Error_Kind.None)
+	if print_error.kind == .None {
+		printed, ok := compact_result_bytes(&result)
+		testing.expect(t, ok && printed == `{"text":"é","items":[null,2]}`)
+		testing.expect_value(t, destroy_compact_result(&result), nil)
+	}
+	delete(input_bytes)
+}
