@@ -463,6 +463,39 @@ field_present_missing_null_and_invalid_kinds_match_jq_classes :: proc(t: ^testin
 }
 
 @(test)
+field_lookup_returns_an_owned_heap_backed_container_and_leaf :: proc(t: ^testing.T) {
+	// jq's string lookup returns the stored object value (upstream/jq/src/jv_aux.c:80-87).
+	// Keep the result container alive after the evaluator is destroyed: the
+	// Field result is an independent owner, not a borrow of the input slot.
+	instructions := [2]program.Instruction{
+		{opcode = .Identity},
+		{opcode = .Field, operands_count = 2},
+	}
+	operands := [2]program.Operand{
+		instruction_operand(0),
+		text_operand(0, 3),
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "key", 1)
+
+	input := nested_heap_value(t, context.allocator, true)
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_evaluator(&evaluator)
+	testing.expect_value(t, output.kind, Step_Kind.Output)
+	owned := take_step_output(&output)
+	testing.expect_value(t, value.kind_of(&owned), value.Kind.Array)
+	expect_preserved_nested_input(t, &owned)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	// Destruction after evaluator terminal cleanup proves the output owns the
+	// heap-backed container and its string leaf independently.
+	expect_preserved_nested_input(t, &owned)
+	testing.expect_value(t, value.destroy_value(&owned), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 runtime_error_owns_exact_length_delimited_key_through_replay :: proc(t: ^testing.T) {
 	keys := [3]string{"a", "b", "a\x00b"}
 	for key in keys {

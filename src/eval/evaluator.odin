@@ -589,7 +589,13 @@ field_result :: proc(
 	switch value.kind_of(&frame.input) {
 	case .Object:
 		result, found := value.object_get_copy(&frame.input, key)
-		if found do return result, {}, true
+		if found {
+			// A retiring payload must never escape as a successful output. This
+			// is a malformed live Value/program state, not jq's missing-key
+			// null result; preserve the frame owner for terminal cleanup.
+			if value.kind_of(&result) == .Invalid do return {}, {}, false
+			return result, {}, true
+		}
 		return value.null_value(), {}, true
 	case .Null:
 		return value.null_value(), {}, true
