@@ -527,6 +527,19 @@ parameterized_module_calls_require_exact_arity :: proc(t: ^testing.T) {
 }
 
 @(test)
+module_definition_overloads_match_name_and_arity :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def f: 1; def f(x): x;", "f", "( 1)",
+	)
+	module_expansion_matches(
+		t, "def f: 1; def f(x): x;", "f(2)", "( (2))",
+	)
+	module_expansion_matches(
+		t, "def f(x): x; def f: 1;", "f(2)", "( (2))",
+	)
+}
+
+@(test)
 dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def value($x): $x;", &definitions, context.allocator)
@@ -537,7 +550,7 @@ dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("value(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "(7 |  .)")
+	testing.expect_value(t, strings.to_string(builder), "( (7))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -545,7 +558,15 @@ dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
 @(test)
 dollar_parameters_preserve_value_cardinality_and_order :: proc(t: ^testing.T) {
 	module_expansion_matches(
-		t, "def dup($x): $x, $x;", "dup(1,2)", "(1,2 |  ., .)",
+		t, "def dup($x): $x, $x;", "dup(1,2)", "( (1,2), (1,2))",
+	)
+}
+
+@(test)
+multiple_dollar_parameters_use_independent_bindings :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def pair($x;$y): [$x,$y];", "pair(1;2)",
+		"( [(1),(2)])",
 	)
 }
 
@@ -885,6 +906,23 @@ parser_scratch_cleanup_is_classified_retained_and_retried_once :: proc(t: ^testi
 		t, destroy_run_result(&result), runtime.Allocator_Error(nil),
 	)
 	testing.expect_value(t, state.failed_memory_retry_frees, 1)
+}
+
+@(test)
+prepare_filter_preserves_owner_when_cleanup_retry_fails :: proc(t: ^testing.T) {
+	state := test_allocator_state{
+		backing = context.allocator,
+		free_at = 1,
+		free_failures_remaining = 2,
+	}
+	prepared: Compiled_Filter
+	err := prepare_filter(&prepared, ".a.", test_allocator(&state))
+	testing.expect_value(t, err.kind, Run_Error_Kind.Cleanup)
+	testing.expect_value(t, err.resource_error, runtime.Allocator_Error(.Invalid_Argument))
+	testing.expect(t, prepared.owner.self == &prepared.owner)
+	testing.expect_value(t, destroy_compiled_filter(&prepared), runtime.Allocator_Error(.Invalid_Argument))
+	testing.expect_value(t, destroy_compiled_filter(&prepared), runtime.Allocator_Error(nil))
+	testing.expect_value(t, state.live, 0)
 }
 
 @(test)

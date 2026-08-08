@@ -345,9 +345,12 @@ find_module_definitions :: proc(bytes: string, definitions: ^[dynamic]module_def
 				return {kind = .Read_Failure, resource_error = parameters_error}
 			}
 			// jq resolves duplicate module definitions deterministically to the
-			// last definition, including references from earlier definitions.
+			// last definition of the same name and arity. Overloads with the same
+			// name but different arities remain callable independently.
 			for index := len(definitions^)-1; index >= 0; index -= 1 {
-				if definitions^[index].name == owned_name {
+				if definitions^[index].name == owned_name &&
+				   module_parameter_count(definitions^[index].parameters) ==
+				   module_parameter_count(owned_parameters) {
 					definitions^[index].active = false
 					break
 				}
@@ -394,18 +397,35 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 		qualified = true
 		qualified_end = segment_end
 	}
+	// Resolve a call by its syntactic arity. This is required before selecting
+	// a definition because jq permits overloads such as `f` and `f(x)`.
+	call_at := qualified_end
+	for call_at < len(input) && (input[call_at] == ' ' || input[call_at] == '\t' || input[call_at] == '\r' || input[call_at] == '\n') do call_at += 1
+	wanted_arity := 0
+	if call_at < len(input) && input[call_at] == '(' {
+		call_args: [16]string
+		_, parsed_arity, call_ok := module_call_arguments(input, call_at, &call_args)
+		wanted_arity = parsed_arity if call_ok else -1
+	}
+	name_match := false
 	if qualified && dollar_qualified {
 		// `$alias::name` uses the same canonical namespace as `alias::name`.
 		// A plain `$variable` remains a normal jq variable and is never a
 		// module definition.
 		for index := len(definitions)-1; index >= 0; index -= 1 {
-			if definitions[index].active && definitions[index].name == input[at:qualified_end] do return index
+			if definitions[index].active && definitions[index].name == input[at:qualified_end] {
+				name_match = true
+				if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
+			}
 		}
 		return -1
 	}
 	if qualified {
 		for index := len(definitions)-1; index >= 0; index -= 1 {
-			if definitions[index].active && definitions[index].name == input[at:qualified_end] do return index
+			if definitions[index].active && definitions[index].name == input[at:qualified_end] {
+				name_match = true
+				if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
+			}
 		}
 		if len(namespace) > 0 {
 			qualified_length := qualified_end-at
@@ -415,7 +435,8 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 					definition_name[:len(namespace)] == namespace &&
 					definition_name[len(namespace):len(namespace)+2] == "::" &&
 					definition_name[len(namespace)+2:] == input[at:qualified_end] && definitions[index].active {
-					return index
+					name_match = true
+					if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
 				}
 			}
 		}
@@ -437,14 +458,18 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 				definition_name[:separator] == namespace &&
 				definition_name[separator:separator+2] == "::" &&
 				definition_name[separator+2:] == input[at:name_end] && definitions[index].active {
-				return index
+				name_match = true
+				if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
 			}
 		}
 	}
 	for index := len(definitions)-1; index >= 0; index -= 1 {
-		if definitions[index].active && definitions[index].name == input[at:name_end] do return index
+		if definitions[index].active && definitions[index].name == input[at:name_end] {
+			name_match = true
+			if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
+		}
 	}
-	return -1
+	return -2 if name_match else -1
 }
 
 module_trim :: proc(text: string) -> string {
@@ -630,10 +655,11 @@ module_expand_source :: proc(
 		if parameter_index >= 0 && parameter_index < arg_count &&
 			((!value_parameter && bare_identifier) || (value_parameter && input[start-1] == '$')) {
 			if value_parameter {
-				// jq value parameters bind each output of the argument before
-				// evaluating the body.  The caller below supplies that binding's
-				// input stream; references therefore become identity filters here.
-				if !module_write(builder, ".") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+				// The current integrated syntax/evaluator pipeline has no variable
+				// binding node. Lower each value reference as a parenthesized filter
+				// argument, preserving its stream and precedence without inserting
+				// a pipe between independent parameters.
+				if (!module_write(builder, "(") || !module_write(builder, args[parameter_index]) || !module_write(builder, ")")) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 				continue
 			}
 			// Arguments are filter source, not opaque text. Re-enter the
@@ -651,6 +677,7 @@ module_expand_source :: proc(
 			continue
 		}
 		index := module_definition_at(input, start, definitions, namespace)
+		if index == -2 do return {kind = .Unsupported_Syntax}
 		if index < 0 {
 			if !module_write(builder, input[start:at]) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			continue
@@ -725,23 +752,6 @@ module_expand_source :: proc(
 		if !module_write(builder, "(") {
 			for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 			return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
-		}
-		// Lower jq's value parameters to the stream-binding form supported by
-		// the current driver pipeline.  This preserves cardinality and order:
-		// `dup(1,2)` becomes `(1,2) | ., .`, not `(1,2), (1,2)`.
-		value_parameter_count := 0
-		for value_index := 0; value_index < call_count; value_index += 1 {
-			if module_parameter_ordinal_is_value(definition.parameters, value_index) {
-				if value_parameter_count > 0 && !module_write(builder, " | ") {
-					for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
-					return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
-				}
-				if !module_write(builder, expanded_args[value_index]) || !module_write(builder, " | ") {
-					for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
-					return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
-				}
-				value_parameter_count += 1
-			}
 		}
 		outcome := module_expand_source(
 			definition.body, definitions, builder, stack, depth+1,

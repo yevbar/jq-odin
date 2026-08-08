@@ -127,7 +127,12 @@ prepare_filter :: proc(
 	err := run_with_options(&prepared.owner, filter, "", allocator, compile_options)
 	if err.kind != .None {
 		prepared.owner.preserve_compilation = false
-		_ = destroy_run_result(&prepared.owner)
+		if cleanup_error := destroy_run_result(&prepared.owner); cleanup_error != nil {
+			// The owner remains address-stable and retryable after a failed
+			// cleanup. Report that failure instead of returning the preparation
+			// error and losing the state needed by the caller to retry.
+			return prepared.owner.error
+		}
 		return err
 	}
 	return {}
