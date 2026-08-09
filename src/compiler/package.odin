@@ -646,7 +646,6 @@ lower_filter :: proc(
 	if has_unlowered_node {
 		return Lower_Outcome{kind = .Invalid_AST}
 	}
-
 	init_error := program.init_program(
 		output,
 		program.Count(len(nodes)),

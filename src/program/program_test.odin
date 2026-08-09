@@ -268,6 +268,29 @@ finalization_rejects_unknown_opcodes_and_operand_kinds :: proc(t: ^testing.T) {
 }
 
 @(test)
+opcode_discriminants_preserve_serialized_values :: proc(t: ^testing.T) {
+	// Opcode is a u8 wire/storage contract. In particular, adding Negate must
+	// not renumber the binary opcodes already consumed by downstream packages.
+	testing.expect_value(t, u8(Opcode.Identity), u8(0))
+	testing.expect_value(t, u8(Opcode.Field), u8(1))
+	testing.expect_value(t, u8(Opcode.Parenthesized), u8(2))
+	testing.expect_value(t, u8(Opcode.Sequence), u8(3))
+	testing.expect_value(t, u8(Opcode.Fork), u8(4))
+	testing.expect_value(t, u8(Opcode.Optional), u8(5))
+	testing.expect_value(t, u8(Opcode.Add), u8(6))
+	testing.expect_value(t, u8(Opcode.Subtract), u8(7))
+	testing.expect_value(t, u8(Opcode.Multiply), u8(8))
+	testing.expect_value(t, u8(Opcode.Divide), u8(9))
+	testing.expect_value(t, u8(Opcode.Modulo), u8(10))
+	testing.expect_value(t, u8(Opcode.Equal), u8(11))
+	testing.expect_value(t, u8(Opcode.Not_Equal), u8(12))
+	testing.expect_value(t, u8(Opcode.Less), u8(13))
+	testing.expect_value(t, u8(Opcode.Less_Equal), u8(14))
+	testing.expect_value(t, u8(Opcode.Greater), u8(15))
+	testing.expect_value(t, u8(Opcode.Greater_Equal), u8(16))
+}
+
+@(test)
 literal_payloads_are_sealed_with_their_text_ranges :: proc(t: ^testing.T) {
 	valid: Program
 	testing.expect_value(t, init_program(&valid, 1, 1, 2, context.allocator).kind, Init_Error_Kind.None)

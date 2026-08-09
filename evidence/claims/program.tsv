@@ -84,3 +84,4 @@ program-082	sequential composition	block_join preserves order by appending the c
 program-083	generator branching	gen_both emits FORK, the left block, JUMP, and the right block, with explicit targets delimiting branch control.	upstream/jq/src/compile.c	601-606	codex-program			proposed
 program-084	core opcodes	The opcode table distinguishes INDEX, INDEX_OPT, FORK, JUMP, and BACKTRACK.	upstream/jq/src/opcode_list.h	11-20	codex-program			proposed
 program-085	bytecode widths	Upstream assigns fixed base lengths in 16-bit units and computes dynamic call length from that explicit unit scheme.	upstream/jq/src/bytecode.c	8-20,40-45	codex-program			proposed
+program-086	unary negation	The jq grammar lowers unary minus as a recursive `'-' Term` production, emitting the operand followed by an internal `_negate` call.	upstream/jq/src/parser.y	652-654	codex-program			proposed
