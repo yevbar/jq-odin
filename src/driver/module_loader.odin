@@ -4,6 +4,8 @@ import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import json "jq:json"
+import value "jq:value"
 
 Module_Error_Kind :: enum u8 {
 	None,
@@ -317,7 +319,33 @@ module_data_first_element_literal :: proc(data: string) -> string {
 	return data[start:i]
 }
 
-module_data_field_literal :: proc(source, field: string) -> string {
+module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime.Allocator) -> (key_end: int, key_matches: bool) {
+	if at < 0 || at >= len(data) || data[at] != '"' do return at, false
+	key_end = at + 1
+	escaped := false
+	for key_end < len(data) {
+		byte := data[key_end]
+		key_end += 1
+		if escaped {
+			escaped = false
+			continue
+		}
+		if byte == '\\' {
+			escaped = true
+			continue
+		}
+		if byte == '"' do break
+	}
+	if key_end > len(data) || data[key_end-1] != '"' do return key_end, false
+	decoded, parse_error := json.parse_value(data[at:key_end], allocator)
+	if parse_error.kind != .None do return key_end, false
+	text, text_ok := value.string_borrowed(&decoded)
+	key_matches = text_ok && text == field
+	_ = value.destroy_value(&decoded)
+	return key_end, key_matches
+}
+
+module_data_field_literal :: proc(source, field: string, allocator: runtime.Allocator) -> string {
 	data := module_data_first_element_literal(source)
 	needle := fmt.tprintf("\"%s\"", field)
 	depth := 0
@@ -330,8 +358,12 @@ module_data_field_literal :: proc(source, field: string) -> string {
 			continue
 		}
 		if byte == '"' {
-			if depth == 1 && data[at:at+len(needle)] == needle {
+			key_end, decoded_key_matches := module_data_key_matches(data, field, at, allocator)
+			if depth == 1 &&
+			   (data[at:at+len(needle)] == needle ||
+			    decoded_key_matches) {
 				i := at + len(needle)
+				if decoded_key_matches do i = key_end
 				module_space(data, &i)
 				if i < len(data) && data[i] == ':' {
 					i += 1
@@ -432,7 +464,9 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 					field_start := at+1
 					field_end := field_start
 					for field_end < len(input) && is_module_identifier_byte(input[field_end]) do field_end += 1
-					literal := module_data_field_literal(imported.data, input[field_start:field_end])
+					literal := module_data_field_literal(
+						imported.data, input[field_start:field_end], allocator,
+					)
 					if !module_write(builder, literal) do return false
 					at = field_end
 				} else if module_trim(input) == module_trim(input[start:at]) {
@@ -512,6 +546,13 @@ module_search_paths :: proc(search: string, paths: []string, allocator: runtime.
 		resolved_search, err = strings.concatenate([]string{paths[0], "/", search}, allocator)
 		if err != nil { delete(result); return nil, err }
 		resolved_owned = true
+	} else if len(search) > 0 {
+		// Search metadata is borrowed from the filter source. Even without a
+		// -L path (or for an absolute metadata path), the returned dynamic array
+		// must own its first entry so destruction never frees caller storage.
+		resolved_search, err = strings.clone(search, allocator)
+		if err != nil { delete(result); return nil, err }
+		resolved_owned = true
 	}
 	if len(search) > 0 {
 		_, err = append(&result, resolved_search)
@@ -531,7 +572,7 @@ module_search_paths :: proc(search: string, paths: []string, allocator: runtime.
 }
 
 destroy_module_search_paths :: proc(paths: [dynamic]string, search: string, allocator: runtime.Allocator) {
-	if len(paths) > 0 && len(search) > 0 && search[0] != '/' do delete(paths[0], allocator)
+	if len(paths) > 0 && len(search) > 0 do delete(paths[0], allocator)
 	delete(paths)
 }
 

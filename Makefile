@@ -12,7 +12,8 @@ PACKAGE_DIRS := \
 	src/program \
 	src/compiler \
 	src/eval \
-	src/driver
+	src/driver \
+	cmd/jq-odin
 TEST_PACKAGE_DIRS := \
 	src/value/external_boundary_test \
 	src/eval/external_layout_test

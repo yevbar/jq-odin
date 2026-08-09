@@ -180,6 +180,9 @@ def expect_module_loading(
         (root / "config-scalar.json").write_text('2\n', encoding="utf-8")
         (root / "config-stream.json").write_text("1\n2\n", encoding="utf-8")
         (root / "config-two.json").write_text('{}\n{"x":2}\n', encoding="utf-8")
+        (root / "config-escaped-key.json").write_text(
+            '{"\\u0078":7}\n', encoding="utf-8"
+        )
         # A dollar binding is a JSON data import, not a code-module namespace.
         # jq exposes the loaded JSON stream as an array.  These cases stay
         # oracle-backed so the driver cannot silently treat the import as a
@@ -216,6 +219,15 @@ def expect_module_loading(
         expect_oracle_case(
             "indexed JSON data import field does not scan later values",
             ["-L", directory, "-n", 'import "config-two" as $c; $c[0].x'],
+        )
+        expect_oracle_case(
+            "indexed JSON data import decodes escaped object keys",
+            [
+                "-L",
+                directory,
+                "-n",
+                'import "config-escaped-key" as $c; $c[0].x',
+            ],
         )
         expect_oracle_case(
             "caller input remains separate from JSON data import",
@@ -258,6 +270,10 @@ def expect_module_loading(
             expect_oracle_case(
                 "quoted include search metadata",
                 ["-L", directory, "-n", 'include "foo" {"search":"./lib"}; answer'],
+            )
+            expect_oracle_case(
+                "relative include search metadata without -L",
+                ["-n", 'include "foo" {"search":"./lib"}; answer'],
             )
         finally:
             os.chdir(previous_cwd)

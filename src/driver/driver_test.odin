@@ -451,6 +451,19 @@ module_search_metadata_uses_and_releases_custom_allocator :: proc(t: ^testing.T)
 	testing.expect_value(t, len(failed_paths), 0)
 	testing.expect_value(t, failed_error, runtime.Allocator_Error(.Out_Of_Memory))
 	testing.expect_value(t, failing_state.live, 0)
+
+	// With no -L paths, the relative metadata string still originates in the
+	// caller's filter.  The loader must clone it before the destruction helper
+	// releases the returned search-path array.
+	no_path_state := test_allocator_state{backing = context.allocator}
+	no_path, no_path_error := module_search_paths(
+		"./relative", []string{}, test_allocator(&no_path_state),
+	)
+	testing.expect_value(t, no_path_error, runtime.Allocator_Error(nil))
+	testing.expect_value(t, len(no_path), 1)
+	testing.expect_value(t, no_path[0], "./relative")
+	destroy_module_search_paths(no_path, "./relative", test_allocator(&no_path_state))
+	testing.expect_value(t, no_path_state.live, 0)
 }
 
 @(test)
