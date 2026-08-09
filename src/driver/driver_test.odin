@@ -526,11 +526,13 @@ module_data_reference_index_expands_object_literal :: proc(t: ^testing.T) {
 	append_data := false
 	scalar_add := false
 	replace_input := false
+	scalar_field_error := false
 	ok := module_expand_data_references(
 		"$c[0]", imports, &builder, &data_input, &data_owned,
-		&append_data, &scalar_add, &replace_input, context.allocator,
+		&append_data, &scalar_add, &replace_input, &scalar_field_error, context.allocator,
 	)
 	testing.expect(t, ok)
+	testing.expect(t, !scalar_field_error)
 	testing.expect_value(t, strings.to_string(builder), `{"x":1}`)
 	strings.builder_destroy(&builder)
 	destroy_module_data_imports(&imports, context.allocator)

@@ -50,6 +50,11 @@ Module_Outcome :: struct {
 	data_after_caller: bool,
 	data_scalar_add: bool,
 	data_replace_input: bool,
+	// A postfix field applied to a scalar data import is deliberately retained
+	// in the generated filter so evaluation can produce jq's type diagnostic.
+	// Keep this bit separate from ordinary field errors; the CLI formats this
+	// import-originated error with jq's input-kind wording.
+	data_scalar_field_error: bool,
 	runtime_subtraction: bool,
 	runtime_factorial: bool,
 }
@@ -465,7 +470,7 @@ module_binder_position :: proc(input, alias: string) -> int {
 	return -1
 }
 
-module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, data_replace_input: ^bool, allocator: runtime.Allocator) -> bool {
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, data_replace_input: ^bool, data_scalar_field_error: ^bool, allocator: runtime.Allocator) -> bool {
 	// A data import is an owned constant binding.  Inline its complete JSON
 	// array literal into the surrounding filter so it cannot become a second
 	// caller input stream.  The ordinary compiler then owns cardinality/order
@@ -538,6 +543,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 						if !module_write(builder, literal) do return false
 						if !module_write(builder, " | .") do return false
 						if !module_write(builder, input[field_start:field_end]) do return false
+						data_scalar_field_error^ = true
 					} else if !module_write(builder, literal) do return false
 					at = field_end
 				} else if module_trim(input) == module_trim(input[start:at]) {
@@ -1912,7 +1918,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	append_data := false
 	data_scalar_add := false
 	data_replace_input := false
-	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, &data_scalar_add, &data_replace_input, allocator) {
+	data_scalar_field_error := false
+	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, &data_scalar_add, &data_replace_input, &data_scalar_field_error, allocator) {
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1957,6 +1964,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 		data_after_caller = append_data,
 		data_scalar_add = data_scalar_add,
 		data_replace_input = data_replace_input,
+		data_scalar_field_error = data_scalar_field_error,
 		runtime_subtraction = runtime_subtraction,
 		runtime_factorial = runtime_factorial,
 	}

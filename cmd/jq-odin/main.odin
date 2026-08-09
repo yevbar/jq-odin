@@ -200,6 +200,18 @@ write_driver_error :: proc(err: driver.Run_Error) -> bool {
 		ok = write_all(os.stderr, ") and number (1) cannot be subtracted\n") && ok
 		return ok
 	}
+	if err.kind == .Runtime && err.runtime_module_scalar_field {
+		// Data-module postfixes are evaluated against an imported JSON scalar.
+		// jq reports this as an input-independent type error (and uses the
+		// `<unknown>` location), unlike the older generic runtime diagnostic for
+		// ordinary filter field access.
+		ok := write_all(os.stderr, "jq: error (at <unknown>): Cannot index ")
+		ok = write_all(os.stderr, json_kind_name(err.runtime_input_kind)) && ok
+		ok = write_all(os.stderr, " with string \"") && ok
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\"\n") && ok
+		return ok
+	}
 	ok := write_all(os.stderr, "jq-odin: ")
 	ok = write_all(os.stderr, kind_name(err.kind)) && ok
 	if err.kind == .Module {

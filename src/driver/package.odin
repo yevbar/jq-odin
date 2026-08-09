@@ -74,6 +74,10 @@ Run_Error :: struct {
 	runtime_input_kind:   value.Kind,
 	runtime_span:         program.Source_Span,
 	runtime_key:          string,
+	// True only for a scalar JSON data-import postfix field. The CLI uses this
+	// to preserve jq's `Cannot index number with string` wording while the
+	// evaluator remains responsible for ordinary runtime diagnostics.
+	runtime_module_scalar_field: bool,
 	runtime_input_path:   string,
 	runtime_input_line:   int,
 	serialization_kind:  json.Compact_Error_Kind,
@@ -121,6 +125,7 @@ Run_Result :: struct {
 	module_data_append: bool,
 	module_data_scalar_add: bool,
 	module_data_replace_input: bool,
+	module_data_scalar_field_error: bool,
 	module_runtime_subtraction: bool,
 	module_runtime_factorial: bool,
 }
@@ -584,6 +589,7 @@ run_with_options :: proc(
 		result.module_data_append = options.compiled_filter.owner.module_data_append
 		result.module_data_scalar_add = options.compiled_filter.owner.module_data_scalar_add
 		result.module_data_replace_input = options.compiled_filter.owner.module_data_replace_input
+		result.module_data_scalar_field_error = options.compiled_filter.owner.module_data_scalar_field_error
 		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
 		result.module_runtime_factorial = options.compiled_filter.owner.module_runtime_factorial
 		result.module_input_memory = options.compiled_filter.owner.module_input_memory
@@ -603,6 +609,7 @@ run_with_options :: proc(
 			result.module_data_append = module_outcome.data_after_caller
 			result.module_data_scalar_add = module_outcome.data_scalar_add
 			result.module_data_replace_input = module_outcome.data_replace_input
+			result.module_data_scalar_field_error = module_outcome.data_scalar_field_error
 			result.module_runtime_subtraction = module_outcome.runtime_subtraction
 			result.module_runtime_factorial = module_outcome.runtime_factorial
 			result.module_input_memory = module_outcome.data_input
@@ -868,6 +875,7 @@ run_with_options :: proc(
 					runtime_input_kind = step.runtime_error.input_kind,
 					runtime_span = step.runtime_error.span,
 					runtime_key = key,
+					runtime_module_scalar_field = result.module_data_scalar_field_error,
 				})
 			case .Resource_Error:
 				return allocation_error(result, step.resource_error)
