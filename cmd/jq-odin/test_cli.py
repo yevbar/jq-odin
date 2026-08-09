@@ -272,11 +272,11 @@ def expect_module_loading(
             b"7\n",
         )
         actual = run(candidate, ["-L", directory, "-n", 'import "answer" as $a; $a::answer'])
-        data_missing = (3, b"", b"jq-odin: module error: module file not found\n")
-        if (actual.returncode, actual.stdout, actual.stderr) != data_missing:
+        dollar_code_wanted = (0, b"42\n", b"")
+        if (actual.returncode, actual.stdout, actual.stderr) != dollar_code_wanted:
             raise AssertionError(
-                f"dollar code import must not fall back to .jq: expected "
-                f"{data_missing!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}"
+                f"dollar-qualified code import: expected "
+                f"{dollar_code_wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}"
             )
         actual = run(candidate, ["-L", directory, "-n", 'include "missing"; .'])
         missing = (3, b"", b"jq-odin: module error: module file not found\n")

@@ -382,29 +382,17 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 	trimmed := module_trim(input)
 	for imported in imports {
 		if trimmed == fmt.tprintf("., $%s", imported.alias) {
-			owned, clone_error := strings.clone(imported.data, allocator)
-			if clone_error != nil do return false
-			if !module_write(builder, ".") { delete(owned, allocator); return false }
-			data_input^ = owned; data_input_owned^ = true; append_data^ = true
-			return true
+			return module_write(builder, ".,") && module_write(builder, imported.data)
 		}
 		if trimmed == fmt.tprintf("$%s, .", imported.alias) {
-			owned, clone_error := strings.clone(imported.data, allocator)
-			if clone_error != nil do return false
-			if !module_write(builder, ".") { delete(owned, allocator); return false }
-			data_input^ = owned; data_input_owned^ = true
-			return true
+			return module_write(builder, imported.data) && module_write(builder, ",.")
 		}
 		for second in imports {
 			if imported.alias == second.alias do continue
 			if trimmed != fmt.tprintf("$%s, $%s", imported.alias, second.alias) do continue
-			owned, clone_error := strings.concatenate(
-				[]string{imported.data, "\n", second.data}, allocator,
-			)
-			if clone_error != nil do return false
-			if !module_write(builder, ".") { delete(owned, allocator); return false }
-			data_input^ = owned; data_input_owned^ = true
-			return true
+			return module_write(builder, imported.data) &&
+				module_write(builder, ",") &&
+				module_write(builder, second.data)
 		}
 	}
 	at := 0
@@ -454,12 +442,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 					if len(literal) == 0 || !module_write(builder, literal) do return false
 				}
 			} else if module_trim(input) == module_trim(input[start:at]) {
-				if !module_write(builder, ".") do return false
-				owned, clone_error := strings.clone(imported.data, allocator)
-				if clone_error != nil do return false
-				data_input^ = owned
-				data_input_owned^ = true
-				data_replace_input^ = true
+				if !module_write(builder, imported.data) do return false
 			} else {
 				if !module_write(builder, imported.data) do return false
 			}
@@ -1737,6 +1720,25 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
 			if module_import_uses_data_binding(filter, i) {
+				// A `$` alias normally denotes a JSON data binding, but jq also
+				// permits a code module to use that qualified spelling. Prefer an
+				// actual `.jq` module when present; otherwise fall back to `.json`.
+				code_probe, code_probe_outcome := read_module(name, search_paths[:], allocator)
+				if code_probe_outcome.kind == .None {
+					delete(code_probe, allocator)
+					outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
+					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+					if outcome.kind != .None {
+						destroy_module_definitions(&definitions)
+						return nil, outcome
+					}
+					has_module = true; i = next; continue
+				}
+				if code_probe_outcome.kind != .Not_Found {
+					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+					destroy_module_definitions(&definitions)
+					return nil, code_probe_outcome
+				}
 				data, data_outcome := read_data_module(name, search_paths[:], allocator)
 				if data_outcome.kind != .None {
 					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)

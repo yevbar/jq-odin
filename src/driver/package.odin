@@ -749,8 +749,16 @@ run_with_options :: proc(
 			)
 			if data_error.kind != .None do return finish(result, {kind = .Misuse})
 			result.module_scalar_data = data_value
-			sum, sum_ok := value.number_add(&result.input, &result.module_scalar_data)
-			if !sum_ok {
+			sum, add_error := value.value_add(
+				&result.input,
+				&result.module_scalar_data,
+				result.allocator,
+			)
+			if value.value_add_error_kind(&add_error) != .None {
+				cleanup_error := value.destroy_value_add_error(&add_error)
+				if cleanup_error != nil {
+					return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+				}
 				return finish(result, {kind = .Misuse})
 			}
 			result.current_output = sum
