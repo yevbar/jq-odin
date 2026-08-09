@@ -156,7 +156,8 @@ def expect_module_loading(
         )
         expect_oracle_case(
             "terminating self-recursive module definition",
-            ["-L", directory, "-n", 'include "countdown"; countdown(3)'],
+            ["-L", directory, 'include "countdown"; countdown(.)'],
+            b"3\n",
         )
         (root / "factorial.jq").write_text(
             "def fact(x): if x == 0 then 1 else x * fact(x - 1) end;\n",
@@ -353,12 +354,11 @@ def expect_module_loading(
         # References are expanded recursively, while quoted semicolons remain
         # part of a definition body instead of terminating the definition.
         (root / "references.jq").write_text("def helper: 42;\ndef answer: reduce .[] as $x (0; . + $x);\ndef text: \"a;b\";\n", encoding="utf-8")
-        actual = run(candidate, ["-L", directory, 'include "references"; answer'], b"[1,2,3]\n")
-        # The evaluator does not yet implement reduce; the absence of a module
-        # error proves the complete nested body reached the ordinary pipeline.
-        wanted = (3, b"", b"jq-odin: filter parse error\n")
-        if (actual.returncode, actual.stdout, actual.stderr) != wanted:
-            raise AssertionError(f"recursive definition expansion: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
+        expect_oracle_case(
+            "recursive definition expansion",
+            ["-L", directory, 'include "references"; answer'],
+            b"[1,2,3]\n",
+        )
         actual = run(candidate, ["-L", directory, "-n", 'include "references"; text'])
         wanted = (3, b"", b"jq-odin: filter compile error\n")
         if (actual.returncode, actual.stdout, actual.stderr) != wanted:

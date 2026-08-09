@@ -462,12 +462,25 @@ module_definition_requires_identifier_start :: proc(t: ^testing.T) {
 
 @(test)
 module_import_accepts_dollar_namespace_alias :: proc(t: ^testing.T) {
-	name, alias, next, ok, unsupported := parse_module_import(
+	name, alias, search, next, ok, unsupported := parse_module_import(
 		"import \"answer\" as $a;", 0,
 	)
 	testing.expect_value(t, name, "answer")
 	testing.expect_value(t, alias, "a")
+	testing.expect_value(t, search, "")
 	testing.expect_value(t, next, len("import \"answer\" as $a;"))
+	testing.expect_value(t, ok, true)
+	testing.expect_value(t, unsupported, false)
+}
+
+@(test)
+module_include_accepts_search_metadata :: proc(t: ^testing.T) {
+	name, search, next, ok, unsupported := parse_module_include(
+		"include \"foo\" {search:\"./lib\"};", 0,
+	)
+	testing.expect_value(t, name, "foo")
+	testing.expect_value(t, search, "./lib")
+	testing.expect_value(t, next, len("include \"foo\" {search:\"./lib\"};"))
 	testing.expect_value(t, ok, true)
 	testing.expect_value(t, unsupported, false)
 }

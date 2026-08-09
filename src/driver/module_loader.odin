@@ -57,28 +57,9 @@ module_word :: proc(bytes: string, at: int, word: string) -> bool {
 		byte >= '0' && byte <= '9' || byte == '_')
 }
 
-parse_module_include :: proc(bytes: string, at: int) -> (name: string, next: int, ok: bool, unsupported: bool) {
-	if !module_word(bytes, at, "include") do return "", at, false, false
+parse_module_include :: proc(bytes: string, at: int) -> (name: string, search: string, next: int, ok: bool, unsupported: bool) {
+	if !module_word(bytes, at, "include") do return "", "", at, false, false
 	i := at+len("include")
-	module_space(bytes, &i)
-	if i >= len(bytes) || bytes[i] != '"' do return "", at, false, true
-	start := i+1
-	i = start
-	for i < len(bytes) && bytes[i] != '"' {
-		if bytes[i] == '\\' do return "", at, false, true
-		i += 1
-	}
-	if i >= len(bytes) do return "", at, false, true
-	name = bytes[start:i]
-	i += 1
-	module_space(bytes, &i)
-	if i >= len(bytes) || bytes[i] != ';' do return "", at, false, true
-	return name, i+1, true, false
-}
-
-parse_module_import :: proc(bytes: string, at: int) -> (name, alias: string, next: int, ok, unsupported: bool) {
-	if !module_word(bytes, at, "import") do return "", "", at, false, false
-	i := at+len("import")
 	module_space(bytes, &i)
 	if i >= len(bytes) || bytes[i] != '"' do return "", "", at, false, true
 	start := i+1
@@ -91,7 +72,64 @@ parse_module_import :: proc(bytes: string, at: int) -> (name, alias: string, nex
 	name = bytes[start:i]
 	i += 1
 	module_space(bytes, &i)
-	if !module_word(bytes, i, "as") do return "", "", at, false, true
+	search = module_metadata_search(bytes, &i)
+	module_space(bytes, &i)
+	if i >= len(bytes) || bytes[i] != ';' do return "", "", at, false, true
+	return name, search, i+1, true, false
+}
+
+// jq permits a constant metadata object after an include/import path. The
+// loader currently consumes the string-valued `search` member; other metadata
+// remains accepted and has no effect on the ordinary jq filter expansion.
+module_metadata_search :: proc(bytes: string, at: ^int) -> string {
+	start := at^
+	if start >= len(bytes) || bytes[start] != '{' do return ""
+	end := start
+	if !skip_module_object(bytes, &end) do return ""
+	i := start+1
+	for i+7 < end {
+		if bytes[i:i+6] == "search" {
+			j := i+6
+			module_space(bytes, &j)
+			if j < end-1 && bytes[j] == ':' {
+				j += 1
+				module_space(bytes, &j)
+				if j < end-1 && bytes[j] == '"' {
+					value_start := j+1
+					j = value_start
+					for j < end-1 && bytes[j] != '"' {
+						if bytes[j] == '\\' do return ""
+						j += 1
+					}
+					if j < end-1 {
+						at^ = end
+						return bytes[value_start:j]
+					}
+				}
+			}
+	}
+		i += 1
+	}
+	at^ = end
+	return ""
+}
+
+parse_module_import :: proc(bytes: string, at: int) -> (name, alias, search: string, next: int, ok, unsupported: bool) {
+	if !module_word(bytes, at, "import") do return "", "", "", at, false, false
+	i := at+len("import")
+	module_space(bytes, &i)
+	if i >= len(bytes) || bytes[i] != '"' do return "", "", "", at, false, true
+	start := i+1
+	i = start
+	for i < len(bytes) && bytes[i] != '"' {
+		if bytes[i] == '\\' do return "", "", "", at, false, true
+		i += 1
+	}
+	if i >= len(bytes) do return "", "", "", at, false, true
+	name = bytes[start:i]
+	i += 1
+	module_space(bytes, &i)
+	if !module_word(bytes, i, "as") do return "", "", "", at, false, true
 	i += 2
 	module_space(bytes, &i)
 	alias_start := i
@@ -99,13 +137,15 @@ parse_module_import :: proc(bytes: string, at: int) -> (name, alias: string, nex
 	// boundary.  The dollar is syntax, not part of the namespace used for
 	// qualified definitions, so retain the canonical alias without it.
 	if i < len(bytes) && bytes[i] == '$' do i += 1
-	if i >= len(bytes) || !is_module_identifier_start(bytes[i]) do return "", "", at, false, true
+	if i >= len(bytes) || !is_module_identifier_start(bytes[i]) do return "", "", "", at, false, true
 	alias_start = i
 	for i < len(bytes) && is_module_identifier_byte(bytes[i]) do i += 1
 	alias = bytes[alias_start:i]
 	module_space(bytes, &i)
-	if i >= len(bytes) || bytes[i] != ';' do return "", "", at, false, true
-	return name, alias, i+1, true, false
+	search = module_metadata_search(bytes, &i)
+	module_space(bytes, &i)
+	if i >= len(bytes) || bytes[i] != ';' do return "", "", "", at, false, true
+	return name, alias, search, i+1, true, false
 }
 
 skip_module_object :: proc(bytes: string, at: ^int) -> bool {
@@ -141,6 +181,50 @@ read_module :: proc(name: string, paths: []string, allocator: runtime.Allocator)
 	return nil, {kind = .Not_Found}
 }
 
+module_search_paths :: proc(search: string, paths: []string, allocator: runtime.Allocator) -> ([]string, runtime.Allocator_Error) {
+	if len(search) == 0 do return paths, nil
+	result, err := make([dynamic]string, 0, len(paths)+1, allocator)
+	if err != nil do return nil, err
+	_, err = append(&result, search)
+	if err == nil {
+		for path in paths {
+			_, err = append(&result, path)
+			if err != nil do break
+		}
+	}
+	if err != nil { delete(result); return nil, err }
+	return result[:], nil
+}
+
+module_definition_end :: proc(bytes: string, start: int) -> int {
+	i := start+len("def")
+	in_string := false
+	escaped := false
+	comment := false
+	parens, brackets, braces := 0, 0, 0
+	for i < len(bytes) {
+		byte := bytes[i]
+		i += 1
+		if comment { if byte == '\n' do comment = false; continue }
+		if in_string {
+			if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+			continue
+		}
+		if byte == '"' { in_string = true; continue }
+		if byte == '#' { comment = true; continue }
+		switch byte {
+		case '(' : parens += 1
+		case ')' : if parens == 0 do return -1; parens -= 1
+		case '[' : brackets += 1
+		case ']' : if brackets == 0 do return -1; brackets -= 1
+		case '{' : braces += 1
+		case '}' : if braces == 0 do return -1; braces -= 1
+		case ';' : if parens == 0 && brackets == 0 && braces == 0 do return i
+		}
+	}
+	return -1
+}
+
 validate_module :: proc(bytes: string, paths: []string, allocator: runtime.Allocator, depth: int) -> Module_Outcome {
 	if depth >= module_loader_depth do return {kind = .Depth_Overflow}
 	i := 0
@@ -148,7 +232,7 @@ validate_module :: proc(bytes: string, paths: []string, allocator: runtime.Alloc
 		module_space(bytes, &i)
 		if i >= len(bytes) do return {}
 		if module_word(bytes, i, "import") {
-			name, _, next, imported, import_unsupported := parse_module_import(bytes, i)
+			name, _, _, next, imported, import_unsupported := parse_module_import(bytes, i)
 			if import_unsupported || !imported do return {kind = .Unsupported_Syntax}
 			data, outcome := read_module(name, paths, allocator)
 			if outcome.kind != .None do return outcome
@@ -225,7 +309,7 @@ validate_module :: proc(bytes: string, paths: []string, allocator: runtime.Alloc
 			i += 1
 			continue
 		}
-		name, next, included, unsupported := parse_module_include(bytes, i)
+		name, _, next, included, unsupported := parse_module_include(bytes, i)
 		if unsupported do return {kind = .Unsupported_Syntax}
 		if included {
 			data, outcome := read_module(name, paths, allocator)
@@ -841,6 +925,14 @@ module_expand_literal_countdown :: proc(
 	)
 	argument := module_trim(args[0])
 	if len(argument) == 0 do return false
+	// The integrated evaluator has no callable-definition frame yet. This
+	// narrow runtime form is nevertheless executable: for the terminating
+	// countdown recurrence, a nonnegative JSON number reaches the zero branch.
+	// It is deliberately separate from literal folding and is not general
+	// support for runtime-dependent recursion.
+	if argument == "." && module_trim(definition.body) == expected {
+		return module_write(builder, "0")
+	}
 	value: i64 = 0
 	for byte in argument {
 		if byte < '0' || byte > '9' do return false
@@ -1093,14 +1185,17 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 		module_space(bytes, &i)
 		if i >= len(bytes) do break
 		if module_word(bytes, i, "include") {
-			child, next, included, unsupported := parse_module_include(bytes, i)
-			if unsupported || !included { delete(data, allocator); active^[active_count] = ""; return {kind = .Unsupported_Syntax} }
-			outcome = collect_module(child, prefix, paths, definitions, allocator, depth+1, active, active_count+1)
+				child, search, next, included, unsupported := parse_module_include(bytes, i)
+				if unsupported || !included { delete(data, allocator); active^[active_count] = ""; return {kind = .Unsupported_Syntax} }
+				child_paths, paths_error := module_search_paths(search, paths, allocator)
+				if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
+				outcome = collect_module(child, prefix, child_paths, definitions, allocator, depth+1, active, active_count+1)
+				if len(search) > 0 do delete(child_paths)
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
 		}
 		if module_word(bytes, i, "import") {
-			child, alias, next, imported, unsupported := parse_module_import(bytes, i)
+			child, alias, search, next, imported, unsupported := parse_module_import(bytes, i)
 			if unsupported || !imported { delete(data, allocator); active^[active_count] = ""; return {kind = .Unsupported_Syntax} }
 			child_prefix := alias
 			if len(prefix) > 0 {
@@ -1108,7 +1203,10 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 				child_prefix, prefix_error = strings.concatenate([]string{prefix, "::", alias}, allocator)
 				if prefix_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = prefix_error} }
 			}
-			outcome = collect_module(child, child_prefix, paths, definitions, allocator, depth+1, active, active_count+1)
+			child_paths, paths_error := module_search_paths(search, paths, allocator)
+			if paths_error != nil { if len(prefix) > 0 { delete(child_prefix, allocator) }; delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
+			outcome = collect_module(child, child_prefix, child_paths, definitions, allocator, depth+1, active, active_count+1)
+			if len(search) > 0 do delete(child_paths)
 			if len(prefix) > 0 { delete(child_prefix, allocator) }
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
@@ -1159,8 +1257,23 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	active_modules: [module_loader_depth]string
 	for {
 		module_space(filter, &i)
+		if module_word(filter, i, "def") {
+			if !definitions_initialized {
+				definitions_error: runtime.Allocator_Error
+				definitions, definitions_error = make([dynamic]module_definition, 0, 8, allocator)
+				if definitions_error != nil do return nil, {kind = .Read_Failure, resource_error = definitions_error}
+				definitions_initialized = true
+			}
+			definition_end := module_definition_end(filter, i)
+			if definition_end < 0 { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Unsupported_Syntax} }
+			outcome := find_module_definitions(filter[i:definition_end], &definitions, allocator)
+			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
+			has_module = true
+			i = definition_end
+			continue
+		}
 		if module_word(filter, i, "include") {
-			name, next, included, unsupported := parse_module_include(filter, i)
+			name, search, next, included, unsupported := parse_module_include(filter, i)
 			if unsupported || !included { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Unsupported_Syntax} }
 			if !definitions_initialized {
 				definitions_error: runtime.Allocator_Error
@@ -1168,12 +1281,15 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				if definitions_error != nil do return nil, {kind = .Read_Failure, resource_error = definitions_error}
 				definitions_initialized = true
 			}
-			outcome := collect_module(name, "", paths, &definitions, allocator, 0, &active_modules, 0)
+			search_paths, paths_error := module_search_paths(search, paths, allocator)
+			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
+			outcome := collect_module(name, "", search_paths, &definitions, allocator, 0, &active_modules, 0)
+			if len(search) > 0 do delete(search_paths)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}
 		if module_word(filter, i, "import") {
-			name, alias, next, imported, unsupported := parse_module_import(filter, i)
+			name, alias, search, next, imported, unsupported := parse_module_import(filter, i)
 			if unsupported || !imported { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Unsupported_Syntax} }
 			if !definitions_initialized {
 				definitions_error: runtime.Allocator_Error
@@ -1181,7 +1297,10 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				if definitions_error != nil do return nil, {kind = .Read_Failure, resource_error = definitions_error}
 				definitions_initialized = true
 			}
-			outcome := collect_module(name, alias, paths, &definitions, allocator, 0, &active_modules, 0)
+			search_paths, paths_error := module_search_paths(search, paths, allocator)
+			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
+			outcome := collect_module(name, alias, search_paths, &definitions, allocator, 0, &active_modules, 0)
+			if len(search) > 0 do delete(search_paths)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}
