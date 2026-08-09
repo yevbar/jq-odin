@@ -192,6 +192,21 @@ def expect_module_loading(
             ["-L", directory, 'import "config" as $c; ., $c'],
             b"42\n",
         )
+        expect_oracle_case(
+            "data import and caller preserve stream cardinality and order",
+            ["-L", directory, 'import "config" as $c; $c, .'],
+            b"42\n",
+        )
+        (root / "second-config.json").write_text('{"y":2}\n', encoding="utf-8")
+        expect_oracle_case(
+            "multiple data imports preserve both values",
+            [
+                "-L",
+                directory,
+                '-n',
+                'import "config" as $a; import "second-config" as $b; $a, $b',
+            ],
+        )
         (root / "nested-config.json").write_text(
             '{"nested":{"x":2},"x":1}\n', encoding="utf-8"
         )

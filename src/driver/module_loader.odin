@@ -248,7 +248,100 @@ module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) ->
 	return strings.clone(strings.to_string(builder), allocator)
 }
 
-module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, append_data: ^bool) -> bool {
+module_direct_data_reference :: proc(segment: string, imports: [dynamic]module_data_import) -> (import_index: int, caller: bool, ok: bool) {
+	text := module_trim(segment)
+	if text == "." do return -1, true, true
+	if len(text) < 2 || text[0] != '$' || !is_module_identifier_start(text[1]) do return -1, false, false
+	end := 2
+	for end < len(text) && is_module_identifier_byte(text[end]) do end += 1
+	if end != len(text) do return -1, false, false
+	alias := text[1:end]
+	for imported, index in imports {
+		if imported.alias == alias do return index, false, true
+	}
+	return -1, false, false
+}
+
+// A direct data reference is a stream composition, not a rewritten filter over
+// every input.  The integrated evaluator has no variable frames yet, so lower
+// the narrow comma form to identity and explicitly preserve the ordered data
+// values (and the caller value at either stream edge).
+module_compose_direct_data_references :: proc(
+	input: string,
+	imports: [dynamic]module_data_import,
+	builder: ^strings.Builder,
+	data_input: ^string,
+	data_input_owned: ^bool,
+	append_data: ^bool,
+	allocator: runtime.Allocator,
+) -> bool {
+	indices: [64]int
+	index_count := 0
+	caller_at := -1
+	segment_start := 0
+	depth := 0
+	in_string := false
+	escaped := false
+	segment_count := 0
+	for at := 0; at <= len(input); at += 1 {
+		separator := at == len(input)
+		if !separator {
+			byte := input[at]
+			if in_string {
+				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+				continue
+			}
+			if byte == '"' { in_string = true; continue }
+			switch byte {
+			case '(', '[', '{': depth += 1
+			case ')', ']', '}': if depth > 0 do depth -= 1
+			case ',': if depth == 0 do separator = true
+			}
+		}
+		if !separator do continue
+		import_index, caller, ok := module_direct_data_reference(input[segment_start:at], imports)
+		if !ok do return false
+		segment_count += 1
+		if caller {
+			if caller_at >= 0 do return false
+			caller_at = segment_count-1
+		} else {
+			if index_count >= len(indices) do return false
+			indices[index_count] = import_index
+			index_count += 1
+		}
+		segment_start = at+1
+	}
+	if index_count == 0 do return false
+	// A single edge caller is representable by the existing input stream
+	// contract.  A caller between two imported values needs evaluator frames.
+	if caller_at >= 0 && caller_at != 0 && caller_at != segment_count-1 do return false
+
+	data_builder: strings.Builder
+	_, init_error := strings.builder_init(&data_builder, allocator)
+	if init_error != nil do return false
+	data_ok := true
+	for ordinal := 0; ordinal < index_count; ordinal += 1 {
+		if ordinal > 0 && !module_write(&data_builder, "\n") { data_ok = false; break }
+		if !module_write(&data_builder, imports[indices[ordinal]].data) { data_ok = false; break }
+	}
+	if !data_ok {
+		strings.builder_destroy(&data_builder)
+		return false
+	}
+	owned, clone_error := strings.clone(strings.to_string(data_builder), allocator)
+	strings.builder_destroy(&data_builder)
+	if clone_error != nil do return false
+	data_input^ = owned
+	data_input_owned^ = true
+	append_data^ = caller_at == 0
+	return module_write(builder, ".")
+}
+
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, allocator: runtime.Allocator) -> bool {
+	if module_compose_direct_data_references(input, imports, builder, data_input, data_input_owned, append_data, allocator) {
+		return true
+	}
 	// Data imports are represented by a separate stream.  Lower the alias and
 	// consume only the stream-selection postfix; the caller's remaining filter
 	// must stay in the output source (for example `$c[0].x` becomes `.x`).
@@ -1382,7 +1475,7 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 				child_paths, paths_error := module_search_paths(search, paths, allocator)
 				if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
 				outcome = collect_module(child, prefix, child_paths, definitions, allocator, depth+1, active, active_count+1)
-				if len(search) > 0 do delete(child_paths)
+				if len(search) > 0 do delete(child_paths, allocator)
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
 		}
@@ -1398,7 +1491,7 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 			child_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { if len(prefix) > 0 { delete(child_prefix, allocator) }; delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
 			outcome = collect_module(child, child_prefix, child_paths, definitions, allocator, depth+1, active, active_count+1)
-			if len(search) > 0 do delete(child_paths)
+			if len(search) > 0 do delete(child_paths, allocator)
 			if len(prefix) > 0 { delete(child_prefix, allocator) }
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
@@ -1486,7 +1579,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
 			outcome := collect_module(name, "", search_paths, &definitions, allocator, 0, &active_modules, 0)
-			if len(search) > 0 do delete(search_paths)
+			if len(search) > 0 do delete(search_paths, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}
@@ -1504,7 +1597,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			if module_import_uses_data_binding(filter, i) {
 				data, data_outcome := read_data_module(name, search_paths, allocator)
 				if data_outcome.kind != .None {
-					if len(search) > 0 do delete(search_paths)
+					if len(search) > 0 do delete(search_paths, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, data_outcome
 				}
@@ -1513,22 +1606,22 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				delete(data, allocator)
 				if alias_error != nil || data_error != nil {
 					delete(owned_alias, allocator); delete(owned_data, allocator)
-					if len(search) > 0 do delete(search_paths)
+					if len(search) > 0 do delete(search_paths, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
 				}
 				_, data_append_error := append(&data_imports, module_data_import{alias = owned_alias, data = owned_data})
 				if data_append_error != nil {
 					delete(owned_alias, allocator); delete(owned_data, allocator)
-					if len(search) > 0 do delete(search_paths)
+					if len(search) > 0 do delete(search_paths, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, {kind = .Read_Failure, resource_error = data_append_error}
 				}
-				if len(search) > 0 do delete(search_paths)
+				if len(search) > 0 do delete(search_paths, allocator)
 				has_module = true; i = next; continue
 			}
 			outcome := collect_module(name, alias, search_paths, &definitions, allocator, 0, &active_modules, 0)
-			if len(search) > 0 do delete(search_paths)
+			if len(search) > 0 do delete(search_paths, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}
@@ -1546,8 +1639,12 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	_, data_builder_error := strings.builder_init(&data_builder, allocator)
 	if data_builder_error != nil { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = data_builder_error} }
 	data_input := ""
+	data_input_owned := false
+	defer {
+		if data_input_owned && len(data_input) > 0 do delete(data_input, allocator)
+	}
 	append_data := false
-	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &append_data) {
+	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, allocator) {
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1572,9 +1669,20 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	if clone_error != nil do return nil, {kind = .Read_Failure, resource_error = clone_error}
 	owned_data_input: []byte
 	if len(data_input) > 0 {
-		owned, data_error := strings.clone(data_input, allocator)
-		if data_error != nil do return nil, {kind = .Read_Failure, resource_error = data_error}
-		owned_data_input = transmute([]byte)owned
+		if data_input_owned {
+			owned_data_input = transmute([]byte)data_input
+			data_input_owned = false
+		} else {
+			owned, data_error := strings.clone(data_input, allocator)
+			if data_error != nil {
+				// `output` was cloned first and owns its storage independently.
+				// Release it before returning the original data-input error so the
+				// caller can retry with the same allocator ownership intact.
+				delete(output, allocator)
+				return nil, {kind = .Read_Failure, resource_error = data_error}
+			}
+			owned_data_input = transmute([]byte)owned
+		}
 	}
 	return transmute([]byte)output, {
 		data_input = owned_data_input,

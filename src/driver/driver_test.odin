@@ -434,6 +434,26 @@ module_paths_are_borrowed_in_order_without_changing_execution :: proc(t: ^testin
 }
 
 @(test)
+module_search_metadata_uses_and_releases_custom_allocator :: proc(t: ^testing.T) {
+	state := test_allocator_state{backing = context.allocator}
+	paths, paths_error := module_search_paths("./child", []string{"/base"}, test_allocator(&state))
+	testing.expect_value(t, paths_error, runtime.Allocator_Error(nil))
+	testing.expect_value(t, len(paths), 2)
+	testing.expect_value(t, paths[0], "./child")
+	testing.expect_value(t, paths[1], "/base")
+	delete(paths, test_allocator(&state))
+	testing.expect_value(t, state.live, 0)
+
+	failing_state := test_allocator_state{backing = context.allocator, allocation_at = 1}
+	failed_paths, failed_error := module_search_paths(
+		"./child", []string{"/base"}, test_allocator(&failing_state),
+	)
+	testing.expect_value(t, len(failed_paths), 0)
+	testing.expect_value(t, failed_error, runtime.Allocator_Error(.Out_Of_Memory))
+	testing.expect_value(t, failing_state.live, 0)
+}
+
+@(test)
 module_definition_body_tracks_nested_jq_delimiters :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	source := "def answer: reduce .[] as $x (0; . + $x);"
