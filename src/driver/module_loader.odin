@@ -1340,11 +1340,14 @@ module_expand_literal_countdown :: proc(
 	argument := module_trim(args[0])
 	if len(argument) == 0 do return false
 	if module_trim(definition.body) == expected || module_trim(definition.body) == expected_le {
+		is_less_equal := module_trim(definition.body) == expected_le
 		all_digits := true
 		for byte in argument do if byte < '0' || byte > '9' { all_digits = false; break }
 		if !all_digits {
 			if argument != "." do return false
-			if runtime_subtraction != nil do runtime_subtraction^ = true
+			// The <= recurrence has an explicit negative base case. Do not mark
+			// it for the subtraction guard: jq returns 0 for negative numbers.
+			if runtime_subtraction != nil && !is_less_equal do runtime_subtraction^ = true
 		}
 		return module_write(builder, "0")
 	}

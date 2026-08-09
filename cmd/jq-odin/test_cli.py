@@ -165,6 +165,10 @@ def expect_module_loading(
             "def countdown(x): if x == 0 then 0 else countdown(x - 1) end;\n",
             encoding="utf-8",
         )
+        (root / "countdown-le.jq").write_text(
+            "def countdown(x): if x <= 0 then 0 else countdown(x - 1) end;\n",
+            encoding="utf-8",
+        )
         expect_oracle_case(
             "literal terminating self-recursive module definition",
             ["-L", directory, "-n", 'include "countdown"; countdown(3)'],
@@ -173,6 +177,11 @@ def expect_module_loading(
             "dynamic terminating self-recursive module definition",
             ["-L", directory, 'include "countdown"; countdown(.)'],
             b"3\n",
+        )
+        expect_oracle_case(
+            "less-equal recursive module keeps negative base case",
+            ["-L", directory, 'include "countdown-le"; countdown(.)'],
+            b"-2\n",
         )
         expect_oracle_case(
             "dynamic recursive module preserves subtraction type errors",
