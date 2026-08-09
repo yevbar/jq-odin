@@ -28,6 +28,7 @@ Output_Mode :: enum u8 {
 	Pretty,
 	Compact,
 	Raw,
+	Raw_Compact,
 }
 
 // Output_Emitter synchronously borrows one complete LF-terminated result.
@@ -483,11 +484,12 @@ append_serialized_line :: proc(
 	current: ^value.Value,
 ) -> runtime.Allocator_Error {
 	formatted_length := len(bytes)
-	if mode == .Pretty {
+	pretty := mode == .Pretty || (mode == .Raw && current != nil && value.kind_of(current) != .String)
+	if pretty {
 		formatted_ok := false
 		formatted_length, formatted_ok = pretty_size(bytes)
 		if !formatted_ok do return .Invalid_Argument
-	} else if mode == .Raw && current != nil && value.kind_of(current) == .String {
+	} else if (mode == .Raw || mode == .Raw_Compact) && current != nil && value.kind_of(current) == .String {
 		raw, raw_ok := value.string_borrowed(current)
 		if !raw_ok do return .Invalid_Argument
 		formatted_length = len(raw)
@@ -495,11 +497,11 @@ append_serialized_line :: proc(
 	if formatted_length == max(int) do return .Out_Of_Memory
 	if err := reserve_output(result, formatted_length+1); err != nil do return err
 	destination := result.output_memory[result.output_length:result.output_length+formatted_length]
-	if mode == .Pretty {
+	if pretty {
 		if !write_pretty(destination, bytes) do return .Invalid_Argument
 	} else if mode == .Compact {
 		copy(destination, transmute([]byte)bytes)
-	} else if mode == .Raw && current != nil && value.kind_of(current) == .String {
+	} else if (mode == .Raw || mode == .Raw_Compact) && current != nil && value.kind_of(current) == .String {
 		raw, raw_ok := value.string_borrowed(current)
 		if !raw_ok do return .Invalid_Argument
 		copy(destination, transmute([]byte)raw)

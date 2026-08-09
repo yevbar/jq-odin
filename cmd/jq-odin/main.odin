@@ -225,6 +225,7 @@ run_input :: proc(
 	mode := driver.Output_Mode.Pretty
 	if compact do mode = .Compact
 	if raw do mode = .Raw
+	if compact && raw do mode = .Raw_Compact
 	result: driver.Run_Result
 	err := driver.run_with_options(
 		&result, "", input, context.allocator,

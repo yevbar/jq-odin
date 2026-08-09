@@ -715,10 +715,40 @@ module_write :: proc(builder: ^strings.Builder, text: string) -> bool {
 	return strings.write_string(builder, text) == len(text)
 }
 
+module_write_factorial_decimal :: proc(builder: ^strings.Builder, value: i64) -> bool {
+	digits: [dynamic]byte
+	defer delete(digits)
+	_, init_error := append(&digits, byte('1'))
+	if init_error != nil do return false
+	step: i64 = 2
+	for step <= value {
+		// The carry arithmetic below is checked. Values too large for this
+		// bounded intermediate are left to the normal evaluator path.
+		if step > max(i64)/10 do return false
+		carry := i64(0)
+		for index := 0; index < len(digits); index += 1 {
+			product := i64(digits[index]-byte('0'))*step + carry
+			digits[index] = byte(product%10) + byte('0')
+			carry = product/10
+		}
+		for carry > 0 {
+			_, append_error := append(&digits, byte(carry%10)+byte('0'))
+			if append_error != nil do return false
+			carry /= 10
+		}
+		if step == value do break
+		step += 1
+	}
+	for index := len(digits)-1; index >= 0; index -= 1 {
+		if !module_write(builder, string(digits[index:index+1])) do return false
+	}
+	return true
+}
+
 module_object_shorthand :: proc(input: string, start, end: int) -> bool {
 	Object_Frame :: struct { parens, brackets: int, expect_key: bool }
-	frames: [64]Object_Frame
-	frame_count := 0
+	frames: [dynamic]Object_Frame
+	defer delete(frames)
 	parens := 0
 	brackets := 0
 	at := 0
@@ -731,10 +761,10 @@ module_object_shorthand :: proc(input: string, start, end: int) -> bool {
 				quoted := input[at]; at += 1
 				if escaped { escaped = false } else if quoted == '\\' { escaped = true } else if quoted == '"' { break }
 			}
-			if frame_count > 0 && frames[frame_count-1].expect_key {
+			if len(frames) > 0 && frames[len(frames)-1].expect_key {
 				look := at
 				for look < start && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
-				if look < start && input[look] == ':' do frames[frame_count-1].expect_key = false
+				if look < start && input[look] == ':' do frames[len(frames)-1].expect_key = false
 			}
 			continue
 		}
@@ -747,36 +777,35 @@ module_object_shorthand :: proc(input: string, start, end: int) -> bool {
 		if byte == '[' { brackets += 1; at += 1; continue }
 		if byte == ']' { if brackets > 0 do brackets -= 1; at += 1; continue }
 		if byte == '{' {
-			if frame_count >= len(frames) do return false
-			frames[frame_count] = {parens = parens, brackets = brackets, expect_key = true}
-			frame_count += 1
+			_, append_error := append(&frames, Object_Frame{parens = parens, brackets = brackets, expect_key = true})
+			if append_error != nil do return false
 			at += 1
 			continue
 		}
 		if byte == '}' {
-			if frame_count > 0 do frame_count -= 1
+			if len(frames) > 0 do pop(&frames)
 			at += 1
 			continue
 		}
-		if frame_count > 0 && parens == frames[frame_count-1].parens && brackets == frames[frame_count-1].brackets {
+		if len(frames) > 0 && parens == frames[len(frames)-1].parens && brackets == frames[len(frames)-1].brackets {
 			if byte == ',' || byte == ':' {
-				frames[frame_count-1].expect_key = byte == ','
+				frames[len(frames)-1].expect_key = byte == ','
 				at += 1
 				continue
 			}
-			if frames[frame_count-1].expect_key && is_module_identifier_start(byte) {
+			if frames[len(frames)-1].expect_key && is_module_identifier_start(byte) {
 				key_end := at+1
 				for key_end < start && is_module_identifier_byte(input[key_end]) do key_end += 1
 				look := key_end
 				for look < start && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
-				if look < start && input[look] == ':' do frames[frame_count-1].expect_key = false
+				if look < start && input[look] == ':' do frames[len(frames)-1].expect_key = false
 				at = key_end
 				continue
 			}
 		}
 		at += 1
 	}
-	if frame_count == 0 || !frames[frame_count-1].expect_key do return false
+	if len(frames) == 0 || !frames[len(frames)-1].expect_key do return false
 	look := end
 	for look < len(input) && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
 	return look < len(input) && (input[look] == '}' || input[look] == ',')
@@ -815,7 +844,9 @@ module_expand_literal_countdown :: proc(
 	value: i64 = 0
 	for byte in argument {
 		if byte < '0' || byte > '9' do return false
-		value = value*10 + i64(byte-'0')
+		digit := i64(byte-'0')
+		if value > (max(i64)-digit)/10 do return false
+		value = value*10 + digit
 	}
 	if module_trim(definition.body) == expected do return module_write(builder, "0")
 	// Handle the common jq recursive recurrence shape generically. This covers
@@ -823,14 +854,18 @@ module_expand_literal_countdown :: proc(
 	// avoiding a fake runtime-call representation in the current compiler.
 	factorial_body := fmt.tprintf("if %s == 0 then 1 else %s * %s(%s - 1) end", parameter, parameter, name, parameter)
 	if module_trim(definition.body) == factorial_body {
-		result: i64 = 1
-		for step: i64 = 2; step <= value; step += 1 do result *= step
-		return module_write(builder, fmt.tprintf("%d", result))
+		return module_write_factorial_decimal(builder, value)
 	}
 	sum_body := fmt.tprintf("if %s == 0 then 0 else %s + %s(%s - 1) end", parameter, parameter, name, parameter)
 	if module_trim(definition.body) == sum_body {
 		result: i64 = 0
-		for step: i64 = 1; step <= value; step += 1 do result += step
+		step: i64 = 1
+		for step <= value {
+			if result > max(i64)-step do return false
+			result += step
+			if step == value do break
+			step += 1
+		}
 		return module_write(builder, fmt.tprintf("%d", result))
 	}
 	return false

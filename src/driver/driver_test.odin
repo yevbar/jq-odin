@@ -411,6 +411,9 @@ stream_inputs_and_output_modes_match_jq_bytes :: proc(t: ^testing.T) {
 		"1\n2\n[3,4]\n{\"a\":[true,{\"b\":null}]}\n",
 		.Compact,
 	)
+	expect_run_mode(t, ".", "\"x\"", "x\n", .Raw)
+	expect_run_mode(t, ".", "{\"a\":[1,2]}", "{\n  \"a\": [\n    1,\n    2\n  ]\n}\n", .Raw)
+	expect_run_mode(t, ".", "{\"a\":[1,2]}", "{\"a\":[1,2]}\n", .Raw_Compact)
 	expect_run(t, ".", " \r\n\t", "")
 	expect_run(t, ".", "\"x\" false null", "\"x\"\nfalse\nnull\n")
 }
@@ -792,6 +795,30 @@ module_expansion_does_not_treat_filter_commas_as_object_shorthand :: proc(t: ^te
 		t, "def f: 1; def g: 2; def h: 3;", "f, g, h",
 		"( 1), ( 2), ( 3)",
 	)
+}
+
+@(test)
+module_object_shorthand_handles_more_than_64_nested_objects :: proc(t: ^testing.T) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	for _ in 0..<65 do testing.expect_value(t, strings.write_string(&builder, "{"), 1)
+	testing.expect_value(t, strings.write_string(&builder, "x"), 1)
+	for _ in 0..<65 do testing.expect_value(t, strings.write_string(&builder, "}"), 1)
+	source := strings.to_string(builder)
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def x: 42;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	expanded: strings.Builder
+	_, expanded_error := strings.builder_init(&expanded, context.allocator)
+	testing.expect_value(t, expanded_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source(source, definitions, &expanded, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(expanded), source)
+	strings.builder_destroy(&expanded)
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
 }
 
 @(test)
