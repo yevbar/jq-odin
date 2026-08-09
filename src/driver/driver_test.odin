@@ -729,6 +729,16 @@ module_expansion_preserves_self_recursive_calls_for_runtime :: proc(t: ^testing.
 }
 
 @(test)
+module_expansion_evaluates_literal_factorial_definition :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t,
+		"def fact(x): if x == 0 then 1 else x * fact(x - 1) end;",
+		"fact(3)",
+		"6",
+	)
+}
+
+@(test)
 qualified_parameterized_module_arguments_preserve_caller_environment :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	make_error: runtime.Allocator_Error

@@ -158,6 +158,14 @@ def expect_module_loading(
             "terminating self-recursive module definition",
             ["-L", directory, "-n", 'include "countdown"; countdown(3)'],
         )
+        (root / "factorial.jq").write_text(
+            "def fact(x): if x == 0 then 1 else x * fact(x - 1) end;\n",
+            encoding="utf-8",
+        )
+        expect_oracle_case(
+            "literal recursive factorial module definition",
+            ["-L", directory, "-n", 'include "factorial"; fact(3)'],
+        )
         wanted = (0, b"42\n", b"")
         # The loader accepts jq's dollar-prefixed namespace spelling for
         # callable module definitions and keeps the canonical namespace.
@@ -172,6 +180,18 @@ def expect_module_loading(
         got = (actual.returncode, actual.stdout, actual.stderr)
         if got != missing:
             raise AssertionError(f"missing module: expected {missing!r}, got {got!r}")
+
+        (root / "malformed-signature.jq").write_text(
+            "def f(x y): 1;\n", encoding="utf-8"
+        )
+        malformed_arguments = ["-L", directory, "-n", 'include "malformed-signature"; null']
+        reference = run(oracle, malformed_arguments)
+        actual = run(candidate, malformed_arguments)
+        if reference.returncode != 3 or actual.returncode != 3:
+            raise AssertionError(
+                f"malformed unused definition signature must reject: "
+                f"oracle={reference.returncode}, candidate={actual.returncode}"
+            )
 
         # Definition expansion must retain jq's call boundary. Without the
         # parentheses, the body of value would make this `1 + 2 * 3`.
@@ -1488,6 +1508,7 @@ def main() -> int:
             b"jq-odin: filter parse error\n",
         ),
         ("scalar literal", ["1"], b"null", 0, b"1\n", b""),
+        ("bundled short options", ["-nc", "."], b"", 0, b"null", b""),
         ("JSON input", ["."], b"{", 4, b"", b"jq-odin: JSON input error\n"),
         (
             "runtime with prefix",

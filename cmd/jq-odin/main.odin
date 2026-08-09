@@ -52,6 +52,22 @@ parse_arguments :: proc(args: []cstring) -> parsed_arguments {
 			parsed.version = true
 			return parsed
 		}
+		if !options_done && len(arg) > 2 && arg[0] == '-' && arg[1] != '-' && arg[1] != 'L' {
+			for option in arg[1:] {
+				switch option {
+				case 'c': parsed.compact = true
+				case 'r': parsed.raw = true
+				case 'n': parsed.null_input = true
+				case:
+					_ = write_all(os.stderr, "jq-odin: unsupported option: ")
+					_ = write_all(os.stderr, arg)
+					_ = write_all(os.stderr, "\n")
+					parsed.status = 2
+					return parsed
+				}
+			}
+			continue
+		}
 		if !options_done && (arg == "-c" || arg == "--compact-output") {
 			parsed.compact = true
 			continue

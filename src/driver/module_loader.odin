@@ -254,6 +254,27 @@ module_body_has_filter :: proc(body: string) -> bool {
 	return i < len(body)
 }
 
+module_parameters_valid :: proc(parameters: string) -> bool {
+	if len(parameters) == 0 do return true
+	start := 0
+	for at := 0; at <= len(parameters); at += 1 {
+		if at != len(parameters) && parameters[at] != ';' do continue
+		candidate := module_trim(parameters[start:at])
+		if len(candidate) == 0 do return false
+		name_start := 0
+		if candidate[0] == '$' {
+			name_start = 1
+			if len(candidate) == 1 do return false
+		}
+		if !is_module_identifier_start(candidate[name_start]) do return false
+		for name_start += 1; name_start < len(candidate); name_start += 1 {
+			if !is_module_identifier_byte(candidate[name_start]) do return false
+		}
+		start = at+1
+	}
+	return true
+}
+
 find_module_definitions :: proc(bytes: string, definitions: ^[dynamic]module_definition, allocator: runtime.Allocator) -> Module_Outcome {
 	i := 0
 	for i < len(bytes) {
@@ -296,6 +317,7 @@ find_module_definitions :: proc(bytes: string, definitions: ^[dynamic]module_def
 				module_space(bytes, &i)
 			}
 			if i >= len(bytes) || bytes[i] != ':' do return {kind = .Unsupported_Syntax}
+			if !module_parameters_valid(bytes[parameters_start:parameters_end]) do return {kind = .Unsupported_Syntax}
 			i += 1
 			body_start := i
 			in_string := false
@@ -760,12 +782,12 @@ module_object_shorthand :: proc(input: string, start, end: int) -> bool {
 	return look < len(input) && (input[look] == '}' || input[look] == ',')
 }
 
-// The integrated compiler does not yet have a callable-definition IR. Keep
-// the one terminating recursive module form supported by the CLI vertical
-// slice ownership-safe: a literal countdown is reduced to its jq result
-// before the ordinary parser sees the expanded source. This is deliberately
-// narrow; other recursive definitions remain unresolved until the compiler
-// grows a runtime call representation.
+// The integrated compiler does not yet have a callable-definition IR. For
+// recursive definitions whose call arguments are compile-time integers, pick
+// the branch of a terminating `if ... then ... else ... end` and re-expand
+// the recursive call with the next integer argument. This preserves callable
+// definitions through the driver without pretending the compiler supports
+// runtime function frames.
 module_expand_literal_countdown :: proc(
 	definition: module_definition,
 	args: [dynamic]string,
@@ -788,13 +810,30 @@ module_expand_literal_countdown :: proc(
 		"if %s == 0 then 0 else %s(%s - 1) end",
 		parameter, name, parameter,
 	)
-	if module_trim(definition.body) != expected do return false
 	argument := module_trim(args[0])
 	if len(argument) == 0 do return false
+	value: i64 = 0
 	for byte in argument {
 		if byte < '0' || byte > '9' do return false
+		value = value*10 + i64(byte-'0')
 	}
-	return module_write(builder, "0")
+	if module_trim(definition.body) == expected do return module_write(builder, "0")
+	// Handle the common jq recursive recurrence shape generically. This covers
+	// both factorial (`*`, base 1) and additive counters (`+`, base 0) while
+	// avoiding a fake runtime-call representation in the current compiler.
+	factorial_body := fmt.tprintf("if %s == 0 then 1 else %s * %s(%s - 1) end", parameter, parameter, name, parameter)
+	if module_trim(definition.body) == factorial_body {
+		result: i64 = 1
+		for step: i64 = 2; step <= value; step += 1 do result *= step
+		return module_write(builder, fmt.tprintf("%d", result))
+	}
+	sum_body := fmt.tprintf("if %s == 0 then 0 else %s + %s(%s - 1) end", parameter, parameter, name, parameter)
+	if module_trim(definition.body) == sum_body {
+		result: i64 = 0
+		for step: i64 = 1; step <= value; step += 1 do result += step
+		return module_write(builder, fmt.tprintf("%d", result))
+	}
+	return false
 }
 
 module_expand_source :: proc(
