@@ -105,6 +105,7 @@ Run_Result :: struct {
 	serializer:        json.Compact_Serializer,
 	serialized:        json.Compact_Result,
 	current_output:    value.Value,
+	module_scalar_data: value.Value,
 	json_error:        json.Scalar_Parse_Error,
 	shared_compiled:   ^Compiled_Filter,
 	owns_compilation:  bool,
@@ -113,6 +114,7 @@ Run_Result :: struct {
 	module_stream_memory: []byte,
 	module_data_append: bool,
 	module_data_scalar_add: bool,
+	module_runtime_subtraction: bool,
 }
 
 // Compiled_Filter owns the parser/program produced once for one CLI
@@ -202,6 +204,7 @@ cleanup_execution :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 cleanup_input :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 	if err := json.destroy_compact_result(&result.serialized); err != nil do return err
 	if err := value.destroy_value(&result.current_output); err != nil do return err
+	if err := value.destroy_value(&result.module_scalar_data); err != nil do return err
 	if result.evaluator != nil {
 		if err := eval.destroy_evaluator(result.evaluator); err != nil do return err
 		if len(result.evaluator_memory) == 0 do return .Invalid_Pointer
@@ -572,6 +575,7 @@ run_with_options :: proc(
 		result.shared_compiled = options.compiled_filter
 		result.module_data_append = options.compiled_filter.owner.module_data_append
 		result.module_data_scalar_add = options.compiled_filter.owner.module_data_scalar_add
+		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
 		result.module_input_memory = options.compiled_filter.owner.module_input_memory
 	} else {
 		filter_source := filter
@@ -588,6 +592,7 @@ run_with_options :: proc(
 			filter_source = transmute(string)filter_memory
 			result.module_data_append = module_outcome.data_after_caller
 			result.module_data_scalar_add = module_outcome.data_scalar_add
+			result.module_runtime_subtraction = module_outcome.runtime_subtraction
 			result.module_input_memory = module_outcome.data_input
 		}
 
@@ -680,26 +685,54 @@ run_with_options :: proc(
 			})
 		}
 		if done do return finish(result, {})
+
+		if result.module_runtime_subtraction {
+			if value.kind_of(&result.input) != .Number {
+				encoded_key, key_error := strings.concatenate(
+					[]string{module_runtime_error_key_prefix, module_trim(effective_json_input[cursor:next])}, result.allocator,
+				)
+				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
+				result.runtime_key_memory = transmute([]byte)encoded_key
+				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
+					runtime_input_kind = value.kind_of(&result.input), runtime_key = transmute(string)result.runtime_key_memory})
+			}
+			number, number_ok := value.number_value_get(&result.input)
+			if !number_ok || number < 0 || number != cast(f64)cast(i64)number {
+				encoded_key, key_error := strings.concatenate(
+					[]string{module_runtime_error_key_prefix, module_trim(effective_json_input[cursor:next])}, result.allocator,
+				)
+				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
+				result.runtime_key_memory = transmute([]byte)encoded_key
+				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
+					runtime_input_kind = .Number, runtime_key = transmute(string)result.runtime_key_memory})
+			}
+		}
 		if result.module_data_scalar_add {
 			data_value, data_error := json.parse_value(
 				transmute(string)result.module_input_memory, result.allocator,
 			)
 			if data_error.kind != .None do return finish(result, {kind = .Misuse})
-			sum, sum_ok := value.number_add(&result.input, &data_value)
+			result.module_scalar_data = data_value
+			sum, sum_ok := value.number_add(&result.input, &result.module_scalar_data)
 			if !sum_ok {
-				_ = value.destroy_value(&data_value)
 				return finish(result, {kind = .Misuse})
 			}
 			result.current_output = sum
 			serialized_error := json.serialize_compact(&result.serializer, &result.current_output, &result.serialized)
-			_ = value.destroy_value(&data_value)
 			if serialized_error.kind != .None do return finish(result, {kind = .Serialization, serialization_kind = serialized_error.kind})
 			bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
 			if !bytes_ok do return finish(result, {kind = .Misuse})
 			if append_error := append_serialized_line(result, bytes, options.output_mode, &result.current_output); append_error != nil do return allocation_or_cleanup_error(result, append_error)
 			if !emit_output(result, options) do return finish(result, {kind = .Output})
-			_ = json.destroy_compact_result(&result.serialized)
-			_ = value.destroy_value(&result.current_output)
+			if cleanup_error := json.destroy_compact_result(&result.serialized); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := value.destroy_value(&result.current_output); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := value.destroy_value(&result.module_scalar_data); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
 			cursor = next
 			input_count += 1
 			continue

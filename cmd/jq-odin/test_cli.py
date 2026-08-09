@@ -163,6 +163,11 @@ def expect_module_loading(
             ["-L", directory, 'include "countdown"; countdown(.)'],
             b"3\n",
         )
+        expect_oracle_case(
+            "dynamic recursive module preserves subtraction type errors",
+            ["-L", directory, 'include "countdown"; countdown(.)'],
+            b'"bad"\n',
+        )
         (root / "factorial.jq").write_text(
             "def fact(x): if x == 0 then 1 else x * fact(x - 1) end;\n",
             encoding="utf-8",

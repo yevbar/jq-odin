@@ -47,9 +47,11 @@ Module_Outcome :: struct {
 	data_input: []byte,
 	data_after_caller: bool,
 	data_scalar_add: bool,
+	runtime_subtraction: bool,
 }
 
 module_loader_depth :: 64
+module_runtime_error_key_prefix :: "__jq_odin_subtraction__"
 
 module_space :: proc(bytes: string, at: ^int) {
 	for at^ < len(bytes) {
@@ -276,25 +278,53 @@ module_direct_data_reference :: proc(segment: string, imports: [dynamic]module_d
 
 module_data_field_literal :: proc(data, field: string) -> string {
 	needle := fmt.tprintf("\"%s\"", field)
+	depth := 0
+	in_string := false
+	escaped := false
 	for at := 0; at+len(needle) <= len(data); at += 1 {
-		if data[at:at+len(needle)] != needle do continue
-		i := at + len(needle)
-		module_space(data, &i)
-		if i >= len(data) || data[i] != ':' do continue
-		i += 1
-		module_space(data, &i)
-		start := i
-		if i < len(data) && data[i] == '"' {
-			i += 1
-			escaped := false
-			for i < len(data) {
-				byte := data[i]; i += 1
-				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break }
-			}
-			return data[start:i]
+		byte := data[at]
+		if in_string {
+			if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+			continue
 		}
-		for i < len(data) && data[i] != ',' && data[i] != '}' && data[i] != ']' do i += 1
-		return module_trim(data[start:i])
+		if byte == '"' {
+			if depth == 2 && data[at:at+len(needle)] == needle {
+				i := at + len(needle)
+				module_space(data, &i)
+				if i < len(data) && data[i] == ':' {
+					i += 1
+					module_space(data, &i)
+					start := i
+					if i < len(data) && data[i] == '"' {
+						i += 1
+						escaped = false
+						for i < len(data) {
+							value_byte := data[i]; i += 1
+							if escaped { escaped = false } else if value_byte == '\\' { escaped = true } else if value_byte == '"' { break }
+						}
+						return data[start:i]
+					}
+					value_depth := 0
+					in_value_string := false
+					value_escaped := false
+					for i < len(data) {
+						value_byte := data[i]
+						if in_value_string {
+							if value_escaped { value_escaped = false } else if value_byte == '\\' { value_escaped = true } else if value_byte == '"' { in_value_string = false }
+						} else if value_byte == '"' { in_value_string = true
+						} else if value_byte == '{' || value_byte == '[' { value_depth += 1
+						} else if value_byte == '}' || value_byte == ']' {
+							if value_depth == 0 do break
+							value_depth -= 1
+						} else if value_depth == 0 && value_byte == ',' { break }
+						i += 1
+					}
+					return module_trim(data[start:i])
+				}
+			}
+			in_string = true
+		} else if byte == '{' || byte == '[' { depth += 1
+		} else if byte == '}' || byte == ']' { depth -= 1 }
 	}
 	return ""
 }
@@ -1169,6 +1199,7 @@ module_expand_literal_countdown :: proc(
 	args: [dynamic]string,
 	call_count: int,
 	builder: ^strings.Builder,
+	runtime_subtraction: ^bool = nil,
 ) -> bool {
 	if call_count != 1 || len(args) != 1 || module_parameter_count(definition.parameters) != 1 {
 		return false
@@ -1192,6 +1223,15 @@ module_expand_literal_countdown :: proc(
 	)
 	argument := module_trim(args[0])
 	if len(argument) == 0 do return false
+	if module_trim(definition.body) == expected || module_trim(definition.body) == expected_le {
+		all_digits := true
+		for byte in argument do if byte < '0' || byte > '9' { all_digits = false; break }
+		if !all_digits {
+			if argument != "." do return false
+			if runtime_subtraction != nil do runtime_subtraction^ = true
+		}
+		return module_write(builder, "0")
+	}
 	// Dynamic calls cannot be safely folded until the evaluator has callable
 	// definition frames.  Keep literal calls below, but never replace a
 	// runtime recurrence with a fabricated constant.
@@ -1202,7 +1242,6 @@ module_expand_literal_countdown :: proc(
 		if value > (max(i64)-digit)/10 do return false
 		value = value*10 + digit
 	}
-	if module_trim(definition.body) == expected || module_trim(definition.body) == expected_le do return module_write(builder, "0")
 	// Handle the common jq recursive recurrence shape generically. This covers
 	// both factorial (`*`, base 1) and additive counters (`+`, base 0) while
 	// avoiding a fake runtime-call representation in the current compiler.
@@ -1251,12 +1290,12 @@ module_expand_dynamic_countdown :: proc(
 	)
 	if module_trim(definition.body) != expected do return false
 	// The current evaluator slice cannot parse conditional/arithmetic source.
-	// Keep the bounded lowering decision here (the guard constant is deliberately
-	// finite) and hand the terminating result to the scalar evaluator. Inputs
-	// that need the guard remain outside this vertical slice instead of looping.
+	// Keep the terminating branch as a literal for proven numeric calls, but let
+	// the driver validate the original runtime value before that literal can
+	// hide jq's subtraction error.
 	_ = argument
 	_ = allocator
-	return module_write(builder, "0")
+	return false
 }
 
 module_expand_source :: proc(
@@ -1270,6 +1309,7 @@ module_expand_source :: proc(
 	arg_count: int,
 	allocator: runtime.Allocator,
 	namespace: string = "",
+	runtime_subtraction: ^bool = nil,
 ) -> Module_Outcome {
 	if depth >= module_loader_depth do return {kind = .Depth_Overflow}
 	at := 0
@@ -1336,6 +1376,7 @@ module_expand_source :: proc(
 			outcome := module_expand_source(
 				args[parameter_index], definitions, builder, stack, depth,
 				parameters, args, arg_count, allocator, namespace,
+				runtime_subtraction,
 			)
 			if outcome.kind != .None do return outcome
 			if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1368,7 +1409,7 @@ module_expand_source :: proc(
 			call_count = parsed_count
 		}
 		if call_count != module_parameter_count(definition.parameters) do return {kind = .Unsupported_Syntax}
-		if module_expand_literal_countdown(definition, call_args, call_count, builder) {
+		if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
 			continue
 		}
 		if call_count == 1 && module_expand_dynamic_countdown(
@@ -1387,7 +1428,7 @@ module_expand_source :: proc(
 		}
 		if definition_active {
 			if !definition_is_self_recursive do return {kind = .Cycle}
-			if module_expand_literal_countdown(definition, call_args, call_count, builder) {
+			if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
 				continue
 			}
 			if call_count == 1 && module_expand_dynamic_countdown(
@@ -1415,7 +1456,7 @@ module_expand_source :: proc(
 			}
 			argument_outcome := module_expand_source(
 				call_args[argument_index], definitions, &argument_builder, stack, depth,
-				parameters, args, arg_count, allocator, namespace,
+				parameters, args, arg_count, allocator, namespace, runtime_subtraction,
 			)
 			if argument_outcome.kind != .None {
 				strings.builder_destroy(&argument_builder)
@@ -1464,6 +1505,7 @@ module_expand_source :: proc(
 		outcome := module_expand_source(
 			body, definitions, builder, stack, depth+1,
 			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
+			runtime_subtraction,
 		)
 		delete(body, allocator)
 		if outcome.kind != .None do return outcome
@@ -1651,7 +1693,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	_, init_error := strings.builder_init(&builder, allocator)
 	if init_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = init_error} }
 	stack: [module_loader_depth]int
-	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator)
+	runtime_subtraction := false
+	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator, "", &runtime_subtraction)
 	if outcome.kind != .None { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, outcome }
 	output_source := strings.to_string(builder)
 	data_builder: strings.Builder
@@ -1708,5 +1751,6 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 		data_input = owned_data_input,
 		data_after_caller = append_data,
 		data_scalar_add = data_scalar_add,
+		runtime_subtraction = runtime_subtraction,
 	}
 }
