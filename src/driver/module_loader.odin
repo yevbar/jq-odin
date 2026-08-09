@@ -1798,6 +1798,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 						delete(owned_alias, allocator); delete(owned_data, allocator)
 						destroy_module_search_paths(search_paths, search, allocator)
 						destroy_module_definitions(&definitions, allocator)
+						if data_error == .Invalid_Argument do return nil, {kind = .Unsupported_Syntax}
 						return nil, {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
 					}
 					_, data_append_error := append(&data_imports, module_data_import{alias = owned_alias, data = owned_data})
