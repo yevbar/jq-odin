@@ -11,7 +11,8 @@ PACKAGE_DIRS := \
 	src/syntax \
 	src/program \
 	src/compiler \
-	src/eval
+	src/eval \
+	src/driver
 TEST_PACKAGE_DIRS := \
 	src/value/external_boundary_test \
 	src/eval/external_layout_test
