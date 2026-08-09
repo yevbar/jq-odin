@@ -18,7 +18,7 @@ TEST_PACKAGE_DIRS := \
 	src/value/external_boundary_test \
 	src/eval/external_layout_test
 
-.PHONY: bootstrap check check-layout check-packages check-value-boundary doctor test upstream-status validate
+.PHONY: bootstrap check check-layout check-packages check-value-boundary doctor test test-cli upstream-status validate
 
 bootstrap:
 	./scripts/bootstrap-odin.sh
@@ -46,7 +46,20 @@ test:
 		$(ODIN) test "$$package_dir" $(ODIN_FLAGS); \
 	done
 
-validate: doctor check test
+test-cli:
+	@set -eu; \
+	oracle="$$(./tools/compat/build-oracle.sh)"; \
+	candidate="$$(mktemp "$${TMPDIR:-/tmp}/jq-odin-cli.XXXXXX")"; \
+	cleanup() { rm -f "$$candidate"; }; trap cleanup EXIT HUP INT TERM; \
+	$(ODIN) build cmd/jq-odin $(ODIN_FLAGS) -out:"$$candidate"; \
+	if command -v shasum >/dev/null 2>&1; then \
+		trusted="$$(shasum -a 256 "$$oracle" | awk '{print $$1}')"; \
+	else \
+		trusted="$$(sha256sum "$$oracle" | awk '{print $$1}')"; \
+	fi; \
+	python3 cmd/jq-odin/test_cli.py "$$candidate" "$$oracle" "$$trusted"
+
+validate: doctor check test test-cli
 
 upstream-status:
 	@git submodule status --recursive

@@ -464,6 +464,14 @@ module_search_metadata_uses_and_releases_custom_allocator :: proc(t: ^testing.T)
 	testing.expect_value(t, no_path[0], "./relative")
 	destroy_module_search_paths(no_path, "./relative", test_allocator(&no_path_state))
 	testing.expect_value(t, no_path_state.live, 0)
+
+	empty_state := test_allocator_state{backing = context.allocator}
+	empty_paths, empty_error := module_search_paths(
+		"", []string{"/base"}, test_allocator(&empty_state),
+	)
+	testing.expect_value(t, empty_error, runtime.Allocator_Error(nil))
+	destroy_module_search_paths(empty_paths, "", test_allocator(&empty_state))
+	testing.expect_value(t, empty_state.live, 0)
 }
 
 @(test)
@@ -475,6 +483,14 @@ module_definition_body_tracks_nested_jq_delimiters :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(definitions), 1)
 	testing.expect_value(t, definitions[0].body, " reduce .[] as $x (0; . + $x)")
 	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_data_array_literal_frames_adjacent_scalar_and_container :: proc(t: ^testing.T) {
+	array, err := module_data_array_literal("1[2]", context.allocator)
+	testing.expect_value(t, err, runtime.Allocator_Error(nil))
+	testing.expect_value(t, array, "[1,[2]]")
+	delete(array, context.allocator)
 }
 
 @(test)

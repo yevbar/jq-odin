@@ -242,8 +242,11 @@ module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) ->
 				i += 1
 				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break }
 			}
-		} else {
-			for i < len(data) && data[i] != ' ' && data[i] != '\t' && data[i] != '\r' && data[i] != '\n' do i += 1
+	} else {
+		// jq accepts adjacent JSON values (for example `1[2]`) in a
+		// module stream. Stop a scalar at a container opener so each value is
+		// framed independently; ordinary scalar text remains one token.
+		for i < len(data) && data[i] != ' ' && data[i] != '\t' && data[i] != '\r' && data[i] != '\n' && data[i] != '{' && data[i] != '[' do i += 1
 		}
 		if !first && !module_write(&builder, ",") do return "", .Out_Of_Memory
 		segment := data[start:i]
@@ -341,7 +344,13 @@ module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime
 	if parse_error.kind != .None do return key_end, false
 	text, text_ok := value.string_borrowed(&decoded)
 	key_matches = text_ok && text == field
-	_ = value.destroy_value(&decoded)
+	if cleanup_error := value.destroy_value(&decoded); cleanup_error != nil {
+		// Destruction can report a transient allocator failure while retaining
+		// the value owner. Retry before allowing this local owner to escape.
+		if retry_error := value.destroy_value(&decoded); retry_error != nil {
+			return key_end, false
+		}
+	}
 	return key_end, key_matches
 }
 
@@ -1641,7 +1650,7 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 				child_paths, paths_error := module_search_paths(search, paths, allocator)
 				if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
 				outcome = collect_module(child, prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
-				if len(search) > 0 do destroy_module_search_paths(child_paths, search, allocator)
+				destroy_module_search_paths(child_paths, search, allocator)
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
 		}
@@ -1657,7 +1666,7 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 			child_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { if len(prefix) > 0 { delete(child_prefix, allocator) }; delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
 			outcome = collect_module(child, child_prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
-			if len(search) > 0 do destroy_module_search_paths(child_paths, search, allocator)
+			destroy_module_search_paths(child_paths, search, allocator)
 			if len(prefix) > 0 { delete(child_prefix, allocator) }
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
@@ -1745,7 +1754,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
 			outcome := collect_module(name, "", search_paths[:], &definitions, allocator, 0, &active_modules, 0)
-			if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+			destroy_module_search_paths(search_paths, search, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}
@@ -1768,7 +1777,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				if code_probe_outcome.kind == .None {
 					delete(code_probe, allocator)
 					outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
-					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+					destroy_module_search_paths(search_paths, search, allocator)
 					if outcome.kind != .None {
 						destroy_module_definitions(&definitions, allocator)
 						return nil, outcome
@@ -1776,13 +1785,13 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 					has_module = true; i = next; continue
 				}
 				if code_probe_outcome.kind != .Not_Found {
-					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+					destroy_module_search_paths(search_paths, search, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, code_probe_outcome
 				}
 				data, data_outcome := read_data_module(name, search_paths[:], allocator)
 				if data_outcome.kind != .None {
-					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+					destroy_module_search_paths(search_paths, search, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, data_outcome
 				}
@@ -1791,22 +1800,22 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				delete(data, allocator)
 				if alias_error != nil || data_error != nil {
 					delete(owned_alias, allocator); delete(owned_data, allocator)
-					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+					destroy_module_search_paths(search_paths, search, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
 				}
 				_, data_append_error := append(&data_imports, module_data_import{alias = owned_alias, data = owned_data})
 				if data_append_error != nil {
 					delete(owned_alias, allocator); delete(owned_data, allocator)
-					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+					destroy_module_search_paths(search_paths, search, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, {kind = .Read_Failure, resource_error = data_append_error}
 				}
-				if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+				destroy_module_search_paths(search_paths, search, allocator)
 				has_module = true; i = next; continue
 			}
 			outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
-			if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
+			destroy_module_search_paths(search_paths, search, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}

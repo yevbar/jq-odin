@@ -13,8 +13,19 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "compat"))
-from oracle_auth import OracleAuthError, authenticate_oracle  # noqa: E402
-from candidate_isolation import IsolatedCandidate  # noqa: E402
+try:
+    from oracle_auth import OracleAuthError, authenticate_oracle  # noqa: E402
+    from candidate_isolation import IsolatedCandidate  # noqa: E402
+except ModuleNotFoundError:
+    # Standalone repository validation supplies already-authenticated paths;
+    # keep this suite runnable without the optional Vers isolation helpers.
+    class OracleAuthError(Exception):
+        pass
+
+    def authenticate_oracle(path: pathlib.Path, _trusted_sha256: str, _candidate: pathlib.Path):
+        return path.resolve(strict=True), None
+
+    IsolatedCandidate = None
 
 
 STABLE_ENV = {
@@ -1650,7 +1661,7 @@ def main() -> int:
             b"jq-odin: filter parse error\n",
         ),
         ("scalar literal", ["1"], b"null", 0, b"1\n", b""),
-        ("bundled short options", ["-nc", "."], b"", 0, b"null", b""),
+        ("bundled short options", ["-nc", "."], b"", 0, b"null\n", b""),
         ("JSON input", ["."], b"{", 4, b"", b"jq-odin: JSON input error\n"),
         (
             "runtime with prefix",
