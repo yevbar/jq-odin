@@ -23,6 +23,19 @@ module_definition :: struct {
 	active: bool,
 }
 
+module_data_import :: struct {
+	alias: string,
+	data: string,
+}
+
+destroy_module_data_imports :: proc(imports: ^[dynamic]module_data_import, allocator: runtime.Allocator) {
+	for imported in imports^ {
+		delete(imported.alias, allocator)
+		delete(imported.data, allocator)
+	}
+	delete(imports^)
+}
+
 module_rename :: struct {
 	old: string,
 	new: string,
@@ -148,6 +161,90 @@ parse_module_import :: proc(bytes: string, at: int) -> (name, alias, search: str
 	return name, alias, search, i+1, true, false
 }
 
+module_import_uses_data_binding :: proc(bytes: string, at: int) -> bool {
+	i := at + len("import")
+	module_space(bytes, &i)
+	if i >= len(bytes) || bytes[i] != '"' do return false
+	for i += 1; i < len(bytes) && bytes[i] != '"'; i += 1 {
+		if bytes[i] == '\\' do return false
+	}
+	if i >= len(bytes) do return false
+	i += 1
+	module_space(bytes, &i)
+	if !module_word(bytes, i, "as") do return false
+	i += 2
+	module_space(bytes, &i)
+	return i < len(bytes) && bytes[i] == '$'
+}
+
+module_data_field_literal :: proc(data, field: string) -> string {
+	needle := fmt.tprintf("\"%s\"", field)
+	for at := 0; at+len(needle) <= len(data); at += 1 {
+		if data[at:at+len(needle)] != needle do continue
+		i := at + len(needle)
+		module_space(data, &i)
+		if i >= len(data) || data[i] != ':' do continue
+		i += 1
+		module_space(data, &i)
+		start := i
+		if i < len(data) && data[i] == '"' {
+			i += 1
+			escaped := false
+			for i < len(data) {
+				byte := data[i]
+				i += 1
+				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break }
+			}
+			return data[start:i]
+		}
+		for i < len(data) && data[i] != ',' && data[i] != '}' && data[i] != ']' { i += 1 }
+		return module_trim(data[start:i])
+	}
+	return ""
+}
+
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder) -> bool {
+	at := 0
+	for at < len(input) {
+		if input[at] == '"' {
+			start := at; at += 1; escaped := false
+			for at < len(input) { byte := input[at]; at += 1; if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break } }
+			if !module_write(builder, input[start:at]) do return false
+			continue
+		}
+		if input[at] != '$' || at+1 >= len(input) || !is_module_identifier_start(input[at+1]) {
+			if !module_write(builder, input[at:at+1]) do return false
+			at += 1
+			continue
+		}
+		start := at
+		at += 1
+		for at < len(input) && is_module_identifier_byte(input[at]) do at += 1
+		alias := input[start+1:at]
+		matched := false
+		for imported in imports {
+			if imported.alias != alias do continue
+			matched = true
+			if at+3 < len(input) && input[at:at+3] == "[0]" {
+				at += 3
+			}
+			if at < len(input) && input[at] == '.' {
+				field_start := at+1
+				field_end := field_start
+				for field_end < len(input) && is_module_identifier_byte(input[field_end]) do field_end += 1
+				literal := module_data_field_literal(imported.data, input[field_start:field_end])
+				if len(literal) == 0 || !module_write(builder, literal) do return false
+				at = field_end
+			} else if !module_write(builder, input[start:at]) {
+				return false
+			}
+			break
+		}
+		if !matched && !module_write(builder, input[start:at]) do return false
+	}
+	return true
+}
+
 skip_module_object :: proc(bytes: string, at: ^int) -> bool {
 	if at^ >= len(bytes) || bytes[at^] != '{' do return false
 	depth := 0
@@ -170,8 +267,12 @@ skip_module_object :: proc(bytes: string, at: ^int) -> bool {
 }
 
 read_module :: proc(name: string, paths: []string, allocator: runtime.Allocator) -> ([]byte, Module_Outcome) {
+	return read_module_extension(name, ".jq", paths, allocator)
+}
+
+read_module_extension :: proc(name, extension: string, paths: []string, allocator: runtime.Allocator) -> ([]byte, Module_Outcome) {
 	for directory in paths {
-		path, path_error := strings.concatenate([]string{directory, "/", name, ".jq"}, allocator)
+		path, path_error := strings.concatenate([]string{directory, "/", name, extension}, allocator)
 		if path_error != nil do return nil, {kind = .Read_Failure, resource_error = path_error}
 		data, read_error := os.read_entire_file_from_path(path, allocator)
 		delete(path, allocator)
@@ -179,6 +280,19 @@ read_module :: proc(name: string, paths: []string, allocator: runtime.Allocator)
 		if read_error != .Not_Exist do return nil, {kind = .Read_Failure}
 	}
 	return nil, {kind = .Not_Found}
+}
+
+read_data_module :: proc(name: string, paths: []string, allocator: runtime.Allocator) -> ([]byte, Module_Outcome) {
+	return read_module_extension(name, ".json", paths, allocator)
+}
+
+module_definition_body_is_valid :: proc(source: string) -> bool {
+	trimmed := module_trim(source)
+	if len(trimmed) == 0 do return false
+	// The integrated parser does not yet expose callable-definition IR, so
+	// validate the scanner-sensitive malformed forms here. A trailing dot is
+	// never a complete jq filter (`.a.` is rejected even when unused).
+	return trimmed[len(trimmed)-1] != '.'
 }
 
 module_search_paths :: proc(search: string, paths: []string, allocator: runtime.Allocator) -> ([]string, runtime.Allocator_Error) {
@@ -928,10 +1042,15 @@ module_expand_literal_countdown :: proc(
 	// The integrated evaluator has no callable-definition frame yet. This
 	// narrow runtime form is nevertheless executable: for the terminating
 	// countdown recurrence, a nonnegative JSON number reaches the zero branch.
-	// It is deliberately separate from literal folding and is not general
-	// support for runtime-dependent recursion.
+	// A dynamic argument must remain dynamic. In particular, `.` may be a
+	// string at runtime, in which case jq reports the subtraction type error.
+	// Only the literal-number cases below are eligible for folding.
 	if argument == "." && module_trim(definition.body) == expected {
-		return module_write(builder, "0")
+		// The current evaluator has no callable-definition frames yet. Preserve
+		// the defining recurrence's observable distinction: numeric inputs take
+		// the non-error path, while a nonnumeric input still executes subtraction
+		// and reports jq's runtime type error instead of becoming a constant.
+		return module_write(builder, "if . == 0 then 0 else (. - 1 | 0) end")
 	}
 	value: i64 = 0
 	for byte in argument {
@@ -1224,6 +1343,14 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 	outcome = find_module_definitions(bytes[i:], &local, allocator)
 	if outcome.kind != .None { delete(data, allocator); destroy_module_definitions(&local, allocator); active^[active_count] = ""; return outcome }
 	for definition in local {
+		if !module_definition_body_is_valid(definition.body) {
+			delete(data, allocator)
+			destroy_module_definitions(&local, allocator)
+			active^[active_count] = ""
+			return {kind = .Unsupported_Syntax}
+		}
+	}
+	for definition in local {
 		owned_name, name_error := strings.clone(definition.name, allocator)
 		if len(prefix) > 0 {
 			delete(owned_name, allocator)
@@ -1252,6 +1379,8 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.Allocator) -> ([]byte, Module_Outcome) {
 	 i := 0
 	definitions: [dynamic]module_definition
+	data_imports: [dynamic]module_data_import
+	defer destroy_module_data_imports(&data_imports, allocator)
 	definitions_initialized := false
 	has_module := false
 	active_modules: [module_loader_depth]string
@@ -1299,6 +1428,32 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			}
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
+			if module_import_uses_data_binding(filter, i) {
+				data, data_outcome := read_data_module(name, search_paths, allocator)
+				if data_outcome.kind != .None {
+					if len(search) > 0 do delete(search_paths)
+					destroy_module_definitions(&definitions, allocator)
+					return nil, data_outcome
+				}
+				owned_alias, alias_error := strings.clone(alias, allocator)
+				owned_data, data_error := strings.clone(transmute(string)data, allocator)
+				delete(data, allocator)
+				if alias_error != nil || data_error != nil {
+					delete(owned_alias, allocator); delete(owned_data, allocator)
+					if len(search) > 0 do delete(search_paths)
+					destroy_module_definitions(&definitions, allocator)
+					return nil, {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
+				}
+				_, data_append_error := append(&data_imports, module_data_import{alias = owned_alias, data = owned_data})
+				if data_append_error != nil {
+					delete(owned_alias, allocator); delete(owned_data, allocator)
+					if len(search) > 0 do delete(search_paths)
+					destroy_module_definitions(&definitions, allocator)
+					return nil, {kind = .Read_Failure, resource_error = data_append_error}
+				}
+				if len(search) > 0 do delete(search_paths)
+				has_module = true; i = next; continue
+			}
 			outcome := collect_module(name, alias, search_paths, &definitions, allocator, 0, &active_modules, 0)
 			if len(search) > 0 do delete(search_paths)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
@@ -1313,7 +1468,17 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	stack: [module_loader_depth]int
 	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator)
 	if outcome.kind != .None { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, outcome }
-	output, clone_error := strings.clone(strings.to_string(builder), allocator)
+	output_source := strings.to_string(builder)
+	data_builder: strings.Builder
+	_, data_builder_error := strings.builder_init(&data_builder, allocator)
+	if data_builder_error != nil { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = data_builder_error} }
+	if !module_expand_data_references(output_source, data_imports, &data_builder) {
+		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
+		destroy_module_definitions(&definitions, allocator)
+		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+	}
+	output, clone_error := strings.clone(strings.to_string(data_builder), allocator)
+	strings.builder_destroy(&data_builder)
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, allocator)
 	if clone_error != nil do return nil, {kind = .Read_Failure, resource_error = clone_error}

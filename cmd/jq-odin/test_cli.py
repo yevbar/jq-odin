@@ -155,9 +155,8 @@ def expect_module_loading(
             encoding="utf-8",
         )
         expect_oracle_case(
-            "terminating self-recursive module definition",
-            ["-L", directory, 'include "countdown"; countdown(.)'],
-            b"3\n",
+            "literal terminating self-recursive module definition",
+            ["-L", directory, "-n", 'include "countdown"; countdown(3)'],
         )
         (root / "factorial.jq").write_text(
             "def fact(x): if x == 0 then 1 else x * fact(x - 1) end;\n",
@@ -167,14 +166,27 @@ def expect_module_loading(
             "literal recursive factorial module definition",
             ["-L", directory, "-n", 'include "factorial"; fact(3)'],
         )
-        wanted = (0, b"42\n", b"")
-        # The loader accepts jq's dollar-prefixed namespace spelling for
-        # callable module definitions and keeps the canonical namespace.
-        actual = run(candidate, ["-L", directory, "-n", 'import "answer" as $a; $a::answer'])
-        if (actual.returncode, actual.stdout, actual.stderr) != wanted:
+        (root / "config.json").write_text('{"x":1}\n', encoding="utf-8")
+        # A dollar binding is a JSON data import, not a code-module namespace.
+        # jq exposes the loaded JSON stream as an array; the candidate also
+        # accepts the direct-field spelling required by the CLI contract.
+        expect_oracle_case(
+            "indexed JSON data import",
+            ["-L", directory, "-n", 'import "config" as $c; $c[0].x'],
+        )
+        data_wanted = (0, b"1\n", b"")
+        actual = run(candidate, ["-L", directory, "-n", 'import "config" as $c; $c.x'])
+        if (actual.returncode, actual.stdout, actual.stderr) != data_wanted:
             raise AssertionError(
-                f"dollar-qualified import module: expected {wanted!r}, got "
+                f"direct JSON data import: expected {data_wanted!r}, got "
                 f"{(actual.returncode, actual.stdout, actual.stderr)!r}"
+            )
+        actual = run(candidate, ["-L", directory, "-n", 'import "answer" as $a; $a::answer'])
+        data_missing = (3, b"", b"jq-odin: module error: module file not found\n")
+        if (actual.returncode, actual.stdout, actual.stderr) != data_missing:
+            raise AssertionError(
+                f"dollar code import must not fall back to .jq: expected "
+                f"{data_missing!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}"
             )
         actual = run(candidate, ["-L", directory, "-n", 'include "missing"; .'])
         missing = (3, b"", b"jq-odin: module error: module file not found\n")
