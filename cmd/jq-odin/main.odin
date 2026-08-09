@@ -1,6 +1,7 @@
 package main
 
 import "base:runtime"
+import "core:fmt"
 import "core:io"
 import "core:os"
 import "core:sys/posix"
@@ -184,7 +185,15 @@ json_kind_name :: proc(kind: value.Kind) -> string {
 write_driver_error :: proc(err: driver.Run_Error) -> bool {
 	if err.kind == .Runtime && len(err.runtime_key) > len("__jq_odin_subtraction__") &&
 	   err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
-		ok := write_all(os.stderr, "jq: error (at <stdin>:1): ")
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): ") && ok
 		ok = write_all(os.stderr, json_kind_name(err.runtime_input_kind)) && ok
 		ok = write_all(os.stderr, " (") && ok
 		ok = write_all(os.stderr, err.runtime_key[len("__jq_odin_subtraction__"):]) && ok
@@ -249,6 +258,8 @@ emit_stdout :: proc(data: rawptr, bytes: string) -> bool {
 
 run_input :: proc(
 	input: string,
+	input_path: string,
+	input_line: int,
 	compact: bool,
 	raw: bool,
 	prepared: ^driver.Compiled_Filter,
@@ -263,6 +274,8 @@ run_input :: proc(
 		&result, "", input, context.allocator,
 		{
 			output_mode = mode,
+			input_path = input_path,
+			input_line = input_line,
 			compiled_filter = prepared,
 			emitter = emit_stdout,
 			emitter_data = sink,
@@ -779,6 +792,8 @@ consume_prefix :: proc(buffer: ^input_buffer, count: int) {
 process_available :: proc(
 	buffer: ^input_buffer,
 	filter: string,
+	input_path: string,
+	input_line: ^int,
 	compact, raw, eof, had_open_error: bool,
 	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
@@ -847,9 +862,17 @@ process_available :: proc(
 			_ = write_all(os.stderr, "jq-odin: JSON input error\n")
 			return 4, true
 		}
+		line := 1
+		if input_line != nil do line = input_line^
 		status = run_input(
-			transmute(string)buffer.memory[:end], compact, raw, prepared, sink,
+			transmute(string)buffer.memory[:end], input_path, line,
+			compact, raw, prepared, sink,
 		)
+		if status == 0 && input_line != nil {
+			for byte_value in buffer.memory[:end] {
+				if byte_value == '\n' do input_line^ += 1
+			}
+		}
 		consume_prefix(buffer, end)
 		reset_framer(&buffer.framer)
 		buffer.bom_eligible = false
@@ -864,6 +887,8 @@ process_available :: proc(
 read_source :: proc(
 	file: ^os.File,
 	filter: string,
+	input_path: string,
+	input_line: ^int,
 	compact, raw, had_open_error: bool,
 	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
@@ -876,7 +901,7 @@ read_source :: proc(
 		if count > 0 {
 			if !append_input(buffer, chunk[:count]) do return 2, true, false
 			status, stop = process_available(
-				buffer, filter, compact, raw, false, had_open_error, prepared,
+				buffer, filter, input_path, input_line, compact, raw, false, had_open_error, prepared,
 				values_after_open_error, sink,
 			)
 			if stop do return status, true, true
@@ -921,18 +946,19 @@ run_main :: proc() -> (result: int) {
 		}
 	}
 	if parsed.null_input {
-		return run_input("null", parsed.compact, parsed.raw, &prepared, &sink)
+		return run_input("null", "", 1, parsed.compact, parsed.raw, &prepared, &sink)
 	}
 
 	if len(parsed.input_paths) == 0 {
 		buffer := input_buffer{bom_eligible = true}
+		input_line := 1
 		status, _, read_ok := read_source(
-			os.stdin, parsed.filter, parsed.compact, parsed.raw, false, &prepared,
+			os.stdin, parsed.filter, "", &input_line, parsed.compact, parsed.raw, false, &prepared,
 			nil, &buffer, &sink,
 		)
 		if status == 0 && read_ok {
 			status, _ = process_available(
-				&buffer, parsed.filter, parsed.compact, parsed.raw, true, false,
+				&buffer, parsed.filter, "", &input_line, parsed.compact, parsed.raw, true, false,
 				&prepared, nil, &sink,
 			)
 		}
@@ -950,8 +976,10 @@ run_main :: proc() -> (result: int) {
 	status := 0
 	had_open_error := false
 	values_after_open_error := 0
+	input_line := 1
 	buffer := input_buffer{bom_eligible = true}
 	for arg in parsed.input_paths {
+		input_line = 1
 		file := os.stdin
 		opened := true
 		if arg != "-" {
@@ -972,7 +1000,7 @@ run_main :: proc() -> (result: int) {
 			continue
 		}
 		file_status, stop, read_ok := read_source(
-			file, parsed.filter, parsed.compact, parsed.raw, had_open_error,
+			file, parsed.filter, arg, &input_line, parsed.compact, parsed.raw, had_open_error,
 			&prepared, &values_after_open_error, &buffer, &sink,
 		)
 		if arg != "-" {
@@ -992,7 +1020,7 @@ run_main :: proc() -> (result: int) {
 	}
 	if status == 0 || status == 2 && had_open_error && values_after_open_error == 0 {
 		final_status, _ := process_available(
-			&buffer, parsed.filter, parsed.compact, parsed.raw, true, had_open_error,
+			&buffer, parsed.filter, "", &input_line, parsed.compact, parsed.raw, true, had_open_error,
 			&prepared, &values_after_open_error, &sink,
 		)
 		if final_status != 0 do status = final_status

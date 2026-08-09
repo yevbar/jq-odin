@@ -50,7 +50,11 @@ Run_Options :: struct {
 	emitter_data: rawptr,
 	compiled_filter: ^Compiled_Filter,
 	retain_compilation: bool,
-}
+	// Source location of the current input value, supplied by the CLI while
+	// it frames argv/stdin streams. Embedders may leave these at defaults.
+	input_path: string,
+	input_line: int,
+	}
 
 // Run_Error is non-owning. runtime_key borrows Run_Result storage and remains
 // valid until destroy_run_result succeeds.
@@ -70,6 +74,8 @@ Run_Error :: struct {
 	runtime_input_kind:   value.Kind,
 	runtime_span:         program.Source_Span,
 	runtime_key:          string,
+	runtime_input_path:   string,
+	runtime_input_line:   int,
 	serialization_kind:  json.Compact_Error_Kind,
 	resource_error:       runtime.Allocator_Error,
 }
@@ -700,7 +706,8 @@ run_with_options :: proc(
 				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
 				result.runtime_key_memory = transmute([]byte)encoded_key
 				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
-					runtime_input_kind = value.kind_of(&result.input), runtime_key = transmute(string)result.runtime_key_memory})
+					runtime_input_kind = value.kind_of(&result.input), runtime_key = transmute(string)result.runtime_key_memory,
+					runtime_input_path = options.input_path, runtime_input_line = options.input_line})
 			}
 			number, number_ok := value.number_value_get(&result.input)
 			if !number_ok || number < 0 || number != cast(f64)cast(i64)number {
@@ -710,7 +717,8 @@ run_with_options :: proc(
 				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
 				result.runtime_key_memory = transmute([]byte)encoded_key
 				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
-					runtime_input_kind = .Number, runtime_key = transmute(string)result.runtime_key_memory})
+					runtime_input_kind = .Number, runtime_key = transmute(string)result.runtime_key_memory,
+					runtime_input_path = options.input_path, runtime_input_line = options.input_line})
 			}
 		}
 		if result.module_runtime_factorial {

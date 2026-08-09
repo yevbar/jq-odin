@@ -193,6 +193,11 @@ def expect_module_loading(
             ["-L", directory, 'include "countdown"; countdown(.)'],
             b"true\n",
         )
+        (root / "bad-bool.json").write_text("true\n", encoding="utf-8")
+        expect_oracle_case(
+            "recursive subtraction diagnostic keeps input path and line",
+            ["-L", directory, 'include "countdown"; countdown(.)', str(root / "bad-bool.json")],
+        )
         expect_oracle_case(
             "dynamic recursive module preserves array subtraction type errors",
             ["-L", directory, 'include "countdown"; countdown(.)'],
@@ -213,6 +218,7 @@ def expect_module_loading(
         (root / "config-escaped-key.json").write_text(
             '{"\\u0078":7}\n', encoding="utf-8"
         )
+        (root / "config-adjacent.json").write_text('1"x"\n', encoding="utf-8")
         # A dollar binding is a JSON data import, not a code-module namespace.
         # jq exposes the loaded JSON stream as an array.  These cases stay
         # oracle-backed so the driver cannot silently treat the import as a
@@ -258,6 +264,18 @@ def expect_module_loading(
                 "-n",
                 'import "config-escaped-key" as $c; $c[0].x',
             ],
+        )
+        expect_oracle_case(
+            "adjacent scalar and string data imports frame independently",
+            ["-L", directory, "-n", 'import "config-adjacent" as $c; $c'],
+        )
+        expect_oracle_case(
+            "scalar JSON data import field access remains a type error",
+            ["-L", directory, "-n", 'import "config-scalar" as $c; $c[0].x'],
+        )
+        expect_oracle_case(
+            "lexical as binding shadows imported data alias",
+            ["-L", directory, "-n", 'import "config" as $c; 2 as $c | $c'],
         )
         expect_oracle_case(
             "caller input remains separate from JSON data import",

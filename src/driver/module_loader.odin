@@ -266,24 +266,24 @@ module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) ->
 		// jq accepts adjacent JSON values (for example `1[2]`) in a
 		// module stream. Stop a scalar at a container opener so each value is
 		// framed independently; ordinary scalar text remains one token.
-		for i < len(data) && data[i] != ' ' && data[i] != '\t' && data[i] != '\r' && data[i] != '\n' && data[i] != '{' && data[i] != '[' do i += 1
+		for i < len(data) && data[i] != ' ' && data[i] != '\t' && data[i] != '\r' && data[i] != '\n' && data[i] != '{' && data[i] != '[' && data[i] != '"' do i += 1
 		}
-		if !first && !module_write(&builder, ",") do return "", .Out_Of_Memory
-		segment := data[start:i]
-		in_string := false
-		escaped := false
-		for segment_index := 0; segment_index < len(segment); segment_index += 1 {
-			byte := segment[segment_index]
-			if in_string {
-				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
-			} else if byte == '"' {
-				in_string = true
-			} else if byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n' {
-				continue
-			}
-			if !module_write(&builder, segment[segment_index:segment_index+1]) do return "", .Out_Of_Memory
+	if !first && !module_write(&builder, ",") do return "", .Out_Of_Memory
+	segment := data[start:i]
+	in_string := false
+	escaped := false
+	for segment_index := 0; segment_index < len(segment); segment_index += 1 {
+		byte := segment[segment_index]
+		if in_string {
+			if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+		} else if byte == '"' {
+			in_string = true
+		} else if byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n' {
+			continue
 		}
-		first = false
+		if !module_write(&builder, segment[segment_index:segment_index+1]) do return "", .Out_Of_Memory
+	}
+	first = false
 	}
 	if !module_write(&builder, "]") do return "", .Out_Of_Memory
 	return strings.clone(strings.to_string(builder), allocator)
@@ -361,20 +361,27 @@ module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime
 	}
 	if key_end > len(data) || data[key_end-1] != '"' do return key_end, false
 	decoded, parse_error := json.parse_value(data[at:key_end], allocator)
-	if parse_error.kind != .None do return key_end, false
+	if parse_error.kind != .None {
+		// A parse error may retain scratch storage after a failed cleanup. Do
+		// not discard that owner: retry until the allocator accepts retirement.
+		for json.destroy_scalar_parse_error(&parse_error) != nil {}
+		return key_end, false
+	}
 	text, text_ok := value.string_borrowed(&decoded)
 	key_matches = text_ok && text == field
 	// Destruction can report a transient allocator failure while retaining the
 	// value owner. Keep the decoded handle live and retry several times before
 	// abandoning the match; never overwrite it while a Free is still pending.
-	for attempt := 0; attempt < 4; attempt += 1 {
-		if value.destroy_value(&decoded) == nil do break
-	}
+	// A failed Free leaves `decoded` as the live owner. Retry without a fixed
+	// cap so transient allocator failures cannot make the owner unreachable.
+	for value.destroy_value(&decoded) != nil {}
 	return key_end, key_matches
 }
 
-module_data_field_literal :: proc(source, field: string, allocator: runtime.Allocator) -> string {
+module_data_field_literal :: proc(source, field: string, allocator: runtime.Allocator) -> (literal: string, object: bool) {
 	data := module_data_first_element_literal(source)
+	first := module_trim(data)
+	if len(first) == 0 || first[0] != '{' do return first, false
 	needle := fmt.tprintf("\"%s\"", field)
 	depth := 0
 	in_string := false
@@ -404,7 +411,7 @@ module_data_field_literal :: proc(source, field: string, allocator: runtime.Allo
 							value_byte := data[i]; i += 1
 							if escaped { escaped = false } else if value_byte == '\\' { escaped = true } else if value_byte == '"' { break }
 						}
-						return data[start:i]
+						return data[start:i], true
 					}
 					value_depth := 0
 					in_value_string := false
@@ -421,7 +428,7 @@ module_data_field_literal :: proc(source, field: string, allocator: runtime.Allo
 						} else if value_depth == 0 && value_byte == ',' { break }
 						i += 1
 					}
-					return module_trim(data[start:i])
+					return module_trim(data[start:i]), true
 				}
 			}
 			in_string = true
@@ -431,7 +438,31 @@ module_data_field_literal :: proc(source, field: string, allocator: runtime.Allo
 	// jq's object lookup yields null for an absent field. Keep that result
 	// distinct from allocation failure in the caller; an empty string is a
 	// valid JSON literal and must also remain writable.
-	return "null"
+	return "null", true
+}
+
+module_binder_position :: proc(input, alias: string) -> int {
+	needle := fmt.tprintf("as $%s", alias)
+	in_string := false
+	escaped := false
+	comment := false
+	for at := 0; at < len(input); at += 1 {
+		byte := input[at]
+		if comment {
+			if byte == '\n' do comment = false
+			continue
+		}
+		if in_string {
+			if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+			continue
+		}
+		if byte == '"' { in_string = true; continue }
+		if byte == '#' { comment = true; continue }
+		if at+len(needle) > len(input) || input[at:at+len(needle)] != needle do continue
+		if at > 0 && is_module_identifier_byte(input[at-1]) do continue
+		return at + len(needle) - len(alias) - 1
+	}
+	return -1
 }
 
 module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, data_replace_input: ^bool, allocator: runtime.Allocator) -> bool {
@@ -472,9 +503,14 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 		at += 1
 		for at < len(input) && is_module_identifier_byte(input[at]) do at += 1
 		alias := input[start+1:at]
+		// `as $name` introduces a lexical binding whose RHS shadows an
+		// imported data alias. Find the binder's variable position once per
+		// input and leave that binding (and its scoped expression) untouched.
+		shadow_start := module_binder_position(input, alias)
 		matched := false
 		for imported in imports {
 			if imported.alias != alias do continue
+			if shadow_start >= 0 && start >= shadow_start do continue
 			matched = true
 			if module_trim(input) == fmt.tprintf(". + $%s[0]", alias) {
 				if !module_write(builder, ".") do return false
@@ -492,10 +528,17 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 					field_start := at+1
 					field_end := field_start
 					for field_end < len(input) && is_module_identifier_byte(input[field_end]) do field_end += 1
-					literal := module_data_field_literal(
+					literal, is_object := module_data_field_literal(
 						imported.data, input[field_start:field_end], allocator,
 					)
-					if !module_write(builder, literal) do return false
+					if !is_object {
+						// Keep the postfix operation in the generated filter so the
+						// evaluator reports jq's type error for scalar indexing rather
+						// than silently turning it into a missing-field null.
+						if !module_write(builder, literal) do return false
+						if !module_write(builder, " | .") do return false
+						if !module_write(builder, input[field_start:field_end]) do return false
+					} else if !module_write(builder, literal) do return false
 					at = field_end
 				} else if module_trim(input) == module_trim(input[start:at]) {
 					if !module_write(builder, module_data_first_element_literal(imported.data)) do return false
