@@ -87,7 +87,7 @@ jobs:
       - name: Run adversarial diff review
         env:
           VERS_API_KEY: ${{ secrets.VERS_API_KEY }}
-          VERS_REVIEW_COMMIT: 13b7c648-7849-4b9b-a788-16b4522edeb8
+          VERS_REVIEW_COMMIT: da78ef2a-fede-43cc-9146-804f60188240
           VERS_VM_ID_FILE: controller/review-vm-id
         run: controller/run-vers-review.sh review-input review-input/result.json
 
