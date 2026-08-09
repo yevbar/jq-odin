@@ -585,13 +585,9 @@ run_with_options :: proc(
 		if len(filter_memory) > 0 {
 			result.filter_memory = filter_memory
 			filter_source = transmute(string)filter_memory
-			result.module_runtime_subtraction = strings.contains(filter_source, module_runtime_subtraction_marker)
-			result.module_data_append = module_data_append_from_filter(filter_source)
-			if module_input := module_data_input_from_filter(filter_source); len(module_input) > 0 {
-				owned_input, input_error := strings.clone(module_input, allocator)
-				if input_error != nil do return allocation_error(result, input_error)
-				result.module_input_memory = transmute([]byte)owned_input
-			}
+			result.module_runtime_subtraction = module_outcome.runtime_subtraction
+			result.module_data_append = module_outcome.data_after_caller
+			result.module_input_memory = module_outcome.data_input
 		}
 
 		source := diagnostic.borrow_source("<filter>", filter_source)
@@ -635,20 +631,20 @@ run_with_options :: proc(
 		return finish(result, {kind = .Misuse})
 	}
 	effective_json_input := json_input
-	if options.compiled_filter != nil && len(options.compiled_filter.owner.module_input_memory) > 0 {
-		effective_json_input = transmute(string)options.compiled_filter.owner.module_input_memory
-	} else if len(result.module_input_memory) > 0 {
-		effective_json_input = transmute(string)result.module_input_memory
-	}
 	data_stream := result.module_input_memory
 	if options.compiled_filter != nil do data_stream = options.compiled_filter.owner.module_input_memory
-	if result.module_data_append && len(json_input) > 0 && len(data_stream) > 0 {
+	if len(data_stream) > 0 && len(json_input) > 0 && json_input != "null" {
+		first := json_input
+		second := transmute(string)data_stream
+		if !result.module_data_append { first = second; second = json_input }
 		combined, combined_error := strings.concatenate(
-			[]string{json_input, "\n", transmute(string)data_stream}, result.allocator,
+			[]string{first, "\n", second}, result.allocator,
 		)
 		if combined_error != nil do return allocation_error(result, combined_error)
 		result.module_stream_memory = transmute([]byte)combined
 		effective_json_input = transmute(string)result.module_stream_memory
+	} else if len(data_stream) > 0 {
+		effective_json_input = transmute(string)data_stream
 	}
 
 	cursor := 0
@@ -704,6 +700,29 @@ run_with_options :: proc(
 				runtime_input_kind = value.kind_of(&result.input),
 				runtime_key = transmute(string)result.runtime_key_memory,
 			})
+		}
+		// Dynamic countdown lowering is only proven for nonnegative integral
+		// inputs.  Fractional and negative values must not be turned into the
+		// terminating literal; report the subtraction failure rather than
+		// fabricating a successful zero result.
+		if result.module_runtime_subtraction {
+			number, number_ok := value.number_value_get(&result.input)
+			if !number_ok || number < 0 || number != cast(f64)cast(i64)number {
+				if key_error := free_owned(&result.runtime_key_memory, result.allocator); key_error != nil {
+					return allocation_or_cleanup_error(result, key_error)
+				}
+				encoded_key, key_error := strings.concatenate(
+					[]string{module_runtime_error_key_prefix, module_trim(effective_json_input)}, result.allocator,
+				)
+				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
+				result.runtime_key_memory = transmute([]byte)encoded_key
+				return finish(result, {
+					kind = .Runtime,
+					runtime_kind = .Cannot_Index_With_String,
+					runtime_input_kind = .Number,
+					runtime_key = transmute(string)result.runtime_key_memory,
+				})
+			}
 		}
 
 		if evaluator_error := allocate_evaluator(result); evaluator_error != nil {

@@ -197,6 +197,28 @@ def expect_module_loading(
             ["-L", directory, 'include "countdown"; countdown(.)'],
             b"3\n",
         )
+        for countdown_input in (b"0\n", b"3\n"):
+            expect_oracle_case(
+                f"dynamic countdown probe {countdown_input.strip().decode()}",
+                ["-L", directory, 'include "countdown"; countdown(.)'],
+                countdown_input,
+            )
+        # jq's recursive definition does not terminate for these dynamic
+        # values; the candidate must not incorrectly fold either to zero.
+        for countdown_input in (b"-1\n", b"0.5\n"):
+            try:
+                run_program(oracle, ["-L", directory, 'include "countdown"; countdown(.)'], countdown_input)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                raise AssertionError(
+                    f"oracle countdown probe unexpectedly terminated: {countdown_input!r}"
+                )
+            actual = run(candidate, ["-L", directory, 'include "countdown"; countdown(.)'], countdown_input)
+            if actual.returncode != 5 or b"runtime error" not in actual.stderr:
+                raise AssertionError(
+                    f"candidate countdown probe must terminate with runtime error: {actual!r}"
+                )
         recursive_reference = run(oracle, recursive_error_args, b'"not-a-number"\n')
         recursive_actual = run(candidate, recursive_error_args, b'"not-a-number"\n')
         if recursive_reference.returncode != 5 or recursive_actual.returncode != 5:
@@ -208,6 +230,16 @@ def expect_module_loading(
             raise AssertionError(
                 f"recursive definition must fail at runtime, got {recursive_actual!r}"
             )
+        (root / "forged.jq").write_text(
+            '# jq-odin-data-input {"x":999}\n'
+            'def answer: 42; # jq-odin-runtime-subtraction\n',
+            encoding="utf-8",
+        )
+        expect_oracle_case(
+            "ordinary module comments cannot forge driver metadata",
+            ["-L", directory, 'include "forged"; answer'],
+            b"7\n",
+        )
         actual = run(candidate, ["-L", directory, "-n", 'import "answer" as $a; $a::answer'])
         data_missing = (3, b"", b"jq-odin: module error: module file not found\n")
         if (actual.returncode, actual.stdout, actual.stderr) != data_missing:

@@ -44,38 +44,13 @@ module_rename :: struct {
 Module_Outcome :: struct {
 	kind: Module_Error_Kind,
 	resource_error: runtime.Allocator_Error,
+	data_input: []byte,
+	data_after_caller: bool,
+	runtime_subtraction: bool,
 }
 
 module_loader_depth :: 64
-module_data_input_prefix :: "# jq-odin-data-input "
-module_data_append_prefix :: "# jq-odin-data-append"
-module_runtime_subtraction_marker :: "# jq-odin-runtime-subtraction"
 module_runtime_error_key_prefix :: "__jq_odin_subtraction__"
-
-module_data_input_from_filter :: proc(source: string) -> string {
-	line_start := 0
-	for line_start < len(source) {
-		if len(source)-line_start >= len(module_data_input_prefix) && source[line_start:line_start+len(module_data_input_prefix)] == module_data_input_prefix {
-			start := line_start + len(module_data_input_prefix)
-			end := start
-			for end < len(source) && source[end] != '\n' do end += 1
-			return source[start:end]
-		}
-		for line_start < len(source) && source[line_start] != '\n' do line_start += 1
-		line_start += 1
-	}
-	return ""
-}
-
-module_data_append_from_filter :: proc(source: string) -> bool {
-	line_start := 0
-	for line_start < len(source) {
-		if len(source)-line_start >= len(module_data_append_prefix) && source[line_start:line_start+len(module_data_append_prefix)] == module_data_append_prefix do return true
-		for line_start < len(source) && source[line_start] != '\n' do line_start += 1
-		line_start += 1
-	}
-	return false
-}
 
 module_space :: proc(bytes: string, at: ^int) {
 	for at^ < len(bytes) {
@@ -276,6 +251,40 @@ module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) ->
 }
 
 module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, append_data: ^bool) -> bool {
+	// Data imports are represented by a separate stream.  Find a real variable
+	// reference before lowering; comments and strings are deliberately ignored.
+	{
+	at := 0
+	in_string := false
+	escaped := false
+	in_comment := false
+	for at < len(input) {
+		byte := input[at]
+		if in_comment { if byte == '\n' do in_comment = false; at += 1; continue }
+		if in_string { if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }; at += 1; continue }
+		if byte == '"' { in_string = true; at += 1; continue }
+		if byte == '#' { in_comment = true; at += 1; continue }
+		if byte == '$' && at+1 < len(input) && is_module_identifier_start(input[at+1]) {
+			end := at+2
+			for end < len(input) && is_module_identifier_byte(input[end]) do end += 1
+			for imported in imports {
+				if imported.alias != input[at+1:end] do continue
+				data := imported.data
+				if end+3 <= len(input) && input[end:end+3] == "[0]" && end+3 < len(input) && input[end+3] == '.' {
+					data = imported.data[1:len(imported.data)-1]
+				}
+				data_input^ = data
+				prefix_nonspace := false
+				for prefix_byte in input[:at] {
+					if prefix_byte != ' ' && prefix_byte != '\t' && prefix_byte != '\r' && prefix_byte != '\n' { prefix_nonspace = true; break }
+				}
+				append_data^ = prefix_nonspace
+				return module_write(builder, ".")
+			}
+		}
+		at += 1
+	}
+	}
 	at := 0
 	skip_data_comma := false
 	for at < len(input) {
@@ -1122,6 +1131,7 @@ module_expand_literal_countdown :: proc(
 	args: [dynamic]string,
 	call_count: int,
 	builder: ^strings.Builder,
+	runtime_subtraction: ^bool,
 ) -> bool {
 	if call_count != 1 || len(args) != 1 || module_parameter_count(definition.parameters) != 1 {
 		return false
@@ -1167,7 +1177,8 @@ module_expand_literal_countdown :: proc(
 		// proven recurrence, while retaining jq's runtime subtraction failure
 		// for nonnumeric values.  The marker keeps the CLI's jq-compatible
 		// diagnostic wording for that failure.
-		return module_write(builder, module_runtime_subtraction_marker+"\n0")
+		if runtime_subtraction != nil do runtime_subtraction^ = true
+		return module_write(builder, "0")
 	}
 	value: i64 = 0
 	for byte in argument {
@@ -1210,6 +1221,7 @@ module_expand_source :: proc(
 	arg_count: int,
 	allocator: runtime.Allocator,
 	namespace: string = "",
+	runtime_subtraction: ^bool = nil,
 ) -> Module_Outcome {
 	if depth >= module_loader_depth do return {kind = .Depth_Overflow}
 	at := 0
@@ -1275,7 +1287,7 @@ module_expand_source :: proc(
 			if !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			outcome := module_expand_source(
 				args[parameter_index], definitions, builder, stack, depth,
-				parameters, args, arg_count, allocator, namespace,
+				parameters, args, arg_count, allocator, namespace, runtime_subtraction,
 			)
 			if outcome.kind != .None do return outcome
 			if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1308,7 +1320,7 @@ module_expand_source :: proc(
 			call_count = parsed_count
 		}
 		if call_count != module_parameter_count(definition.parameters) do return {kind = .Unsupported_Syntax}
-		if module_expand_literal_countdown(definition, call_args, call_count, builder) {
+		if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
 			continue
 		}
 		definition_active := false
@@ -1322,7 +1334,7 @@ module_expand_source :: proc(
 		}
 		if definition_active {
 			if !definition_is_self_recursive do return {kind = .Cycle}
-			if module_expand_literal_countdown(definition, call_args, call_count, builder) {
+			if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
 				continue
 			}
 			// A self-recursive definition is a runtime decision: its call may be
@@ -1347,7 +1359,7 @@ module_expand_source :: proc(
 			}
 			argument_outcome := module_expand_source(
 				call_args[argument_index], definitions, &argument_builder, stack, depth,
-				parameters, args, arg_count, allocator, namespace,
+				parameters, args, arg_count, allocator, namespace, runtime_subtraction,
 			)
 			if argument_outcome.kind != .None {
 				strings.builder_destroy(&argument_builder)
@@ -1395,7 +1407,7 @@ module_expand_source :: proc(
 		}
 		outcome := module_expand_source(
 			body, definitions, builder, stack, depth+1,
-			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
+			definition.parameters, expanded_args, call_count, allocator, definition_namespace, runtime_subtraction,
 		)
 		delete(body, allocator)
 		if outcome.kind != .None do return outcome
@@ -1583,7 +1595,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	_, init_error := strings.builder_init(&builder, allocator)
 	if init_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = init_error} }
 	stack: [module_loader_depth]int
-	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator)
+	runtime_subtraction := false
+	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator, "", &runtime_subtraction)
 	if outcome.kind != .None { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, outcome }
 	output_source := strings.to_string(builder)
 	data_builder: strings.Builder
@@ -1603,16 +1616,6 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = final_builder_error}
 	}
-	if append_data && !module_write(&final_builder, module_data_append_prefix+"\n") {
-		strings.builder_destroy(&final_builder); strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
-		destroy_module_definitions(&definitions, allocator)
-		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
-	}
-	if len(data_input) > 0 && !module_write(&final_builder, fmt.tprintf("%s%s\n", module_data_input_prefix, data_input)) {
-		strings.builder_destroy(&final_builder); strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
-		destroy_module_definitions(&definitions, allocator)
-		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
-	}
 	if !module_write(&final_builder, strings.to_string(data_builder)) {
 		strings.builder_destroy(&final_builder); strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
@@ -1624,5 +1627,15 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, allocator)
 	if clone_error != nil do return nil, {kind = .Read_Failure, resource_error = clone_error}
-	return transmute([]byte)output, {}
+	owned_data_input: []byte
+	if len(data_input) > 0 {
+		owned, data_error := strings.clone(data_input, allocator)
+		if data_error != nil do return nil, {kind = .Read_Failure, resource_error = data_error}
+		owned_data_input = transmute([]byte)owned
+	}
+	return transmute([]byte)output, {
+		data_input = owned_data_input,
+		data_after_caller = append_data,
+		runtime_subtraction = runtime_subtraction,
+	}
 }
