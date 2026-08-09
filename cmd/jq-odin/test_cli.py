@@ -149,6 +149,15 @@ def expect_module_loading(
         (root / "answer.jq").write_text("def answer: 42;\n", encoding="utf-8")
         expect_oracle_case("include module", ["-L", directory, "-n", 'include "answer"; answer'])
         expect_oracle_case("import module", ["-L", directory, "-n", 'import "answer" as a; a::answer'])
+
+        (root / "countdown.jq").write_text(
+            "def countdown(x): if x == 0 then 0 else countdown(x - 1) end;\n",
+            encoding="utf-8",
+        )
+        expect_oracle_case(
+            "terminating self-recursive module definition",
+            ["-L", directory, "-n", 'include "countdown"; countdown(3)'],
+        )
         wanted = (0, b"42\n", b"")
         # The loader accepts jq's dollar-prefixed namespace spelling for
         # callable module definitions and keeps the canonical namespace.
@@ -1338,6 +1347,9 @@ def main() -> int:
 
     cases = [
         ("identity", ["-c", "."], b'{"a":1}\n', 0, b'{"a":1}\n', b""),
+        ("short raw output", ["-r", "."], b'"x"\n', 0, b"x\n", b""),
+        ("long raw output", ["--raw-output", "."], b'"x"\n', 0, b"x\n", b""),
+        ("raw output preserves embedded NUL", ["-r", "."], b'"a\\u0000b"\n', 0, b"a\x00b\n", b""),
         ("long compact", ["--compact-output", ".a"], b'{"a":2}', 0, b"2\n", b""),
         ("pipe", [".a | .b"], b'{"a":{"b":3}}', 0, b"3\n", b""),
         ("chained field", [".a.b"], b'{"a":{"b":4}}', 0, b"4\n", b""),

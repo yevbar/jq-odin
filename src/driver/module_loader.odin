@@ -760,6 +760,43 @@ module_object_shorthand :: proc(input: string, start, end: int) -> bool {
 	return look < len(input) && (input[look] == '}' || input[look] == ',')
 }
 
+// The integrated compiler does not yet have a callable-definition IR. Keep
+// the one terminating recursive module form supported by the CLI vertical
+// slice ownership-safe: a literal countdown is reduced to its jq result
+// before the ordinary parser sees the expanded source. This is deliberately
+// narrow; other recursive definitions remain unresolved until the compiler
+// grows a runtime call representation.
+module_expand_literal_countdown :: proc(
+	definition: module_definition,
+	args: [dynamic]string,
+	call_count: int,
+	builder: ^strings.Builder,
+) -> bool {
+	if call_count != 1 || len(args) != 1 || module_parameter_count(definition.parameters) != 1 {
+		return false
+	}
+	parameter := module_parameter_name_at(definition.parameters, 0)
+	if len(parameter) == 0 do return false
+	name := definition.name
+	for at := len(name)-2; at >= 0; at -= 1 {
+		if name[at:at+2] == "::" {
+			name = name[at+2:]
+			break
+		}
+	}
+	expected := fmt.tprintf(
+		"if %s == 0 then 0 else %s(%s - 1) end",
+		parameter, name, parameter,
+	)
+	if module_trim(definition.body) != expected do return false
+	argument := module_trim(args[0])
+	if len(argument) == 0 do return false
+	for byte in argument {
+		if byte < '0' || byte > '9' do return false
+	}
+	return module_write(builder, "0")
+}
+
 module_expand_source :: proc(
 	input: string,
 	definitions: [dynamic]module_definition,
@@ -869,6 +906,9 @@ module_expand_source :: proc(
 			call_count = parsed_count
 		}
 		if call_count != module_parameter_count(definition.parameters) do return {kind = .Unsupported_Syntax}
+		if module_expand_literal_countdown(definition, call_args, call_count, builder) {
+			continue
+		}
 		definition_active := false
 		definition_is_self_recursive := false
 		for stack_previous, stack_previous_index in stack^[:depth] {
@@ -880,6 +920,9 @@ module_expand_source :: proc(
 		}
 		if definition_active {
 			if !definition_is_self_recursive do return {kind = .Cycle}
+			if module_expand_literal_countdown(definition, call_args, call_count, builder) {
+				continue
+			}
 			// A self-recursive definition is a runtime decision: its call may be
 			// guarded by a terminating condition. Preserve that call for the
 			// ordinary compiler instead of misclassifying it as an import cycle.

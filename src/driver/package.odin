@@ -27,6 +27,7 @@ Run_Error_Kind :: enum u8 {
 Output_Mode :: enum u8 {
 	Pretty,
 	Compact,
+	Raw,
 }
 
 // Output_Emitter synchronously borrows one complete LF-terminated result.
@@ -479,18 +480,29 @@ append_serialized_line :: proc(
 	result: ^Run_Result,
 	bytes: string,
 	mode: Output_Mode,
+	current: ^value.Value,
 ) -> runtime.Allocator_Error {
 	formatted_length := len(bytes)
 	if mode == .Pretty {
 		formatted_ok := false
 		formatted_length, formatted_ok = pretty_size(bytes)
 		if !formatted_ok do return .Invalid_Argument
+	} else if mode == .Raw && current != nil && value.kind_of(current) == .String {
+		raw, raw_ok := value.string_borrowed(current)
+		if !raw_ok do return .Invalid_Argument
+		formatted_length = len(raw)
 	}
 	if formatted_length == max(int) do return .Out_Of_Memory
 	if err := reserve_output(result, formatted_length+1); err != nil do return err
 	destination := result.output_memory[result.output_length:result.output_length+formatted_length]
 	if mode == .Pretty {
 		if !write_pretty(destination, bytes) do return .Invalid_Argument
+	} else if mode == .Compact {
+		copy(destination, transmute([]byte)bytes)
+	} else if mode == .Raw && current != nil && value.kind_of(current) == .String {
+		raw, raw_ok := value.string_borrowed(current)
+		if !raw_ok do return .Invalid_Argument
+		copy(destination, transmute([]byte)raw)
 	} else {
 		copy(destination, transmute([]byte)bytes)
 	}
@@ -682,7 +694,9 @@ run_with_options :: proc(
 				}
 				bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
 				if !bytes_ok do return finish(result, {kind = .Misuse})
-				if append_error := append_serialized_line(result, bytes, options.output_mode);
+				if append_error := append_serialized_line(
+					result, bytes, options.output_mode, &result.current_output,
+				);
 				   append_error != nil {
 					return allocation_or_cleanup_error(result, append_error)
 				}

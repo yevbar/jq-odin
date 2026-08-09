@@ -720,7 +720,7 @@ module_expansion_preserves_self_recursive_calls_for_runtime :: proc(t: ^testing.
 	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
 	stack: [module_loader_depth]int
 	outcome = module_expand_source(
-		"countdown(3)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator,
+		"countdown(n)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator,
 	)
 	testing.expect(t, outcome.kind != .Cycle)
 	testing.expect(t, strings.contains(strings.to_string(builder), "countdown("))

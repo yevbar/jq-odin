@@ -32,6 +32,7 @@ parsed_arguments :: struct {
 	input_paths:  [dynamic]string,
 	module_paths: [dynamic]string,
 	compact:      bool,
+	raw:          bool,
 	null_input:   bool,
 	version:      bool,
 	status:       int,
@@ -53,6 +54,10 @@ parse_arguments :: proc(args: []cstring) -> parsed_arguments {
 		}
 		if !options_done && (arg == "-c" || arg == "--compact-output") {
 			parsed.compact = true
+			continue
+		}
+		if !options_done && (arg == "-r" || arg == "--raw-output") {
+			parsed.raw = true
 			continue
 		}
 		if !options_done && (arg == "-n" || arg == "--null-input") {
@@ -197,11 +202,13 @@ emit_stdout :: proc(data: rawptr, bytes: string) -> bool {
 run_input :: proc(
 	input: string,
 	compact: bool,
+	raw: bool,
 	prepared: ^driver.Compiled_Filter,
 	sink: ^output_sink,
 ) -> int {
 	mode := driver.Output_Mode.Pretty
 	if compact do mode = .Compact
+	if raw do mode = .Raw
 	result: driver.Run_Result
 	err := driver.run_with_options(
 		&result, "", input, context.allocator,
@@ -723,7 +730,7 @@ consume_prefix :: proc(buffer: ^input_buffer, count: int) {
 process_available :: proc(
 	buffer: ^input_buffer,
 	filter: string,
-	compact, eof, had_open_error: bool,
+	compact, raw, eof, had_open_error: bool,
 	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
 	sink: ^output_sink,
@@ -792,7 +799,7 @@ process_available :: proc(
 			return 4, true
 		}
 		status = run_input(
-			transmute(string)buffer.memory[:end], compact, prepared, sink,
+			transmute(string)buffer.memory[:end], compact, raw, prepared, sink,
 		)
 		consume_prefix(buffer, end)
 		reset_framer(&buffer.framer)
@@ -808,7 +815,7 @@ process_available :: proc(
 read_source :: proc(
 	file: ^os.File,
 	filter: string,
-	compact, had_open_error: bool,
+	compact, raw, had_open_error: bool,
 	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
 	buffer: ^input_buffer,
@@ -820,7 +827,7 @@ read_source :: proc(
 		if count > 0 {
 			if !append_input(buffer, chunk[:count]) do return 2, true, false
 			status, stop = process_available(
-				buffer, filter, compact, false, had_open_error, prepared,
+				buffer, filter, compact, raw, false, had_open_error, prepared,
 				values_after_open_error, sink,
 			)
 			if stop do return status, true, true
@@ -865,18 +872,18 @@ run_main :: proc() -> (result: int) {
 		}
 	}
 	if parsed.null_input {
-		return run_input("null", parsed.compact, &prepared, &sink)
+		return run_input("null", parsed.compact, parsed.raw, &prepared, &sink)
 	}
 
 	if len(parsed.input_paths) == 0 {
 		buffer := input_buffer{bom_eligible = true}
 		status, _, read_ok := read_source(
-			os.stdin, parsed.filter, parsed.compact, false, &prepared,
+			os.stdin, parsed.filter, parsed.compact, parsed.raw, false, &prepared,
 			nil, &buffer, &sink,
 		)
 		if status == 0 && read_ok {
 			status, _ = process_available(
-				&buffer, parsed.filter, parsed.compact, true, false,
+				&buffer, parsed.filter, parsed.compact, parsed.raw, true, false,
 				&prepared, nil, &sink,
 			)
 		}
@@ -916,7 +923,7 @@ run_main :: proc() -> (result: int) {
 			continue
 		}
 		file_status, stop, read_ok := read_source(
-			file, parsed.filter, parsed.compact, had_open_error,
+			file, parsed.filter, parsed.compact, parsed.raw, had_open_error,
 			&prepared, &values_after_open_error, &buffer, &sink,
 		)
 		if arg != "-" {
@@ -936,7 +943,7 @@ run_main :: proc() -> (result: int) {
 	}
 	if status == 0 || status == 2 && had_open_error && values_after_open_error == 0 {
 		final_status, _ := process_available(
-			&buffer, parsed.filter, parsed.compact, true, had_open_error,
+			&buffer, parsed.filter, parsed.compact, parsed.raw, true, had_open_error,
 			&prepared, &values_after_open_error, &sink,
 		)
 		if final_status != 0 do status = final_status
