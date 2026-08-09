@@ -47,6 +47,7 @@ Module_Outcome :: struct {
 	data_input: []byte,
 	data_after_caller: bool,
 	data_scalar_add: bool,
+	data_replace_input: bool,
 	runtime_subtraction: bool,
 	runtime_factorial: bool,
 }
@@ -277,7 +278,47 @@ module_direct_data_reference :: proc(segment: string, imports: [dynamic]module_d
 	return -1, false, false
 }
 
-module_data_field_literal :: proc(data, field: string) -> string {
+module_data_first_element_literal :: proc(data: string) -> string {
+	i := 1
+	for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == '\r' || data[i] == '\n') do i += 1
+	start := i
+	if i >= len(data)-1 do return "null"
+	if data[i] == '{' || data[i] == '[' {
+		open := data[i]
+		close: byte = '}'
+		if open == '[' do close = ']'
+		depth := 0
+		in_string := false
+		escaped := false
+		for i < len(data) {
+			byte := data[i]
+			i += 1
+			if in_string {
+				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+				continue
+			}
+			if byte == '"' { in_string = true; continue }
+			if byte == open { depth += 1 } else if byte == close {
+				depth -= 1
+				if depth == 0 do break
+			}
+		}
+	} else if data[i] == '"' {
+		i += 1
+		escaped := false
+		for i < len(data) {
+			byte := data[i]
+			i += 1
+			if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break }
+		}
+	} else {
+		for i < len(data) && data[i] != ' ' && data[i] != '\t' && data[i] != '\r' && data[i] != '\n' && data[i] != ',' && data[i] != ']' do i += 1
+	}
+	return data[start:i]
+}
+
+module_data_field_literal :: proc(source, field: string) -> string {
+	data := module_data_first_element_literal(source)
 	needle := fmt.tprintf("\"%s\"", field)
 	depth := 0
 	in_string := false
@@ -289,7 +330,7 @@ module_data_field_literal :: proc(data, field: string) -> string {
 			continue
 		}
 		if byte == '"' {
-			if depth == 2 && data[at:at+len(needle)] == needle {
+			if depth == 1 && data[at:at+len(needle)] == needle {
 				i := at + len(needle)
 				module_space(data, &i)
 				if i < len(data) && data[i] == ':' {
@@ -333,7 +374,7 @@ module_data_field_literal :: proc(data, field: string) -> string {
 	return "null"
 }
 
-module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, allocator: runtime.Allocator) -> bool {
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, data_replace_input: ^bool, allocator: runtime.Allocator) -> bool {
 	// A data import is an owned constant binding.  Inline its complete JSON
 	// array literal into the surrounding filter so it cannot become a second
 	// caller input stream.  The ordinary compiler then owns cardinality/order
@@ -341,14 +382,14 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 	trimmed := module_trim(input)
 	for imported in imports {
 		if trimmed == fmt.tprintf("., $%s", imported.alias) {
-			owned, clone_error := strings.clone(imported.data[1:len(imported.data)-1], allocator)
+			owned, clone_error := strings.clone(imported.data, allocator)
 			if clone_error != nil do return false
 			if !module_write(builder, ".") { delete(owned, allocator); return false }
 			data_input^ = owned; data_input_owned^ = true; append_data^ = true
 			return true
 		}
 		if trimmed == fmt.tprintf("$%s, .", imported.alias) {
-			owned, clone_error := strings.clone(imported.data[1:len(imported.data)-1], allocator)
+			owned, clone_error := strings.clone(imported.data, allocator)
 			if clone_error != nil do return false
 			if !module_write(builder, ".") { delete(owned, allocator); return false }
 			data_input^ = owned; data_input_owned^ = true
@@ -358,7 +399,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 			if imported.alias == second.alias do continue
 			if trimmed != fmt.tprintf("$%s, $%s", imported.alias, second.alias) do continue
 			owned, clone_error := strings.concatenate(
-				[]string{imported.data[1:len(imported.data)-1], "\n", second.data[1:len(second.data)-1]}, allocator,
+				[]string{imported.data, "\n", second.data}, allocator,
 			)
 			if clone_error != nil do return false
 			if !module_write(builder, ".") { delete(owned, allocator); return false }
@@ -391,9 +432,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 				if !module_write(builder, ".") do return false
 				at += 3
 				data_scalar_add^ = true
-				owned, clone_error := strings.clone(
-					imported.data[1:len(imported.data)-1], allocator,
-				)
+				owned, clone_error := strings.clone(module_data_first_element_literal(imported.data), allocator)
 				if clone_error != nil do return false
 				data_input^ = owned
 				data_input_owned^ = true
@@ -409,15 +448,18 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 					if !module_write(builder, literal) do return false
 					at = field_end
 				} else if module_trim(input) == module_trim(input[start:at]) {
-					if !module_write(builder, ".") do return false
-					data_input^ = imported.data[1:len(imported.data)-1]
+					if !module_write(builder, module_data_first_element_literal(imported.data)) do return false
 				} else {
-					literal := module_trim(imported.data[1:len(imported.data)-1])
+					literal := module_data_first_element_literal(imported.data)
 					if len(literal) == 0 || !module_write(builder, literal) do return false
 				}
 			} else if module_trim(input) == module_trim(input[start:at]) {
 				if !module_write(builder, ".") do return false
-				data_input^ = imported.data[1:len(imported.data)-1]
+				owned, clone_error := strings.clone(imported.data, allocator)
+				if clone_error != nil do return false
+				data_input^ = owned
+				data_input_owned^ = true
+				data_replace_input^ = true
 			} else {
 				if !module_write(builder, imported.data) do return false
 			}
@@ -478,19 +520,36 @@ module_definition_body_is_valid :: proc(source: string) -> bool {
 	return trimmed[len(trimmed)-1] != '.'
 }
 
-module_search_paths :: proc(search: string, paths: []string, allocator: runtime.Allocator) -> ([]string, runtime.Allocator_Error) {
-	if len(search) == 0 do return paths, nil
+module_search_paths :: proc(search: string, paths: []string, allocator: runtime.Allocator) -> ([dynamic]string, runtime.Allocator_Error) {
 	result, err := make([dynamic]string, 0, len(paths)+1, allocator)
 	if err != nil do return nil, err
-	_, err = append(&result, search)
+	resolved_search := search
+	resolved_owned := false
+	if len(search) > 0 && len(paths) > 0 && search[0] != '/' {
+		resolved_search, err = strings.concatenate([]string{paths[0], "/", search}, allocator)
+		if err != nil { delete(result); return nil, err }
+		resolved_owned = true
+	}
+	if len(search) > 0 {
+		_, err = append(&result, resolved_search)
+	}
 	if err == nil {
 		for path in paths {
 			_, err = append(&result, path)
 			if err != nil do break
 		}
 	}
-	if err != nil { delete(result); return nil, err }
-	return result[:], nil
+	if err != nil {
+		if resolved_owned do delete(resolved_search, allocator)
+		delete(result)
+		return nil, err
+	}
+	return result, nil
+}
+
+destroy_module_search_paths :: proc(paths: [dynamic]string, search: string, allocator: runtime.Allocator) {
+	if len(paths) > 0 && len(search) > 0 && search[0] != '/' do delete(paths[0], allocator)
+	delete(paths)
 }
 
 module_definition_end :: proc(bytes: string, start: int) -> int {
@@ -1557,8 +1616,8 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 				if unsupported || !included { delete(data, allocator); active^[active_count] = ""; return {kind = .Unsupported_Syntax} }
 				child_paths, paths_error := module_search_paths(search, paths, allocator)
 				if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
-				outcome = collect_module(child, prefix, child_paths, definitions, allocator, depth+1, active, active_count+1)
-				if len(search) > 0 do delete(child_paths, allocator)
+				outcome = collect_module(child, prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
+				if len(search) > 0 do destroy_module_search_paths(child_paths, search, allocator)
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
 		}
@@ -1573,8 +1632,8 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 			}
 			child_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { if len(prefix) > 0 { delete(child_prefix, allocator) }; delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
-			outcome = collect_module(child, child_prefix, child_paths, definitions, allocator, depth+1, active, active_count+1)
-			if len(search) > 0 do delete(child_paths, allocator)
+			outcome = collect_module(child, child_prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
+			if len(search) > 0 do destroy_module_search_paths(child_paths, search, allocator)
 			if len(prefix) > 0 { delete(child_prefix, allocator) }
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
@@ -1661,8 +1720,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			}
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
-			outcome := collect_module(name, "", search_paths, &definitions, allocator, 0, &active_modules, 0)
-			if len(search) > 0 do delete(search_paths, allocator)
+			outcome := collect_module(name, "", search_paths[:], &definitions, allocator, 0, &active_modules, 0)
+			if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}
@@ -1678,9 +1737,9 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
 			if module_import_uses_data_binding(filter, i) {
-				data, data_outcome := read_data_module(name, search_paths, allocator)
+				data, data_outcome := read_data_module(name, search_paths[:], allocator)
 				if data_outcome.kind != .None {
-					if len(search) > 0 do delete(search_paths, allocator)
+					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, data_outcome
 				}
@@ -1689,22 +1748,22 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				delete(data, allocator)
 				if alias_error != nil || data_error != nil {
 					delete(owned_alias, allocator); delete(owned_data, allocator)
-					if len(search) > 0 do delete(search_paths, allocator)
+					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
 				}
 				_, data_append_error := append(&data_imports, module_data_import{alias = owned_alias, data = owned_data})
 				if data_append_error != nil {
 					delete(owned_alias, allocator); delete(owned_data, allocator)
-					if len(search) > 0 do delete(search_paths, allocator)
+					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
 					destroy_module_definitions(&definitions, allocator)
 					return nil, {kind = .Read_Failure, resource_error = data_append_error}
 				}
-				if len(search) > 0 do delete(search_paths, allocator)
+				if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
 				has_module = true; i = next; continue
 			}
-			outcome := collect_module(name, alias, search_paths, &definitions, allocator, 0, &active_modules, 0)
-			if len(search) > 0 do delete(search_paths, allocator)
+			outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
+			if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
 		}
@@ -1730,7 +1789,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	}
 	append_data := false
 	data_scalar_add := false
-	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, &data_scalar_add, allocator) {
+	data_replace_input := false
+	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, &data_scalar_add, &data_replace_input, allocator) {
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1774,6 +1834,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 		data_input = owned_data_input,
 		data_after_caller = append_data,
 		data_scalar_add = data_scalar_add,
+		data_replace_input = data_replace_input,
 		runtime_subtraction = runtime_subtraction,
 		runtime_factorial = runtime_factorial,
 	}

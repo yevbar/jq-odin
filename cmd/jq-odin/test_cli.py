@@ -178,6 +178,8 @@ def expect_module_loading(
         )
         (root / "config.json").write_text('{"x":1}\n', encoding="utf-8")
         (root / "config-scalar.json").write_text('2\n', encoding="utf-8")
+        (root / "config-stream.json").write_text("1\n2\n", encoding="utf-8")
+        (root / "config-two.json").write_text('{}\n{"x":2}\n', encoding="utf-8")
         # A dollar binding is a JSON data import, not a code-module namespace.
         # jq exposes the loaded JSON stream as an array.  These cases stay
         # oracle-backed so the driver cannot silently treat the import as a
@@ -202,6 +204,18 @@ def expect_module_loading(
         expect_oracle_case(
             "direct JSON data import stream",
             ["-L", directory, "-n", 'import "config" as $c; $c'],
+        )
+        expect_oracle_case(
+            "multi-value JSON data import stays one array value",
+            ["-L", directory, "-n", 'import "config-stream" as $c; $c'],
+        )
+        expect_oracle_case(
+            "multi-value JSON data import index selects only first value",
+            ["-L", directory, "-n", 'import "config-stream" as $c; $c[0]'],
+        )
+        expect_oracle_case(
+            "indexed JSON data import field does not scan later values",
+            ["-L", directory, "-n", 'import "config-two" as $c; $c[0].x'],
         )
         expect_oracle_case(
             "caller input remains separate from JSON data import",
@@ -238,10 +252,15 @@ def expect_module_loading(
         )
         (root / "lib").mkdir()
         (root / "lib" / "foo.jq").write_text("def answer: 8;\n", encoding="utf-8")
-        expect_oracle_case(
-            "quoted include search metadata",
-            ["-L", directory, "-n", 'include "foo" {"search":"./lib"}; answer'],
-        )
+        previous_cwd = pathlib.Path.cwd()
+        os.chdir(root)
+        try:
+            expect_oracle_case(
+                "quoted include search metadata",
+                ["-L", directory, "-n", 'include "foo" {"search":"./lib"}; answer'],
+            )
+        finally:
+            os.chdir(previous_cwd)
         (root / "forged.jq").write_text(
             '# jq-odin-data-input {"x":999}\n'
             'def answer: 42;\n',

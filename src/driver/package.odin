@@ -114,6 +114,7 @@ Run_Result :: struct {
 	module_stream_memory: []byte,
 	module_data_append: bool,
 	module_data_scalar_add: bool,
+	module_data_replace_input: bool,
 	module_runtime_subtraction: bool,
 	module_runtime_factorial: bool,
 }
@@ -576,6 +577,7 @@ run_with_options :: proc(
 		result.shared_compiled = options.compiled_filter
 		result.module_data_append = options.compiled_filter.owner.module_data_append
 		result.module_data_scalar_add = options.compiled_filter.owner.module_data_scalar_add
+		result.module_data_replace_input = options.compiled_filter.owner.module_data_replace_input
 		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
 		result.module_runtime_factorial = options.compiled_filter.owner.module_runtime_factorial
 		result.module_input_memory = options.compiled_filter.owner.module_input_memory
@@ -594,6 +596,7 @@ run_with_options :: proc(
 			filter_source = transmute(string)filter_memory
 			result.module_data_append = module_outcome.data_after_caller
 			result.module_data_scalar_add = module_outcome.data_scalar_add
+			result.module_data_replace_input = module_outcome.data_replace_input
 			result.module_runtime_subtraction = module_outcome.runtime_subtraction
 			result.module_runtime_factorial = module_outcome.runtime_factorial
 			result.module_input_memory = module_outcome.data_input
@@ -644,7 +647,7 @@ run_with_options :: proc(
 	effective_json_input := json_input
 	data_stream := result.module_input_memory
 	if options.compiled_filter != nil do data_stream = options.compiled_filter.owner.module_input_memory
-	if !result.module_data_scalar_add && len(data_stream) > 0 && len(json_input) > 0 {
+	if !result.module_data_scalar_add && !result.module_data_replace_input && len(data_stream) > 0 && len(json_input) > 0 {
 		first := json_input
 		second := transmute(string)data_stream
 		if !result.module_data_append { first = second; second = json_input }

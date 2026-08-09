@@ -439,9 +439,9 @@ module_search_metadata_uses_and_releases_custom_allocator :: proc(t: ^testing.T)
 	paths, paths_error := module_search_paths("./child", []string{"/base"}, test_allocator(&state))
 	testing.expect_value(t, paths_error, runtime.Allocator_Error(nil))
 	testing.expect_value(t, len(paths), 2)
-	testing.expect_value(t, paths[0], "./child")
+	testing.expect_value(t, paths[0], "/base/./child")
 	testing.expect_value(t, paths[1], "/base")
-	delete(paths, test_allocator(&state))
+	destroy_module_search_paths(paths, "./child", test_allocator(&state))
 	testing.expect_value(t, state.live, 0)
 
 	failing_state := test_allocator_state{backing = context.allocator, allocation_at = 1}
