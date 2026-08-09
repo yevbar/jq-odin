@@ -5,6 +5,7 @@ import "core:io"
 import "core:os"
 import "core:sys/posix"
 import driver "jq:driver"
+import value "jq:value"
 
 CANDIDATE_VERSION :: "jq-1.8.1\n"
 
@@ -167,10 +168,25 @@ error_status :: proc(kind: driver.Run_Error_Kind) -> int {
 	return 2
 }
 
+json_kind_name :: proc(kind: value.Kind) -> string {
+	switch kind {
+	case .Null: return "null"
+	case .Boolean: return "boolean"
+	case .Number: return "number"
+	case .String: return "string"
+	case .Array: return "array"
+	case .Object: return "object"
+	case .Invalid: return "invalid"
+	}
+	return "invalid"
+}
+
 write_driver_error :: proc(err: driver.Run_Error) -> bool {
 	if err.kind == .Runtime && len(err.runtime_key) > len("__jq_odin_subtraction__") &&
 	   err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
-		ok := write_all(os.stderr, "jq: error (at <stdin>:1): string (")
+		ok := write_all(os.stderr, "jq: error (at <stdin>:1): ")
+		ok = write_all(os.stderr, json_kind_name(err.runtime_input_kind)) && ok
+		ok = write_all(os.stderr, " (") && ok
 		ok = write_all(os.stderr, err.runtime_key[len("__jq_odin_subtraction__"):]) && ok
 		ok = write_all(os.stderr, ") and number (1) cannot be subtracted\n") && ok
 		return ok

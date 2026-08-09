@@ -503,6 +503,13 @@ module_data_array_literal_preserves_object_value :: proc(t: ^testing.T) {
 }
 
 @(test)
+module_data_array_literal_rejects_malformed_trailing_stream :: proc(t: ^testing.T) {
+	array, err := module_data_array_literal("1\n{bad", context.allocator)
+	testing.expect_value(t, array, "")
+	testing.expect_value(t, err, runtime.Allocator_Error.Invalid_Argument)
+}
+
+@(test)
 module_data_reference_index_expands_object_literal :: proc(t: ^testing.T) {
 	imports: [dynamic]module_data_import
 	owned_data, data_error := strings.clone(`[{"x":1}]`, context.allocator)

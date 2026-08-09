@@ -207,6 +207,26 @@ module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) ->
 	if init_error != nil do return "", init_error
 	defer strings.builder_destroy(&builder)
 	if !module_write(&builder, "[") do return "", .Out_Of_Memory
+	// Validate the complete JSON stream before textual framing or postfix
+	// extraction. A valid first value does not make malformed trailing bytes
+	// acceptable to jq's import loader.
+	validate_at := 0
+	for {
+		validated, next, done, parse_error := json.parse_next_value(data, validate_at, allocator)
+		if parse_error.kind != .None {
+			_ = json.destroy_scalar_parse_error(&parse_error)
+			return "", .Invalid_Argument
+		}
+		if !done {
+			if value_cleanup := value.destroy_value(&validated); value_cleanup != nil {
+				if retry_cleanup := value.destroy_value(&validated); retry_cleanup != nil {
+					return "", retry_cleanup
+				}
+			}
+		}
+		if done do break
+		validate_at = next
+	}
 	first := true
 	i := 0
 	for {
@@ -344,12 +364,11 @@ module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime
 	if parse_error.kind != .None do return key_end, false
 	text, text_ok := value.string_borrowed(&decoded)
 	key_matches = text_ok && text == field
-	if cleanup_error := value.destroy_value(&decoded); cleanup_error != nil {
-		// Destruction can report a transient allocator failure while retaining
-		// the value owner. Retry before allowing this local owner to escape.
-		if retry_error := value.destroy_value(&decoded); retry_error != nil {
-			return key_end, false
-		}
+	// Destruction can report a transient allocator failure while retaining the
+	// value owner. Keep the decoded handle live and retry several times before
+	// abandoning the match; never overwrite it while a Free is still pending.
+	for attempt := 0; attempt < 4; attempt += 1 {
+		if value.destroy_value(&decoded) == nil do break
 	}
 	return key_end, key_matches
 }
@@ -1770,9 +1789,34 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
 			if module_import_uses_data_binding(filter, i) {
-				// A `$` alias normally denotes a JSON data binding, but jq also
-				// permits a code module to use that qualified spelling. Prefer an
-				// actual `.jq` module when present; otherwise fall back to `.json`.
+				data, data_outcome := read_data_module(name, search_paths[:], allocator)
+				if data_outcome.kind == .None {
+					owned_alias, alias_error := strings.clone(alias, allocator)
+					owned_data, data_error := module_data_array_literal(transmute(string)data, allocator)
+					delete(data, allocator)
+					if alias_error != nil || data_error != nil {
+						delete(owned_alias, allocator); delete(owned_data, allocator)
+						destroy_module_search_paths(search_paths, search, allocator)
+						destroy_module_definitions(&definitions, allocator)
+						return nil, {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
+					}
+					_, data_append_error := append(&data_imports, module_data_import{alias = owned_alias, data = owned_data})
+					if data_append_error != nil {
+						delete(owned_alias, allocator); delete(owned_data, allocator)
+						destroy_module_search_paths(search_paths, search, allocator)
+						destroy_module_definitions(&definitions, allocator)
+						return nil, {kind = .Read_Failure, resource_error = data_append_error}
+					}
+					destroy_module_search_paths(search_paths, search, allocator)
+					has_module = true; i = next; continue
+				}
+				if data_outcome.kind != .Not_Found {
+					destroy_module_search_paths(search_paths, search, allocator)
+					destroy_module_definitions(&definitions, allocator)
+					return nil, data_outcome
+				}
+				// A `$` alias may also name a code module; use it only when no
+				// JSON module exists, preserving jq's data-module precedence.
 				code_probe, code_probe_outcome := read_module(name, search_paths[:], allocator)
 				if code_probe_outcome.kind == .None {
 					delete(code_probe, allocator)
@@ -1789,30 +1833,9 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 					destroy_module_definitions(&definitions, allocator)
 					return nil, code_probe_outcome
 				}
-				data, data_outcome := read_data_module(name, search_paths[:], allocator)
-				if data_outcome.kind != .None {
-					destroy_module_search_paths(search_paths, search, allocator)
-					destroy_module_definitions(&definitions, allocator)
-					return nil, data_outcome
-				}
-				owned_alias, alias_error := strings.clone(alias, allocator)
-				owned_data, data_error := module_data_array_literal(transmute(string)data, allocator)
-				delete(data, allocator)
-				if alias_error != nil || data_error != nil {
-					delete(owned_alias, allocator); delete(owned_data, allocator)
-					destroy_module_search_paths(search_paths, search, allocator)
-					destroy_module_definitions(&definitions, allocator)
-					return nil, {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
-				}
-				_, data_append_error := append(&data_imports, module_data_import{alias = owned_alias, data = owned_data})
-				if data_append_error != nil {
-					delete(owned_alias, allocator); delete(owned_data, allocator)
-					destroy_module_search_paths(search_paths, search, allocator)
-					destroy_module_definitions(&definitions, allocator)
-					return nil, {kind = .Read_Failure, resource_error = data_append_error}
-				}
 				destroy_module_search_paths(search_paths, search, allocator)
-				has_module = true; i = next; continue
+				destroy_module_definitions(&definitions, allocator)
+				return nil, {kind = .Not_Found}
 			}
 			outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
 			destroy_module_search_paths(search_paths, search, allocator)
