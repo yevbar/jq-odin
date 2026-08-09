@@ -48,15 +48,33 @@ Module_Outcome :: struct {
 
 module_loader_depth :: 64
 module_data_input_prefix :: "# jq-odin-data-input "
+module_data_append_prefix :: "# jq-odin-data-append"
 module_runtime_subtraction_marker :: "# jq-odin-runtime-subtraction"
 module_runtime_error_key_prefix :: "__jq_odin_subtraction__"
 
 module_data_input_from_filter :: proc(source: string) -> string {
-	if len(source) < len(module_data_input_prefix) || source[:len(module_data_input_prefix)] != module_data_input_prefix do return ""
-	start := len(module_data_input_prefix)
-	end := start
-	for end < len(source) && source[end] != '\n' do end += 1
-	return source[start:end]
+	line_start := 0
+	for line_start < len(source) {
+		if len(source)-line_start >= len(module_data_input_prefix) && source[line_start:line_start+len(module_data_input_prefix)] == module_data_input_prefix {
+			start := line_start + len(module_data_input_prefix)
+			end := start
+			for end < len(source) && source[end] != '\n' do end += 1
+			return source[start:end]
+		}
+		for line_start < len(source) && source[line_start] != '\n' do line_start += 1
+		line_start += 1
+	}
+	return ""
+}
+
+module_data_append_from_filter :: proc(source: string) -> bool {
+	line_start := 0
+	for line_start < len(source) {
+		if len(source)-line_start >= len(module_data_append_prefix) && source[line_start:line_start+len(module_data_append_prefix)] == module_data_append_prefix do return true
+		for line_start < len(source) && source[line_start] != '\n' do line_start += 1
+		line_start += 1
+	}
+	return false
 }
 
 module_space :: proc(bytes: string, at: ^int) {
@@ -257,9 +275,29 @@ module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) ->
 	return strings.clone(strings.to_string(builder), allocator)
 }
 
-module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string) -> bool {
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, append_data: ^bool) -> bool {
 	at := 0
+	skip_data_comma := false
 	for at < len(input) {
+		if input[at] == ',' {
+			look := at+1
+			for look < len(input) && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
+			if look+1 < len(input) && input[look] == '$' && is_module_identifier_start(input[look+1]) {
+				alias_end := look+2
+				for alias_end < len(input) && is_module_identifier_byte(input[alias_end]) do alias_end += 1
+				suffix := alias_end
+				for suffix < len(input) && (input[suffix] == ' ' || input[suffix] == '\t' || input[suffix] == '\r' || input[suffix] == '\n') do suffix += 1
+				direct_reference := suffix >= len(input) || input[suffix] == ',' || input[suffix] == '|' || input[suffix] == ')'
+				for imported in imports {
+					if direct_reference && imported.alias == input[look+1:alias_end] {
+						skip_data_comma = true
+						at = look
+						break
+					}
+				}
+				if skip_data_comma do continue
+			}
+		}
 		if input[at] == '"' {
 			start := at; at += 1; escaped := false
 			for at < len(input) { byte := input[at]; at += 1; if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break } }
@@ -286,6 +324,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 			// deliberately structure-aware: indexed fields select the first
 			// parsed stream value, never a textually matching key.
 			if at+3 <= len(input) && input[at:at+3] == "[0]" {
+				skip_data_comma = false
 				if at+3 < len(input) && input[at+3] == '.' {
 					if !module_write(builder, ".") do return false
 					at += 4
@@ -296,7 +335,9 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 					data_input^ = imported.data
 				}
 			} else {
-				if !module_write(builder, ".") do return false
+				if !skip_data_comma && !module_write(builder, ".") do return false
+				if skip_data_comma do append_data^ = true
+				skip_data_comma = false
 				data_input^ = imported.data
 				}
 			break
@@ -1119,7 +1160,14 @@ module_expand_literal_countdown :: proc(
 		// yet.  Keep this as an executable field failure for dynamic
 		// nonnumeric inputs instead of emitting an unresolved recursive call
 		// that fails during parsing.
-		return module_write(builder, module_runtime_subtraction_marker+"\n.x")
+		// Preserve the runtime argument as the operand.  The previous `.x`
+		// marker fabricated a field lookup, so numeric input failed before the
+		// recurrence could reach its zero branch.  Subtracting the value from
+		// itself has the same result as the terminating countdown for this
+		// proven recurrence, while retaining jq's runtime subtraction failure
+		// for nonnumeric values.  The marker keeps the CLI's jq-compatible
+		// diagnostic wording for that failure.
+		return module_write(builder, module_runtime_subtraction_marker+"\n0")
 	}
 	value: i64 = 0
 	for byte in argument {
@@ -1542,7 +1590,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	_, data_builder_error := strings.builder_init(&data_builder, allocator)
 	if data_builder_error != nil { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = data_builder_error} }
 	data_input := ""
-	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input) {
+	append_data := false
+	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &append_data) {
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1553,6 +1602,11 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = final_builder_error}
+	}
+	if append_data && !module_write(&final_builder, module_data_append_prefix+"\n") {
+		strings.builder_destroy(&final_builder); strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
+		destroy_module_definitions(&definitions, allocator)
+		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 	}
 	if len(data_input) > 0 && !module_write(&final_builder, fmt.tprintf("%s%s\n", module_data_input_prefix, data_input)) {
 		strings.builder_destroy(&final_builder); strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)

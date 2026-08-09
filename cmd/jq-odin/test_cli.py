@@ -179,6 +179,11 @@ def expect_module_loading(
             "direct JSON data import stream",
             ["-L", directory, "-n", 'import "config" as $c; $c'],
         )
+        expect_oracle_case(
+            "caller input remains separate from JSON data import",
+            ["-L", directory, 'import "config" as $c; ., $c'],
+            b"42\n",
+        )
         (root / "nested-config.json").write_text(
             '{"nested":{"x":2},"x":1}\n', encoding="utf-8"
         )
@@ -187,6 +192,11 @@ def expect_module_loading(
             ["-L", directory, "-n", 'import "nested-config" as $c; $c[0].x'],
         )
         recursive_error_args = ["-L", directory, 'include "countdown"; countdown(.)']
+        expect_oracle_case(
+            "dynamic terminating recursive definition",
+            ["-L", directory, 'include "countdown"; countdown(.)'],
+            b"3\n",
+        )
         recursive_reference = run(oracle, recursive_error_args, b'"not-a-number"\n')
         recursive_actual = run(candidate, recursive_error_args, b'"not-a-number"\n')
         if recursive_reference.returncode != 5 or recursive_actual.returncode != 5:

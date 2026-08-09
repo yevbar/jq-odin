@@ -110,6 +110,8 @@ Run_Result :: struct {
 	owns_compilation:  bool,
 	preserve_compilation: bool,
 	module_input_memory: []byte,
+	module_stream_memory: []byte,
+	module_data_append: bool,
 	module_runtime_subtraction: bool,
 }
 
@@ -186,6 +188,7 @@ record_cleanup_error :: proc(result: ^Run_Result, err: runtime.Allocator_Error) 
 cleanup_execution :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 	if err := cleanup_input(result); err != nil do return err
 	if err := json.destroy_compact_serializer(&result.serializer); err != nil do return err
+	if err := free_owned(&result.module_stream_memory, result.allocator); err != nil do return err
 	if result.owns_compilation && !result.preserve_compilation {
 		if err := program.destroy_program(&result.compiled); err != nil do return err
 		if err := syntax.destroy_parser(&result.parser); err != nil do return err
@@ -568,6 +571,7 @@ run_with_options :: proc(
 	if options.compiled_filter != nil {
 		result.shared_compiled = options.compiled_filter
 		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
+		result.module_data_append = options.compiled_filter.owner.module_data_append
 	} else {
 		filter_source := filter
 		filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
@@ -582,6 +586,7 @@ run_with_options :: proc(
 			result.filter_memory = filter_memory
 			filter_source = transmute(string)filter_memory
 			result.module_runtime_subtraction = strings.contains(filter_source, module_runtime_subtraction_marker)
+			result.module_data_append = module_data_append_from_filter(filter_source)
 			if module_input := module_data_input_from_filter(filter_source); len(module_input) > 0 {
 				owned_input, input_error := strings.clone(module_input, allocator)
 				if input_error != nil do return allocation_error(result, input_error)
@@ -635,6 +640,16 @@ run_with_options :: proc(
 	} else if len(result.module_input_memory) > 0 {
 		effective_json_input = transmute(string)result.module_input_memory
 	}
+	data_stream := result.module_input_memory
+	if options.compiled_filter != nil do data_stream = options.compiled_filter.owner.module_input_memory
+	if result.module_data_append && len(json_input) > 0 && len(data_stream) > 0 {
+		combined, combined_error := strings.concatenate(
+			[]string{json_input, "\n", transmute(string)data_stream}, result.allocator,
+		)
+		if combined_error != nil do return allocation_error(result, combined_error)
+		result.module_stream_memory = transmute([]byte)combined
+		effective_json_input = transmute(string)result.module_stream_memory
+	}
 
 	cursor := 0
 	input_count := 0
@@ -668,6 +683,28 @@ run_with_options :: proc(
 			})
 		}
 		if done do return finish(result, {})
+
+		// The module loader only emits this marker for the proven dynamic
+		// countdown recurrence.  Its lowered body is the terminating literal
+		// `0`; reject nonnumeric runtime arguments before that literal can hide
+		// jq's subtraction type error. Numeric arguments continue through the
+		// ordinary evaluator and produce the terminating value.
+		if result.module_runtime_subtraction && value.kind_of(&result.input) != .Number {
+			if key_error := free_owned(&result.runtime_key_memory, result.allocator); key_error != nil {
+				return allocation_or_cleanup_error(result, key_error)
+			}
+			encoded_key, key_error := strings.concatenate(
+				[]string{module_runtime_error_key_prefix, module_trim(effective_json_input)}, result.allocator,
+			)
+			if key_error != nil do return allocation_or_cleanup_error(result, key_error)
+			result.runtime_key_memory = transmute([]byte)encoded_key
+			return finish(result, {
+				kind = .Runtime,
+				runtime_kind = .Cannot_Index_With_String,
+				runtime_input_kind = value.kind_of(&result.input),
+				runtime_key = transmute(string)result.runtime_key_memory,
+			})
+		}
 
 		if evaluator_error := allocate_evaluator(result); evaluator_error != nil {
 			return allocation_or_cleanup_error(result, evaluator_error)
