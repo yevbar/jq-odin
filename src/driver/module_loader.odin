@@ -1729,14 +1729,14 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 					outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
 					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
 					if outcome.kind != .None {
-						destroy_module_definitions(&definitions)
+						destroy_module_definitions(&definitions, allocator)
 						return nil, outcome
 					}
 					has_module = true; i = next; continue
 				}
 				if code_probe_outcome.kind != .Not_Found {
 					if len(search) > 0 do destroy_module_search_paths(search_paths, search, allocator)
-					destroy_module_definitions(&definitions)
+					destroy_module_definitions(&definitions, allocator)
 					return nil, code_probe_outcome
 				}
 				data, data_outcome := read_data_module(name, search_paths[:], allocator)
