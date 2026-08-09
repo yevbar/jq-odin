@@ -168,18 +168,35 @@ def expect_module_loading(
         )
         (root / "config.json").write_text('{"x":1}\n', encoding="utf-8")
         # A dollar binding is a JSON data import, not a code-module namespace.
-        # jq exposes the loaded JSON stream as an array; the candidate also
-        # accepts the direct-field spelling required by the CLI contract.
+        # jq exposes the loaded JSON stream as an array.  These cases stay
+        # oracle-backed so the driver cannot silently treat the import as a
+        # raw text field lookup.
         expect_oracle_case(
             "indexed JSON data import",
             ["-L", directory, "-n", 'import "config" as $c; $c[0].x'],
         )
-        data_wanted = (0, b"1\n", b"")
-        actual = run(candidate, ["-L", directory, "-n", 'import "config" as $c; $c.x'])
-        if (actual.returncode, actual.stdout, actual.stderr) != data_wanted:
+        expect_oracle_case(
+            "direct JSON data import stream",
+            ["-L", directory, "-n", 'import "config" as $c; $c'],
+        )
+        (root / "nested-config.json").write_text(
+            '{"nested":{"x":2},"x":1}\n', encoding="utf-8"
+        )
+        expect_oracle_case(
+            "nested JSON data import field",
+            ["-L", directory, "-n", 'import "nested-config" as $c; $c[0].x'],
+        )
+        recursive_error_args = ["-L", directory, 'include "countdown"; countdown(.)']
+        recursive_reference = run(oracle, recursive_error_args, b'"not-a-number"\n')
+        recursive_actual = run(candidate, recursive_error_args, b'"not-a-number"\n')
+        if recursive_reference.returncode != 5 or recursive_actual.returncode != 5:
             raise AssertionError(
-                f"direct JSON data import: expected {data_wanted!r}, got "
-                f"{(actual.returncode, actual.stdout, actual.stderr)!r}"
+                "recursive definition must preserve jq's runtime-error status: "
+                f"oracle={recursive_reference.returncode}, candidate={recursive_actual.returncode}"
+            )
+        if b"runtime error" not in recursive_actual.stderr:
+            raise AssertionError(
+                f"recursive definition must fail at runtime, got {recursive_actual!r}"
             )
         actual = run(candidate, ["-L", directory, "-n", 'import "answer" as $a; $a::answer'])
         data_missing = (3, b"", b"jq-odin: module error: module file not found\n")

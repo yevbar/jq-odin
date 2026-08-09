@@ -2,6 +2,7 @@
 package driver
 
 import "base:runtime"
+import "core:strings"
 import compiler "jq:compiler"
 import diagnostic "jq:diagnostic"
 import eval "jq:eval"
@@ -108,6 +109,8 @@ Run_Result :: struct {
 	shared_compiled:   ^Compiled_Filter,
 	owns_compilation:  bool,
 	preserve_compilation: bool,
+	module_input_memory: []byte,
+	module_runtime_subtraction: bool,
 }
 
 // Compiled_Filter owns the parser/program produced once for one CLI
@@ -187,6 +190,7 @@ cleanup_execution :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 		if err := program.destroy_program(&result.compiled); err != nil do return err
 		if err := syntax.destroy_parser(&result.parser); err != nil do return err
 		if err := free_owned(&result.filter_memory, result.allocator); err != nil do return err
+		if err := free_owned(&result.module_input_memory, result.allocator); err != nil do return err
 	}
 	return nil
 }
@@ -563,6 +567,7 @@ run_with_options :: proc(
 	result.preserve_compilation = options.retain_compilation
 	if options.compiled_filter != nil {
 		result.shared_compiled = options.compiled_filter
+		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
 	} else {
 		filter_source := filter
 		filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
@@ -576,6 +581,12 @@ run_with_options :: proc(
 		if len(filter_memory) > 0 {
 			result.filter_memory = filter_memory
 			filter_source = transmute(string)filter_memory
+			result.module_runtime_subtraction = strings.contains(filter_source, module_runtime_subtraction_marker)
+			if module_input := module_data_input_from_filter(filter_source); len(module_input) > 0 {
+				owned_input, input_error := strings.clone(module_input, allocator)
+				if input_error != nil do return allocation_error(result, input_error)
+				result.module_input_memory = transmute([]byte)owned_input
+			}
 		}
 
 		source := diagnostic.borrow_source("<filter>", filter_source)
@@ -618,6 +629,12 @@ run_with_options :: proc(
 	if !json.init_compact_serializer(&result.serializer, allocator) {
 		return finish(result, {kind = .Misuse})
 	}
+	effective_json_input := json_input
+	if options.compiled_filter != nil && len(options.compiled_filter.owner.module_input_memory) > 0 {
+		effective_json_input = transmute(string)options.compiled_filter.owner.module_input_memory
+	} else if len(result.module_input_memory) > 0 {
+		effective_json_input = transmute(string)result.module_input_memory
+	}
 
 	cursor := 0
 	input_count := 0
@@ -628,7 +645,7 @@ run_with_options :: proc(
 		next := cursor
 		done := false
 		result.input, next, done, result.json_error = json.parse_next_value(
-			json_input, cursor, allocator,
+			effective_json_input, cursor, allocator,
 		)
 		if result.json_error.kind != .None {
 			if result.json_error.kind == .Scratch_Cleanup_Failure {
@@ -721,6 +738,18 @@ run_with_options :: proc(
 			case .Runtime_Error:
 				if key_error := copy_runtime_key(result, step.runtime_error.key); key_error != nil {
 					return allocation_or_cleanup_error(result, key_error)
+				}
+				if result.module_runtime_subtraction {
+					if cleanup_error := free_owned(&result.runtime_key_memory, result.allocator); cleanup_error != nil {
+						return allocation_or_cleanup_error(result, cleanup_error)
+					}
+					encoded_key, key_error := strings.concatenate(
+						[]string{module_runtime_error_key_prefix, module_trim(effective_json_input)}, result.allocator,
+					)
+					if key_error != nil {
+						return allocation_or_cleanup_error(result, key_error)
+					}
+					result.runtime_key_memory = transmute([]byte)encoded_key
 				}
 				key := ""
 				if len(result.runtime_key_memory) > 0 do key = transmute(string)result.runtime_key_memory

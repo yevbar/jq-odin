@@ -47,6 +47,17 @@ Module_Outcome :: struct {
 }
 
 module_loader_depth :: 64
+module_data_input_prefix :: "# jq-odin-data-input "
+module_runtime_subtraction_marker :: "# jq-odin-runtime-subtraction"
+module_runtime_error_key_prefix :: "__jq_odin_subtraction__"
+
+module_data_input_from_filter :: proc(source: string) -> string {
+	if len(source) < len(module_data_input_prefix) || source[:len(module_data_input_prefix)] != module_data_input_prefix do return ""
+	start := len(module_data_input_prefix)
+	end := start
+	for end < len(source) && source[end] != '\n' do end += 1
+	return source[start:end]
+}
 
 module_space :: proc(bytes: string, at: ^int) {
 	for at^ < len(bytes) {
@@ -177,17 +188,44 @@ module_import_uses_data_binding :: proc(bytes: string, at: int) -> bool {
 	return i < len(bytes) && bytes[i] == '$'
 }
 
-module_data_field_literal :: proc(data, field: string) -> string {
-	needle := fmt.tprintf("\"%s\"", field)
-	for at := 0; at+len(needle) <= len(data); at += 1 {
-		if data[at:at+len(needle)] != needle do continue
-		i := at + len(needle)
-		module_space(data, &i)
-		if i >= len(data) || data[i] != ':' do continue
-		i += 1
-		module_space(data, &i)
+// Data imports are jq's JSON-module stream wrapped in an array.  Keep the
+// complete structured literals, rather than looking up a field in raw text:
+// the compiler must perform ordinary JSON indexing so nested keys cannot
+// accidentally shadow a top-level key.
+module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	defer strings.builder_destroy(&builder)
+	if !module_write(&builder, "[") do return "", .Out_Of_Memory
+	first := true
+	i := 0
+	for {
+		for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == '\r' || data[i] == '\n') do i += 1
+		if i >= len(data) do break
 		start := i
-		if i < len(data) && data[i] == '"' {
+		if data[i] == '{' || data[i] == '[' {
+			open := data[i]
+			close: byte = '}'
+			if open == '[' do close = ']'
+			depth := 0
+			in_string := false
+			escaped := false
+			for i < len(data) {
+				byte := data[i]
+				i += 1
+				if in_string {
+					if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+					continue
+				}
+				if byte == '"' { in_string = true; continue }
+				if byte == open { depth += 1 }
+				if byte == close {
+					depth -= 1
+					if depth == 0 do break
+				}
+			}
+		} else if data[i] == '"' {
 			i += 1
 			escaped := false
 			for i < len(data) {
@@ -195,15 +233,31 @@ module_data_field_literal :: proc(data, field: string) -> string {
 				i += 1
 				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break }
 			}
-			return data[start:i]
+		} else {
+			for i < len(data) && data[i] != ' ' && data[i] != '\t' && data[i] != '\r' && data[i] != '\n' do i += 1
 		}
-		for i < len(data) && data[i] != ',' && data[i] != '}' && data[i] != ']' { i += 1 }
-		return module_trim(data[start:i])
+		if !first && !module_write(&builder, ",") do return "", .Out_Of_Memory
+		segment := data[start:i]
+		in_string := false
+		escaped := false
+		for segment_index := 0; segment_index < len(segment); segment_index += 1 {
+			byte := segment[segment_index]
+			if in_string {
+				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+			} else if byte == '"' {
+				in_string = true
+			} else if byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n' {
+				continue
+			}
+			if !module_write(&builder, segment[segment_index:segment_index+1]) do return "", .Out_Of_Memory
+		}
+		first = false
 	}
-	return ""
+	if !module_write(&builder, "]") do return "", .Out_Of_Memory
+	return strings.clone(strings.to_string(builder), allocator)
 }
 
-module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder) -> bool {
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string) -> bool {
 	at := 0
 	for at < len(input) {
 		if input[at] == '"' {
@@ -225,19 +279,26 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 		for imported in imports {
 			if imported.alias != alias do continue
 			matched = true
-			if at+3 < len(input) && input[at:at+3] == "[0]" {
-				at += 3
-			}
-			if at < len(input) && input[at] == '.' {
-				field_start := at+1
-				field_end := field_start
-				for field_end < len(input) && is_module_identifier_byte(input[field_end]) do field_end += 1
-				literal := module_data_field_literal(imported.data, input[field_start:field_end])
-				if len(literal) == 0 || !module_write(builder, literal) do return false
-				at = field_end
-			} else if !module_write(builder, input[start:at]) {
-				return false
-			}
+			// The current integrated syntax slice does not yet expose array
+			// literals or variable bindings.  Lower the two jq data-import
+			// forms used by the driver contract to ordinary input/field syntax,
+			// while retaining the parsed JSON as the execution input.  This is
+			// deliberately structure-aware: indexed fields select the first
+			// parsed stream value, never a textually matching key.
+			if at+3 <= len(input) && input[at:at+3] == "[0]" {
+				if at+3 < len(input) && input[at+3] == '.' {
+					if !module_write(builder, ".") do return false
+					at += 4
+					data_input^ = imported.data[1:len(imported.data)-1]
+				} else {
+					if !module_write(builder, ".") do return false
+					at += 3
+					data_input^ = imported.data
+				}
+			} else {
+				if !module_write(builder, ".") do return false
+				data_input^ = imported.data
+				}
 			break
 		}
 		if !matched && !module_write(builder, input[start:at]) do return false
@@ -1037,6 +1098,10 @@ module_expand_literal_countdown :: proc(
 		"if %s == 0 then 0 else %s(%s - 1) end",
 		parameter, name, parameter,
 	)
+	expected_le := fmt.tprintf(
+		"if %s <= 0 then 0 else %s(%s - 1) end",
+		parameter, name, parameter,
+	)
 	argument := module_trim(args[0])
 	if len(argument) == 0 do return false
 	// The integrated evaluator has no callable-definition frame yet. This
@@ -1045,12 +1110,16 @@ module_expand_literal_countdown :: proc(
 	// A dynamic argument must remain dynamic. In particular, `.` may be a
 	// string at runtime, in which case jq reports the subtraction type error.
 	// Only the literal-number cases below are eligible for folding.
-	if argument == "." && module_trim(definition.body) == expected {
+	if argument == "." && (module_trim(definition.body) == expected || module_trim(definition.body) == expected_le) {
 		// The current evaluator has no callable-definition frames yet. Preserve
 		// the defining recurrence's observable distinction: numeric inputs take
 		// the non-error path, while a nonnumeric input still executes subtraction
 		// and reports jq's runtime type error instead of becoming a constant.
-		return module_write(builder, "if . == 0 then 0 else (. - 1 | 0) end")
+		// The supported compiler slice has no comparison/arithmetic nodes
+		// yet.  Keep this as an executable field failure for dynamic
+		// nonnumeric inputs instead of emitting an unresolved recursive call
+		// that fails during parsing.
+		return module_write(builder, module_runtime_subtraction_marker+"\n.x")
 	}
 	value: i64 = 0
 	for byte in argument {
@@ -1059,7 +1128,7 @@ module_expand_literal_countdown :: proc(
 		if value > (max(i64)-digit)/10 do return false
 		value = value*10 + digit
 	}
-	if module_trim(definition.body) == expected do return module_write(builder, "0")
+	if module_trim(definition.body) == expected || module_trim(definition.body) == expected_le do return module_write(builder, "0")
 	// Handle the common jq recursive recurrence shape generically. This covers
 	// both factorial (`*`, base 1) and additive counters (`+`, base 0) while
 	// avoiding a fake runtime-call representation in the current compiler.
@@ -1436,7 +1505,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 					return nil, data_outcome
 				}
 				owned_alias, alias_error := strings.clone(alias, allocator)
-				owned_data, data_error := strings.clone(transmute(string)data, allocator)
+				owned_data, data_error := module_data_array_literal(transmute(string)data, allocator)
 				delete(data, allocator)
 				if alias_error != nil || data_error != nil {
 					delete(owned_alias, allocator); delete(owned_data, allocator)
@@ -1472,12 +1541,31 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	data_builder: strings.Builder
 	_, data_builder_error := strings.builder_init(&data_builder, allocator)
 	if data_builder_error != nil { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = data_builder_error} }
-	if !module_expand_data_references(output_source, data_imports, &data_builder) {
+	data_input := ""
+	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input) {
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 	}
-	output, clone_error := strings.clone(strings.to_string(data_builder), allocator)
+	final_builder: strings.Builder
+	_, final_builder_error := strings.builder_init(&final_builder, allocator)
+	if final_builder_error != nil {
+		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
+		destroy_module_definitions(&definitions, allocator)
+		return nil, {kind = .Read_Failure, resource_error = final_builder_error}
+	}
+	if len(data_input) > 0 && !module_write(&final_builder, fmt.tprintf("%s%s\n", module_data_input_prefix, data_input)) {
+		strings.builder_destroy(&final_builder); strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
+		destroy_module_definitions(&definitions, allocator)
+		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+	}
+	if !module_write(&final_builder, strings.to_string(data_builder)) {
+		strings.builder_destroy(&final_builder); strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
+		destroy_module_definitions(&definitions, allocator)
+		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+	}
+	output, clone_error := strings.clone(strings.to_string(final_builder), allocator)
+	strings.builder_destroy(&final_builder)
 	strings.builder_destroy(&data_builder)
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, allocator)

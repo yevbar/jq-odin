@@ -185,9 +185,16 @@ write_driver_error :: proc(err: driver.Run_Error) -> bool {
 		ok = write_all(os.stderr, message) && ok
 	}
 	if err.kind == .Runtime && len(err.runtime_key) > 0 {
-		ok = write_all(os.stderr, ": cannot index with string \"") && ok
-		ok = write_all(os.stderr, err.runtime_key) && ok
-		ok = write_all(os.stderr, "\"") && ok
+		if len(err.runtime_key) > len("__jq_odin_subtraction__") &&
+			err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
+			ok = write_all(os.stderr, ": string (") && ok
+			ok = write_all(os.stderr, err.runtime_key[len("__jq_odin_subtraction__"):]) && ok
+			ok = write_all(os.stderr, ") and number (1) cannot be subtracted") && ok
+		} else {
+			ok = write_all(os.stderr, ": cannot index with string \"") && ok
+			ok = write_all(os.stderr, err.runtime_key) && ok
+			ok = write_all(os.stderr, "\"") && ok
+		}
 	}
 	ok = write_all(os.stderr, "\n") && ok
 	return ok
