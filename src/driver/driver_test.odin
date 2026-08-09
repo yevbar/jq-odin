@@ -494,6 +494,42 @@ module_data_array_literal_frames_adjacent_scalar_and_container :: proc(t: ^testi
 }
 
 @(test)
+module_data_array_literal_preserves_object_value :: proc(t: ^testing.T) {
+	array, err := module_data_array_literal(`{"x":1}
+`, context.allocator)
+	testing.expect_value(t, err, runtime.Allocator_Error(nil))
+	testing.expect_value(t, array, `[{"x":1}]`)
+	delete(array, context.allocator)
+}
+
+@(test)
+module_data_reference_index_expands_object_literal :: proc(t: ^testing.T) {
+	imports: [dynamic]module_data_import
+	owned_data, data_error := strings.clone(`[{"x":1}]`, context.allocator)
+	testing.expect_value(t, data_error, runtime.Allocator_Error(nil))
+	owned_alias, alias_error := strings.clone("c", context.allocator)
+	testing.expect_value(t, alias_error, runtime.Allocator_Error(nil))
+	_, append_error := append(&imports, module_data_import{alias = owned_alias, data = owned_data})
+	testing.expect_value(t, append_error, runtime.Allocator_Error(nil))
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	data_input := ""
+	data_owned := false
+	append_data := false
+	scalar_add := false
+	replace_input := false
+	ok := module_expand_data_references(
+		"$c[0]", imports, &builder, &data_input, &data_owned,
+		&append_data, &scalar_add, &replace_input, context.allocator,
+	)
+	testing.expect(t, ok)
+	testing.expect_value(t, strings.to_string(builder), `{"x":1}`)
+	strings.builder_destroy(&builder)
+	destroy_module_data_imports(&imports, context.allocator)
+}
+
+@(test)
 module_definition_body_rejects_unterminated_string :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def unused: \"unterminated;", &definitions, context.allocator)
