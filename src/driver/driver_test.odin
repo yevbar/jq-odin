@@ -596,7 +596,7 @@ unbound_dollar_name_is_not_a_definition_call :: proc(t: ^testing.T) {
 
 @(test)
 module_call_argument_comments_do_not_split_semicolons :: proc(t: ^testing.T) {
-	args: [16]string
+	args: [dynamic]string
 	close, count, ok := module_call_arguments(
 		"identity(1 # ; this is a comment\n)", len("identity"), &args,
 	)
@@ -604,6 +604,15 @@ module_call_argument_comments_do_not_split_semicolons :: proc(t: ^testing.T) {
 	testing.expect_value(t, close, len("identity(1 # ; this is a comment\n)")-1)
 	testing.expect_value(t, count, 1)
 	testing.expect_value(t, args[0], "1 # ; this is a comment\n")
+	delete(args)
+	wide: [dynamic]string
+	_, wide_count, wide_ok := module_call_arguments(
+		"f(1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17)", 1, &wide,
+	)
+	testing.expect(t, wide_ok)
+	testing.expect_value(t, wide_count, 17)
+	testing.expect_value(t, wide[16], "17")
+	delete(wide)
 }
 
 @(test)
@@ -686,6 +695,35 @@ parameterized_module_arguments_preserve_caller_environment :: proc(t: ^testing.T
 	outcome = module_expand_source("outer(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
 	testing.expect_value(t, strings.to_string(builder), "( ( ((7))))")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_filter_expansion_alpha_renames_callee_bindings :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def id(x): . as $x | x;", "id(1)",
+		"( . as $__jq_module_scope_0_0 | (1))",
+	)
+}
+
+@(test)
+module_expansion_preserves_self_recursive_calls_for_runtime :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions(
+		"def countdown(x): if x == 0 then 0 else countdown(x - 1) end;",
+		&definitions, context.allocator,
+	)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source(
+		"countdown(3)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator,
+	)
+	testing.expect(t, outcome.kind != .Cycle)
+	testing.expect(t, strings.contains(strings.to_string(builder), "countdown("))
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }

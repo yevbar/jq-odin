@@ -831,7 +831,7 @@ read_source :: proc(
 	}
 }
 
-run_main :: proc() -> int {
+run_main :: proc() -> (result: int) {
 	// Convert a closed stdout/stderr pipe into an ordinary write error so the
 	// command can retire driver-owned state and return the documented I/O status.
 	_ = posix.signal(.SIGPIPE, auto_cast posix.SIG_IGN)
@@ -852,10 +852,15 @@ run_main :: proc() -> int {
 	if prepare_error.kind != .None {
 		status := error_status(prepare_error.kind)
 		if !write_driver_error(prepare_error) do status = 2
+		if cleanup_error := driver.destroy_compiled_filter(&prepared); cleanup_error != nil {
+			result = 2
+			_ = write_all(os.stderr, "jq-odin: cleanup error\n")
+		}
 		return status
 	}
 	defer {
 		if driver.destroy_compiled_filter(&prepared) != nil {
+			result = 2
 			_ = write_all(os.stderr, "jq-odin: cleanup error\n")
 		}
 	}

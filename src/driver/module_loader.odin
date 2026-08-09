@@ -1,6 +1,7 @@
 package driver
 
 import "base:runtime"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 
@@ -20,6 +21,11 @@ module_definition :: struct {
 	parameters: string,
 	body: string,
 	active: bool,
+}
+
+module_rename :: struct {
+	old: string,
+	new: string,
 }
 
 Module_Outcome :: struct {
@@ -403,8 +409,9 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 	for call_at < len(input) && (input[call_at] == ' ' || input[call_at] == '\t' || input[call_at] == '\r' || input[call_at] == '\n') do call_at += 1
 	wanted_arity := 0
 	if call_at < len(input) && input[call_at] == '(' {
-		call_args: [16]string
+		call_args: [dynamic]string
 		_, parsed_arity, call_ok := module_call_arguments(input, call_at, &call_args)
+		delete(call_args)
 		wanted_arity = parsed_arity if call_ok else -1
 	}
 	name_match := false
@@ -490,7 +497,88 @@ module_trim_argument :: proc(text: string) -> string {
 	return text[start:end]
 }
 
-module_call_arguments :: proc(input: string, open: int, args: ^[16]string) -> (close: int, count: int, ok: bool) {
+module_previous_word_is_as :: proc(input: string, at: int) -> bool {
+	i := at
+	for i > 0 && (input[i-1] == ' ' || input[i-1] == '\t' || input[i-1] == '\r' || input[i-1] == '\n') do i -= 1
+	end := i
+	for i > 0 && is_module_identifier_byte(input[i-1]) do i -= 1
+	return input[i:end] == "as"
+}
+
+module_rename_bound_variables :: proc(
+	body, parameters: string,
+	depth: int,
+	allocator: runtime.Allocator,
+) -> (owned: string, error: runtime.Allocator_Error) {
+	// Filter arguments are lexical closures. When their source is inserted into
+	// a definition body, alpha-rename binders introduced by that body first so a
+	// callee `as $x` cannot capture a caller argument's `$x`.
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	defer strings.builder_destroy(&builder)
+	renamings: [dynamic]module_rename
+	defer {
+		for rename in renamings {
+			delete(rename.new, allocator)
+		}
+		delete(renamings)
+	}
+	at := 0
+	for at < len(body) {
+		if body[at] == '"' {
+			start := at; at += 1; escaped := false
+			for at < len(body) {
+				byte := body[at]; at += 1
+				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break }
+			}
+			if !module_write(&builder, body[start:at]) do return "", .Out_Of_Memory
+			continue
+		}
+		if body[at] == '#' {
+			start := at
+			for at < len(body) && body[at] != '\n' do at += 1
+			if !module_write(&builder, body[start:at]) do return "", .Out_Of_Memory
+			continue
+		}
+		if body[at] != '$' || at+1 >= len(body) || !is_module_identifier_start(body[at+1]) {
+			if !module_write(&builder, body[at:at+1]) do return "", .Out_Of_Memory
+			at += 1
+			continue
+		}
+		name_start := at+1
+		name_end := name_start
+		for name_end < len(body) && is_module_identifier_byte(body[name_end]) do name_end += 1
+		name := body[name_start:name_end]
+		replacement := name
+		if module_previous_word_is_as(body, at) && !module_parameter_is_value(parameters, name) {
+			found := -1
+			for index := len(renamings)-1; index >= 0; index -= 1 {
+				if renamings[index].old == name { found = index; break }
+			}
+			if found < 0 {
+				candidate := fmt.tprintf("__jq_module_scope_%d_%d", depth, len(renamings))
+				owned_candidate, clone_error := strings.clone(candidate, allocator)
+				if clone_error != nil do return "", clone_error
+				_, append_error := append(&renamings, module_rename{old = name, new = owned_candidate})
+				if append_error != nil { delete(owned_candidate, allocator); return "", append_error }
+				replacement = owned_candidate
+			} else {
+				replacement = renamings[found].new
+			}
+		} else {
+			for rename in renamings {
+				if rename.old == name { replacement = rename.new; break }
+			}
+		}
+		if !module_write(&builder, "$") || !module_write(&builder, replacement) do return "", .Out_Of_Memory
+		at = name_end
+	}
+	owned, error = strings.clone(strings.to_string(builder), allocator)
+	return owned, error
+}
+
+module_call_arguments :: proc(input: string, open: int, args: ^[dynamic]string) -> (close: int, count: int, ok: bool) {
 	depth := 1
 	start := open+1
 	in_string := false
@@ -513,17 +601,19 @@ module_call_arguments :: proc(input: string, open: int, args: ^[16]string) -> (c
 		if byte == ')' {
 			depth -= 1
 			if depth == 0 {
-				if count >= len(args^) do return 0, 0, false
 				argument := module_trim_argument(input[start:at])
 				if len(argument) == 0 do return 0, 0, false
-				args^[count] = argument
+				_, append_error := append(args, argument)
+				if append_error != nil do return 0, 0, false
 				return at, count+1, true
 			}
 			continue
 		}
 		if byte == ';' && depth == 1 {
-			if count >= len(args^) do return 0, 0, false
-			args^[count] = module_trim_argument(input[start:at])
+			argument := module_trim_argument(input[start:at])
+			if len(argument) == 0 do return 0, 0, false
+			_, append_error := append(args, argument)
+			if append_error != nil do return 0, 0, false
 			count += 1
 			start = at+1
 		}
@@ -677,7 +767,7 @@ module_expand_source :: proc(
 	stack: ^[module_loader_depth]int,
 	depth: int,
 	parameters: string,
-	args: [16]string,
+	args: [dynamic]string,
 	arg_count: int,
 	allocator: runtime.Allocator,
 	namespace: string = "",
@@ -766,8 +856,9 @@ module_expand_source :: proc(
 			if segment_end == segment_start do break
 			at = segment_end
 		}
-		call_args: [16]string
-		call_count := 0
+	call_args: [dynamic]string
+	defer delete(call_args)
+	call_count := 0
 		if len(definition.parameters) > 0 {
 			call_next := at
 			for call_next < len(input) && (input[call_next] == ' ' || input[call_next] == '\t' || input[call_next] == '\r' || input[call_next] == '\n') do call_next += 1
@@ -778,16 +869,35 @@ module_expand_source :: proc(
 			call_count = parsed_count
 		}
 		if call_count != module_parameter_count(definition.parameters) do return {kind = .Unsupported_Syntax}
+		definition_active := false
+		definition_is_self_recursive := false
+		for stack_previous, stack_previous_index in stack^[:depth] {
+			if stack_previous == index {
+				definition_active = true
+				definition_is_self_recursive = stack_previous_index == depth-1
+				break
+			}
+		}
+		if definition_active {
+			if !definition_is_self_recursive do return {kind = .Cycle}
+			// A self-recursive definition is a runtime decision: its call may be
+			// guarded by a terminating condition. Preserve that call for the
+			// ordinary compiler instead of misclassifying it as an import cycle.
+			if !module_write(builder, input[start:at]) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+			continue
+		}
 		// Resolve actual arguments in the caller's environment before binding
 		// them to the callee. Otherwise `id(x)` in outer(x) rebinds x as the
 		// inner parameter instead of retaining outer's caller value.
-		expanded_args: [16]string
-		expanded_arg_count := 0
+		expanded_args: [dynamic]string
+		defer {
+			for expanded_arg in expanded_args do delete(expanded_arg, allocator)
+			delete(expanded_args)
+		}
 		for argument_index := 0; argument_index < call_count; argument_index += 1 {
 			argument_builder: strings.Builder
 			_, init_error := strings.builder_init(&argument_builder, allocator)
 			if init_error != nil {
-				for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 				return {kind = .Read_Failure, resource_error = init_error}
 			}
 			argument_outcome := module_expand_source(
@@ -796,22 +906,17 @@ module_expand_source :: proc(
 			)
 			if argument_outcome.kind != .None {
 				strings.builder_destroy(&argument_builder)
-				for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 				return argument_outcome
 			}
 			expanded_argument, clone_error := strings.clone(strings.to_string(argument_builder), allocator)
 			strings.builder_destroy(&argument_builder)
 			if clone_error != nil {
-				for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 				return {kind = .Read_Failure, resource_error = clone_error}
 			}
-			expanded_args[argument_index] = expanded_argument
-			expanded_arg_count += 1
-		}
-		for stack_previous in stack^[:depth] {
-			if stack_previous == index {
-				for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
-				return {kind = .Cycle}
+			_, expanded_append_error := append(&expanded_args, expanded_argument)
+			if expanded_append_error != nil {
+				delete(expanded_argument, allocator)
+				return {kind = .Read_Failure, resource_error = expanded_append_error}
 			}
 		}
 		stack^[depth] = index
@@ -826,7 +931,6 @@ module_expand_source :: proc(
 		// the expanded source: without it, `def value: 1 + 2; value * 3`
 		// becomes `1 + 2 * 3`, changing jq's call precedence.
 		if !module_write(builder, "(") {
-			for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 			return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 		}
 		for binding_index := 0; binding_index < call_count; binding_index += 1 {
@@ -835,15 +939,20 @@ module_expand_source :: proc(
 			if !module_write(builder, "(") || !module_write(builder, expanded_args[binding_index]) ||
 				!module_write(builder, ") as $") || !module_write(builder, parameter_name) ||
 				!module_write(builder, " | ") {
-				for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
 				return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			}
 		}
+		body, body_error := module_rename_bound_variables(
+			definition.body, definition.parameters, depth, allocator,
+		)
+		if body_error != nil {
+			return {kind = .Read_Failure, resource_error = body_error}
+		}
 		outcome := module_expand_source(
-			definition.body, definitions, builder, stack, depth+1,
+			body, definitions, builder, stack, depth+1,
 			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
 		)
-		for expanded_arg in expanded_args[:expanded_arg_count] do delete(expanded_arg, allocator)
+		delete(body, allocator)
 		if outcome.kind != .None do return outcome
 		if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 	}
