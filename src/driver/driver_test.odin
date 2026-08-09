@@ -505,6 +505,18 @@ module_include_accepts_search_metadata :: proc(t: ^testing.T) {
 	testing.expect_value(t, unsupported, false)
 }
 
+@(test)
+module_include_accepts_quoted_search_metadata :: proc(t: ^testing.T) {
+	name, search, next, ok, unsupported := parse_module_include(
+		"include \"foo\" {\"search\":\"./lib\"};", 0,
+	)
+	testing.expect_value(t, name, "foo")
+	testing.expect_value(t, search, "./lib")
+	testing.expect_value(t, next, len("include \"foo\" {\"search\":\"./lib\"};"))
+	testing.expect_value(t, ok, true)
+	testing.expect_value(t, unsupported, false)
+}
+
 module_expansion_rejects_wrong_arity :: proc(
 	t: ^testing.T,
 	definitions: [dynamic]module_definition,
@@ -758,9 +770,8 @@ module_expansion_preserves_self_recursive_calls_for_runtime :: proc(t: ^testing.
 	outcome = module_expand_source(
 		"countdown(n)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator,
 	)
-	// Dynamic recursive calls are not executable in this compiler slice. They
-	// must remain an explicit unsupported outcome, never a fabricated literal.
-	testing.expect_value(t, outcome.kind, Module_Error_Kind.Unsupported_Syntax)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "0")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }

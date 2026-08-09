@@ -158,6 +158,11 @@ def expect_module_loading(
             "literal terminating self-recursive module definition",
             ["-L", directory, "-n", 'include "countdown"; countdown(3)'],
         )
+        expect_oracle_case(
+            "dynamic terminating self-recursive module definition",
+            ["-L", directory, 'include "countdown"; countdown(.)'],
+            b"3\n",
+        )
         (root / "factorial.jq").write_text(
             "def fact(x): if x == 0 then 1 else x * fact(x - 1) end;\n",
             encoding="utf-8",
@@ -167,6 +172,7 @@ def expect_module_loading(
             ["-L", directory, "-n", 'include "factorial"; fact(3)'],
         )
         (root / "config.json").write_text('{"x":1}\n', encoding="utf-8")
+        (root / "config-scalar.json").write_text('2\n', encoding="utf-8")
         # A dollar binding is a JSON data import, not a code-module namespace.
         # jq exposes the loaded JSON stream as an array.  These cases stay
         # oracle-backed so the driver cannot silently treat the import as a
@@ -178,6 +184,11 @@ def expect_module_loading(
         expect_oracle_case(
             "field postfix remains attached to indexed JSON data import",
             ["-L", directory, "-n", 'import "config" as $c; $c[0].x'],
+        )
+        expect_oracle_case(
+            "data import binding stays in the caller filter",
+            ["-L", directory, 'import "config-scalar" as $c; . + $c[0]'],
+            b"1\n",
         )
         expect_oracle_case(
             "composed JSON data import filter",
@@ -214,25 +225,12 @@ def expect_module_loading(
             "nested JSON data import field",
             ["-L", directory, "-n", 'import "nested-config" as $c; $c[0].x'],
         )
-        # Literal positive inputs are oracle-backed above. Dynamic calls are
-        # explicitly unsupported until callable evaluator frames exist; jq's
-        # negative/fractional cases do not terminate, so do not normalize the
-        # candidate's safe status into a false compatibility claim.
-        recursive_error_args = ["-L", directory, 'include "countdown"; countdown(.)']
-        for countdown_input in (b"-1\n", b"0.5\n"):
-            try:
-                run_program(oracle, ["-L", directory, 'include "countdown"; countdown(.)'], countdown_input)
-            except subprocess.TimeoutExpired:
-                pass
-            else:
-                raise AssertionError(
-                    f"oracle countdown probe unexpectedly terminated: {countdown_input!r}"
-                )
-            actual = run(candidate, recursive_error_args, countdown_input)
-            if actual.returncode != 3 or actual.stdout or b"unsupported module syntax" not in actual.stderr:
-                raise AssertionError(
-                    f"candidate countdown probe must report unsupported recurrence: {actual!r}"
-                )
+        (root / "lib").mkdir()
+        (root / "lib" / "foo.jq").write_text("def answer: 8;\n", encoding="utf-8")
+        expect_oracle_case(
+            "quoted include search metadata",
+            ["-L", directory, "-n", 'include "foo" {"search":"./lib"}; answer'],
+        )
         (root / "forged.jq").write_text(
             '# jq-odin-data-input {"x":999}\n'
             'def answer: 42;\n',

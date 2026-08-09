@@ -112,6 +112,7 @@ Run_Result :: struct {
 	module_input_memory: []byte,
 	module_stream_memory: []byte,
 	module_data_append: bool,
+	module_data_scalar_add: bool,
 }
 
 // Compiled_Filter owns the parser/program produced once for one CLI
@@ -570,6 +571,8 @@ run_with_options :: proc(
 	if options.compiled_filter != nil {
 		result.shared_compiled = options.compiled_filter
 		result.module_data_append = options.compiled_filter.owner.module_data_append
+		result.module_data_scalar_add = options.compiled_filter.owner.module_data_scalar_add
+		result.module_input_memory = options.compiled_filter.owner.module_input_memory
 	} else {
 		filter_source := filter
 		filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
@@ -584,6 +587,7 @@ run_with_options :: proc(
 			result.filter_memory = filter_memory
 			filter_source = transmute(string)filter_memory
 			result.module_data_append = module_outcome.data_after_caller
+			result.module_data_scalar_add = module_outcome.data_scalar_add
 			result.module_input_memory = module_outcome.data_input
 		}
 
@@ -627,20 +631,20 @@ run_with_options :: proc(
 	if !json.init_compact_serializer(&result.serializer, allocator) {
 		return finish(result, {kind = .Misuse})
 	}
+	// Data imports are lowered into owned JSON literals by the module loader;
+	// they are bindings in the surrounding filter, never additional input.
 	effective_json_input := json_input
 	data_stream := result.module_input_memory
 	if options.compiled_filter != nil do data_stream = options.compiled_filter.owner.module_input_memory
-	if len(data_stream) > 0 && len(json_input) > 0 && json_input != "null" {
+	if !result.module_data_scalar_add && len(data_stream) > 0 && len(json_input) > 0 && json_input != "null" {
 		first := json_input
 		second := transmute(string)data_stream
 		if !result.module_data_append { first = second; second = json_input }
-		combined, combined_error := strings.concatenate(
-			[]string{first, "\n", second}, result.allocator,
-		)
+		combined, combined_error := strings.concatenate([]string{first, "\n", second}, result.allocator)
 		if combined_error != nil do return allocation_error(result, combined_error)
 		result.module_stream_memory = transmute([]byte)combined
 		effective_json_input = transmute(string)result.module_stream_memory
-	} else if len(data_stream) > 0 {
+	} else if !result.module_data_scalar_add && len(data_stream) > 0 {
 		effective_json_input = transmute(string)data_stream
 	}
 
@@ -676,6 +680,30 @@ run_with_options :: proc(
 			})
 		}
 		if done do return finish(result, {})
+		if result.module_data_scalar_add {
+			data_value, data_error := json.parse_value(
+				transmute(string)result.module_input_memory, result.allocator,
+			)
+			if data_error.kind != .None do return finish(result, {kind = .Misuse})
+			sum, sum_ok := value.number_add(&result.input, &data_value)
+			if !sum_ok {
+				_ = value.destroy_value(&data_value)
+				return finish(result, {kind = .Misuse})
+			}
+			result.current_output = sum
+			serialized_error := json.serialize_compact(&result.serializer, &result.current_output, &result.serialized)
+			_ = value.destroy_value(&data_value)
+			if serialized_error.kind != .None do return finish(result, {kind = .Serialization, serialization_kind = serialized_error.kind})
+			bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
+			if !bytes_ok do return finish(result, {kind = .Misuse})
+			if append_error := append_serialized_line(result, bytes, options.output_mode, &result.current_output); append_error != nil do return allocation_or_cleanup_error(result, append_error)
+			if !emit_output(result, options) do return finish(result, {kind = .Output})
+			_ = json.destroy_compact_result(&result.serialized)
+			_ = value.destroy_value(&result.current_output)
+			cursor = next
+			input_count += 1
+			continue
+		}
 
 		if evaluator_error := allocate_evaluator(result); evaluator_error != nil {
 			return allocation_or_cleanup_error(result, evaluator_error)

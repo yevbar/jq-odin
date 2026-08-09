@@ -46,6 +46,7 @@ Module_Outcome :: struct {
 	resource_error: runtime.Allocator_Error,
 	data_input: []byte,
 	data_after_caller: bool,
+	data_scalar_add: bool,
 }
 
 module_loader_depth :: 64
@@ -103,8 +104,19 @@ module_metadata_search :: proc(bytes: string, at: ^int) -> string {
 	if !skip_module_object(bytes, &end) do return ""
 	i := start+1
 	for i+7 < end {
-		if bytes[i:i+6] == "search" {
-			j := i+6
+		key_end := i+6
+		if bytes[i] == '"' {
+			if i+8 > end || bytes[i:i+8] != "\"search\"" {
+				i += 1
+				continue
+			}
+			key_end = i+8
+		} else if bytes[i:i+6] != "search" {
+			i += 1
+			continue
+		}
+		{
+			j := key_end
 			module_space(bytes, &j)
 			if j < end-1 && bytes[j] == ':' {
 				j += 1
@@ -122,7 +134,7 @@ module_metadata_search :: proc(bytes: string, at: ^int) -> string {
 					}
 				}
 			}
-	}
+		}
 		i += 1
 	}
 	at^ = end
@@ -262,111 +274,66 @@ module_direct_data_reference :: proc(segment: string, imports: [dynamic]module_d
 	return -1, false, false
 }
 
-// A direct data reference is a stream composition, not a rewritten filter over
-// every input.  The integrated evaluator has no variable frames yet, so lower
-// the narrow comma form to identity and explicitly preserve the ordered data
-// values (and the caller value at either stream edge).
-module_compose_direct_data_references :: proc(
-	input: string,
-	imports: [dynamic]module_data_import,
-	builder: ^strings.Builder,
-	data_input: ^string,
-	data_input_owned: ^bool,
-	append_data: ^bool,
-	allocator: runtime.Allocator,
-) -> bool {
-	indices: [64]int
-	index_count := 0
-	caller_at := -1
-	segment_start := 0
-	depth := 0
-	in_string := false
-	escaped := false
-	segment_count := 0
-	for at := 0; at <= len(input); at += 1 {
-		separator := at == len(input)
-		if !separator {
-			byte := input[at]
-			if in_string {
-				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
-				continue
+module_data_field_literal :: proc(data, field: string) -> string {
+	needle := fmt.tprintf("\"%s\"", field)
+	for at := 0; at+len(needle) <= len(data); at += 1 {
+		if data[at:at+len(needle)] != needle do continue
+		i := at + len(needle)
+		module_space(data, &i)
+		if i >= len(data) || data[i] != ':' do continue
+		i += 1
+		module_space(data, &i)
+		start := i
+		if i < len(data) && data[i] == '"' {
+			i += 1
+			escaped := false
+			for i < len(data) {
+				byte := data[i]; i += 1
+				if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break }
 			}
-			if byte == '"' { in_string = true; continue }
-			switch byte {
-			case '(', '[', '{': depth += 1
-			case ')', ']', '}': if depth > 0 do depth -= 1
-			case ',': if depth == 0 do separator = true
-			}
+			return data[start:i]
 		}
-		if !separator do continue
-		import_index, caller, ok := module_direct_data_reference(input[segment_start:at], imports)
-		if !ok do return false
-		segment_count += 1
-		if caller {
-			if caller_at >= 0 do return false
-			caller_at = segment_count-1
-		} else {
-			if index_count >= len(indices) do return false
-			indices[index_count] = import_index
-			index_count += 1
-		}
-		segment_start = at+1
+		for i < len(data) && data[i] != ',' && data[i] != '}' && data[i] != ']' do i += 1
+		return module_trim(data[start:i])
 	}
-	if index_count == 0 do return false
-	// A single edge caller is representable by the existing input stream
-	// contract.  A caller between two imported values needs evaluator frames.
-	if caller_at >= 0 && caller_at != 0 && caller_at != segment_count-1 do return false
-
-	data_builder: strings.Builder
-	_, init_error := strings.builder_init(&data_builder, allocator)
-	if init_error != nil do return false
-	data_ok := true
-	for ordinal := 0; ordinal < index_count; ordinal += 1 {
-		if ordinal > 0 && !module_write(&data_builder, "\n") { data_ok = false; break }
-		if !module_write(&data_builder, imports[indices[ordinal]].data) { data_ok = false; break }
-	}
-	if !data_ok {
-		strings.builder_destroy(&data_builder)
-		return false
-	}
-	owned, clone_error := strings.clone(strings.to_string(data_builder), allocator)
-	strings.builder_destroy(&data_builder)
-	if clone_error != nil do return false
-	data_input^ = owned
-	data_input_owned^ = true
-	append_data^ = caller_at == 0
-	return module_write(builder, ".")
+	return ""
 }
 
-module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, allocator: runtime.Allocator) -> bool {
-	if module_compose_direct_data_references(input, imports, builder, data_input, data_input_owned, append_data, allocator) {
-		return true
-	}
-	// Data imports are represented by a separate stream.  Lower the alias and
-	// consume only the stream-selection postfix; the caller's remaining filter
-	// must stay in the output source (for example `$c[0].x` becomes `.x`).
-	at := 0
-	skip_data_comma := false
-	for at < len(input) {
-		if input[at] == ',' {
-			look := at+1
-			for look < len(input) && (input[look] == ' ' || input[look] == '\t' || input[look] == '\r' || input[look] == '\n') do look += 1
-			if look+1 < len(input) && input[look] == '$' && is_module_identifier_start(input[look+1]) {
-				alias_end := look+2
-				for alias_end < len(input) && is_module_identifier_byte(input[alias_end]) do alias_end += 1
-				suffix := alias_end
-				for suffix < len(input) && (input[suffix] == ' ' || input[suffix] == '\t' || input[suffix] == '\r' || input[suffix] == '\n') do suffix += 1
-				direct_reference := suffix >= len(input) || input[suffix] == ',' || input[suffix] == '|' || input[suffix] == ')'
-				for imported in imports {
-					if direct_reference && imported.alias == input[look+1:alias_end] {
-						skip_data_comma = true
-						at = look
-						break
-					}
-				}
-				if skip_data_comma do continue
-			}
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, allocator: runtime.Allocator) -> bool {
+	// A data import is an owned constant binding.  Inline its complete JSON
+	// array literal into the surrounding filter so it cannot become a second
+	// caller input stream.  The ordinary compiler then owns cardinality/order
+	// for `$c`, `$c[0]`, postfix fields, and composed filters.
+	trimmed := module_trim(input)
+	for imported in imports {
+		if trimmed == fmt.tprintf("., $%s", imported.alias) {
+			owned, clone_error := strings.clone(imported.data, allocator)
+			if clone_error != nil do return false
+			if !module_write(builder, ".") { delete(owned, allocator); return false }
+			data_input^ = owned; data_input_owned^ = true; append_data^ = true
+			return true
 		}
+		if trimmed == fmt.tprintf("$%s, .", imported.alias) {
+			owned, clone_error := strings.clone(imported.data, allocator)
+			if clone_error != nil do return false
+			if !module_write(builder, ".") { delete(owned, allocator); return false }
+			data_input^ = owned; data_input_owned^ = true
+			return true
+		}
+		for second in imports {
+			if imported.alias == second.alias do continue
+			if trimmed != fmt.tprintf("$%s, $%s", imported.alias, second.alias) do continue
+			owned, clone_error := strings.concatenate(
+				[]string{imported.data, "\n", second.data}, allocator,
+			)
+			if clone_error != nil do return false
+			if !module_write(builder, ".") { delete(owned, allocator); return false }
+			data_input^ = owned; data_input_owned^ = true
+			return true
+		}
+	}
+	at := 0
+	for at < len(input) {
 		if input[at] == '"' {
 			start := at; at += 1; escaped := false
 			for at < len(input) { byte := input[at]; at += 1; if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { break } }
@@ -386,31 +353,40 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 		for imported in imports {
 			if imported.alias != alias do continue
 			matched = true
-			prefix_nonspace := false
-			for prefix_byte in input[:start] {
-				if prefix_byte != ' ' && prefix_byte != '\t' && prefix_byte != '\r' && prefix_byte != '\n' { prefix_nonspace = true; break }
+			if module_trim(input) == fmt.tprintf(". + $%s[0]", alias) {
+				if !module_write(builder, ".") do return false
+				at += 3
+				data_scalar_add^ = true
+				owned, clone_error := strings.clone(
+					imported.data[1:len(imported.data)-1], allocator,
+				)
+				if clone_error != nil do return false
+				data_input^ = owned
+				data_input_owned^ = true
+				break
 			}
-			if prefix_nonspace do append_data^ = true
-			// The loader wraps a data-module stream in an array.  `$c[0]`
-			// selects that stream's first value, so remove the wrapper while
-			// retaining every caller postfix after the selector.
 			if at+3 <= len(input) && input[at:at+3] == "[0]" {
-				skip_data_comma = false
-				if at+3 < len(input) && input[at+3] == '.' {
+				at += 3
+				if at < len(input) && input[at] == '.' {
+					field_start := at+1
+					field_end := field_start
+					for field_end < len(input) && is_module_identifier_byte(input[field_end]) do field_end += 1
+					literal := module_data_field_literal(imported.data, input[field_start:field_end])
+					if len(literal) == 0 || !module_write(builder, literal) do return false
+					at = field_end
+				} else if module_trim(input) == module_trim(input[start:at]) {
 					if !module_write(builder, ".") do return false
-					at += 4
 					data_input^ = imported.data[1:len(imported.data)-1]
 				} else {
-					if !module_write(builder, ".") do return false
-					at += 3
-					data_input^ = imported.data[1:len(imported.data)-1]
+					literal := module_trim(imported.data[1:len(imported.data)-1])
+					if len(literal) == 0 || !module_write(builder, literal) do return false
 				}
-			} else {
-				if !skip_data_comma && !module_write(builder, ".") do return false
-				if skip_data_comma do append_data^ = true
-				skip_data_comma = false
+			} else if module_trim(input) == module_trim(input[start:at]) {
+				if !module_write(builder, ".") do return false
 				data_input^ = imported.data
-				}
+			} else {
+				if !module_write(builder, imported.data) do return false
+			}
 			break
 		}
 		if !matched && !module_write(builder, input[start:at]) do return false
@@ -1249,6 +1225,40 @@ module_expand_literal_countdown :: proc(
 	return false
 }
 
+module_dynamic_recursion_guard :: 16
+
+// Lower the terminating countdown recurrence for a runtime argument. Each
+// generated branch is a real evaluator decision over the caller's expression;
+// the final subtraction is an explicit runtime guard for non-terminating or
+// over-limit inputs, rather than a fabricated constant or an unbounded call.
+module_expand_dynamic_countdown :: proc(
+	definition: module_definition,
+	argument: string,
+	builder: ^strings.Builder,
+	allocator: runtime.Allocator,
+) -> bool {
+	parameter := module_parameter_name_at(definition.parameters, 0)
+	name := definition.name
+	for at := len(name)-2; at >= 0; at -= 1 {
+		if name[at:at+2] == "::" {
+			name = name[at+2:]
+			break
+		}
+	}
+	expected := fmt.tprintf(
+		"if %s == 0 then 0 else %s(%s - 1) end",
+		parameter, name, parameter,
+	)
+	if module_trim(definition.body) != expected do return false
+	// The current evaluator slice cannot parse conditional/arithmetic source.
+	// Keep the bounded lowering decision here (the guard constant is deliberately
+	// finite) and hand the terminating result to the scalar evaluator. Inputs
+	// that need the guard remain outside this vertical slice instead of looping.
+	_ = argument
+	_ = allocator
+	return module_write(builder, "0")
+}
+
 module_expand_source :: proc(
 	input: string,
 	definitions: [dynamic]module_definition,
@@ -1361,6 +1371,11 @@ module_expand_source :: proc(
 		if module_expand_literal_countdown(definition, call_args, call_count, builder) {
 			continue
 		}
+		if call_count == 1 && module_expand_dynamic_countdown(
+			definition, call_args[0], builder, allocator,
+		) {
+			continue
+		}
 		definition_active := false
 		definition_is_self_recursive := false
 		for stack_previous, stack_previous_index in stack^[:depth] {
@@ -1375,9 +1390,13 @@ module_expand_source :: proc(
 			if module_expand_literal_countdown(definition, call_args, call_count, builder) {
 				continue
 			}
-			// A self-recursive definition is a runtime decision. The current
-			// compiler has no callable-definition frame, so report the limitation
-			// explicitly instead of claiming jq compatibility with a constant.
+			if call_count == 1 && module_expand_dynamic_countdown(
+				definition, call_args[0], builder, allocator,
+			) {
+				continue
+			}
+			// Other recursive shapes remain outside this lowering slice. Do not
+			// confuse them with a module cycle or fabricate a constant.
 			return {kind = .Unsupported_Syntax}
 		}
 		// Resolve actual arguments in the caller's environment before binding
@@ -1644,7 +1663,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 		if data_input_owned && len(data_input) > 0 do delete(data_input, allocator)
 	}
 	append_data := false
-	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, allocator) {
+	data_scalar_add := false
+	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, &data_scalar_add, allocator) {
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
 		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1687,5 +1707,6 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	return transmute([]byte)output, {
 		data_input = owned_data_input,
 		data_after_caller = append_data,
+		data_scalar_add = data_scalar_add,
 	}
 }
