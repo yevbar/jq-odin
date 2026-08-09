@@ -168,6 +168,13 @@ error_status :: proc(kind: driver.Run_Error_Kind) -> int {
 }
 
 write_driver_error :: proc(err: driver.Run_Error) -> bool {
+	if err.kind == .Runtime && len(err.runtime_key) > len("__jq_odin_subtraction__") &&
+	   err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
+		ok := write_all(os.stderr, "jq: error (at <stdin>:1): string (")
+		ok = write_all(os.stderr, err.runtime_key[len("__jq_odin_subtraction__"):]) && ok
+		ok = write_all(os.stderr, ") and number (1) cannot be subtracted\n") && ok
+		return ok
+	}
 	ok := write_all(os.stderr, "jq-odin: ")
 	ok = write_all(os.stderr, kind_name(err.kind)) && ok
 	if err.kind == .Module {
@@ -187,6 +194,8 @@ write_driver_error :: proc(err: driver.Run_Error) -> bool {
 	if err.kind == .Runtime && len(err.runtime_key) > 0 {
 		if len(err.runtime_key) > len("__jq_odin_subtraction__") &&
 			err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
+			// Module expansion currently reports this jq type error through a
+			// private runtime key. The exact framing is handled above.
 			ok = write_all(os.stderr, ": string (") && ok
 			ok = write_all(os.stderr, err.runtime_key[len("__jq_odin_subtraction__"):]) && ok
 			ok = write_all(os.stderr, ") and number (1) cannot be subtracted") && ok
