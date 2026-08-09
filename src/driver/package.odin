@@ -115,6 +115,7 @@ Run_Result :: struct {
 	module_data_append: bool,
 	module_data_scalar_add: bool,
 	module_runtime_subtraction: bool,
+	module_runtime_factorial: bool,
 }
 
 // Compiled_Filter owns the parser/program produced once for one CLI
@@ -576,6 +577,7 @@ run_with_options :: proc(
 		result.module_data_append = options.compiled_filter.owner.module_data_append
 		result.module_data_scalar_add = options.compiled_filter.owner.module_data_scalar_add
 		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
+		result.module_runtime_factorial = options.compiled_filter.owner.module_runtime_factorial
 		result.module_input_memory = options.compiled_filter.owner.module_input_memory
 	} else {
 		filter_source := filter
@@ -593,6 +595,7 @@ run_with_options :: proc(
 			result.module_data_append = module_outcome.data_after_caller
 			result.module_data_scalar_add = module_outcome.data_scalar_add
 			result.module_runtime_subtraction = module_outcome.runtime_subtraction
+			result.module_runtime_factorial = module_outcome.runtime_factorial
 			result.module_input_memory = module_outcome.data_input
 		}
 
@@ -641,7 +644,7 @@ run_with_options :: proc(
 	effective_json_input := json_input
 	data_stream := result.module_input_memory
 	if options.compiled_filter != nil do data_stream = options.compiled_filter.owner.module_input_memory
-	if !result.module_data_scalar_add && len(data_stream) > 0 && len(json_input) > 0 && json_input != "null" {
+	if !result.module_data_scalar_add && len(data_stream) > 0 && len(json_input) > 0 {
 		first := json_input
 		second := transmute(string)data_stream
 		if !result.module_data_append { first = second; second = json_input }
@@ -706,6 +709,36 @@ run_with_options :: proc(
 				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
 					runtime_input_kind = .Number, runtime_key = transmute(string)result.runtime_key_memory})
 			}
+		}
+		if result.module_runtime_factorial {
+			number, number_ok := value.number_value_get(&result.input)
+			if !number_ok || number < 0 || number != cast(f64)cast(i64)number {
+				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
+					runtime_input_kind = value.kind_of(&result.input)})
+			}
+			factorial: f64 = 1
+			for factor: i64 = 2; factor <= cast(i64)number; factor += 1 {
+				factorial *= cast(f64)factor
+			}
+			result.current_output = value.number_value(factorial)
+			serialized_error := json.serialize_compact(&result.serializer, &result.current_output, &result.serialized)
+			if serialized_error.kind != .None do return finish(result, {kind = .Serialization, serialization_kind = serialized_error.kind})
+			bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
+			if !bytes_ok do return finish(result, {kind = .Misuse})
+			if append_error := append_serialized_line(result, bytes, options.output_mode, &result.current_output); append_error != nil do return allocation_or_cleanup_error(result, append_error)
+			if !emit_output(result, options) do return finish(result, {kind = .Output})
+			if cleanup_error := json.destroy_compact_result(&result.serialized); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := value.destroy_value(&result.current_output); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := cleanup_input(result); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			cursor = next
+			input_count += 1
+			continue
 		}
 		if result.module_data_scalar_add {
 			data_value, data_error := json.parse_value(

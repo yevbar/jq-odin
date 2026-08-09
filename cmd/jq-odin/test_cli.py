@@ -213,6 +213,12 @@ def expect_module_loading(
             ["-L", directory, 'import "config" as $c; $c, .'],
             b"42\n",
         )
+        (root / "config-one.json").write_text("1\n", encoding="utf-8")
+        expect_oracle_case(
+            "null caller remains a genuine imported-data stream value",
+            ["-L", directory, 'import "config-one" as $c; $c, .'],
+            b"null\n",
+        )
         (root / "second-config.json").write_text('{"y":2}\n', encoding="utf-8")
         expect_oracle_case(
             "multiple data imports preserve both values",

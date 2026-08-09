@@ -48,6 +48,7 @@ Module_Outcome :: struct {
 	data_after_caller: bool,
 	data_scalar_add: bool,
 	runtime_subtraction: bool,
+	runtime_factorial: bool,
 }
 
 module_loader_depth :: 64
@@ -326,7 +327,10 @@ module_data_field_literal :: proc(data, field: string) -> string {
 		} else if byte == '{' || byte == '[' { depth += 1
 		} else if byte == '}' || byte == ']' { depth -= 1 }
 	}
-	return ""
+	// jq's object lookup yields null for an absent field. Keep that result
+	// distinct from allocation failure in the caller; an empty string is a
+	// valid JSON literal and must also remain writable.
+	return "null"
 }
 
 module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, allocator: runtime.Allocator) -> bool {
@@ -337,14 +341,14 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 	trimmed := module_trim(input)
 	for imported in imports {
 		if trimmed == fmt.tprintf("., $%s", imported.alias) {
-			owned, clone_error := strings.clone(imported.data, allocator)
+			owned, clone_error := strings.clone(imported.data[1:len(imported.data)-1], allocator)
 			if clone_error != nil do return false
 			if !module_write(builder, ".") { delete(owned, allocator); return false }
 			data_input^ = owned; data_input_owned^ = true; append_data^ = true
 			return true
 		}
 		if trimmed == fmt.tprintf("$%s, .", imported.alias) {
-			owned, clone_error := strings.clone(imported.data, allocator)
+			owned, clone_error := strings.clone(imported.data[1:len(imported.data)-1], allocator)
 			if clone_error != nil do return false
 			if !module_write(builder, ".") { delete(owned, allocator); return false }
 			data_input^ = owned; data_input_owned^ = true
@@ -354,7 +358,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 			if imported.alias == second.alias do continue
 			if trimmed != fmt.tprintf("$%s, $%s", imported.alias, second.alias) do continue
 			owned, clone_error := strings.concatenate(
-				[]string{imported.data, "\n", second.data}, allocator,
+				[]string{imported.data[1:len(imported.data)-1], "\n", second.data[1:len(second.data)-1]}, allocator,
 			)
 			if clone_error != nil do return false
 			if !module_write(builder, ".") { delete(owned, allocator); return false }
@@ -402,7 +406,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 					field_end := field_start
 					for field_end < len(input) && is_module_identifier_byte(input[field_end]) do field_end += 1
 					literal := module_data_field_literal(imported.data, input[field_start:field_end])
-					if len(literal) == 0 || !module_write(builder, literal) do return false
+					if !module_write(builder, literal) do return false
 					at = field_end
 				} else if module_trim(input) == module_trim(input[start:at]) {
 					if !module_write(builder, ".") do return false
@@ -413,7 +417,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 				}
 			} else if module_trim(input) == module_trim(input[start:at]) {
 				if !module_write(builder, ".") do return false
-				data_input^ = imported.data
+				data_input^ = imported.data[1:len(imported.data)-1]
 			} else {
 				if !module_write(builder, imported.data) do return false
 			}
@@ -1200,6 +1204,7 @@ module_expand_literal_countdown :: proc(
 	call_count: int,
 	builder: ^strings.Builder,
 	runtime_subtraction: ^bool = nil,
+	runtime_factorial: ^bool = nil,
 ) -> bool {
 	if call_count != 1 || len(args) != 1 || module_parameter_count(definition.parameters) != 1 {
 		return false
@@ -1247,6 +1252,10 @@ module_expand_literal_countdown :: proc(
 	// avoiding a fake runtime-call representation in the current compiler.
 	factorial_body := fmt.tprintf("if %s == 0 then 1 else %s * %s(%s - 1) end", parameter, parameter, name, parameter)
 	if module_trim(definition.body) == factorial_body {
+		if argument == "." {
+			if runtime_factorial != nil do runtime_factorial^ = true
+			return module_write(builder, "0")
+		}
 		return module_write_factorial_decimal(builder, value)
 	}
 	sum_body := fmt.tprintf("if %s == 0 then 0 else %s + %s(%s - 1) end", parameter, parameter, name, parameter)
@@ -1275,6 +1284,7 @@ module_expand_dynamic_countdown :: proc(
 	argument: string,
 	builder: ^strings.Builder,
 	allocator: runtime.Allocator,
+	runtime_factorial: ^bool = nil,
 ) -> bool {
 	parameter := module_parameter_name_at(definition.parameters, 0)
 	name := definition.name
@@ -1288,12 +1298,23 @@ module_expand_dynamic_countdown :: proc(
 		"if %s == 0 then 0 else %s(%s - 1) end",
 		parameter, name, parameter,
 	)
-	if module_trim(definition.body) != expected do return false
-	// The current evaluator slice cannot parse conditional/arithmetic source.
-	// Keep the terminating branch as a literal for proven numeric calls, but let
-	// the driver validate the original runtime value before that literal can
-	// hide jq's subtraction error.
-	_ = argument
+	if module_trim(definition.body) == expected {
+		// The current evaluator slice cannot parse conditional/arithmetic source.
+		// Keep the terminating branch as a literal for proven numeric calls, but
+		// let the driver validate the original runtime value before that literal
+		// can hide jq's subtraction error.
+		_ = argument
+		_ = allocator
+		return false
+	}
+	factorial := fmt.tprintf(
+		"if %s == 0 then 1 else %s * %s(%s - 1) end",
+		parameter, parameter, name, parameter,
+	)
+	if module_trim(definition.body) == factorial && module_trim(argument) == "." {
+		if runtime_factorial != nil do runtime_factorial^ = true
+		return module_write(builder, ".")
+	}
 	_ = allocator
 	return false
 }
@@ -1310,6 +1331,7 @@ module_expand_source :: proc(
 	allocator: runtime.Allocator,
 	namespace: string = "",
 	runtime_subtraction: ^bool = nil,
+	runtime_factorial: ^bool = nil,
 ) -> Module_Outcome {
 	if depth >= module_loader_depth do return {kind = .Depth_Overflow}
 	at := 0
@@ -1376,7 +1398,7 @@ module_expand_source :: proc(
 			outcome := module_expand_source(
 				args[parameter_index], definitions, builder, stack, depth,
 				parameters, args, arg_count, allocator, namespace,
-				runtime_subtraction,
+				runtime_subtraction, runtime_factorial,
 			)
 			if outcome.kind != .None do return outcome
 			if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1409,11 +1431,11 @@ module_expand_source :: proc(
 			call_count = parsed_count
 		}
 		if call_count != module_parameter_count(definition.parameters) do return {kind = .Unsupported_Syntax}
-		if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
+		if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction, runtime_factorial) {
 			continue
 		}
 		if call_count == 1 && module_expand_dynamic_countdown(
-			definition, call_args[0], builder, allocator,
+			definition, call_args[0], builder, allocator, runtime_factorial,
 		) {
 			continue
 		}
@@ -1428,11 +1450,11 @@ module_expand_source :: proc(
 		}
 		if definition_active {
 			if !definition_is_self_recursive do return {kind = .Cycle}
-			if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
+			if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction, runtime_factorial) {
 				continue
 			}
 			if call_count == 1 && module_expand_dynamic_countdown(
-				definition, call_args[0], builder, allocator,
+				definition, call_args[0], builder, allocator, runtime_factorial,
 			) {
 				continue
 			}
@@ -1456,7 +1478,7 @@ module_expand_source :: proc(
 			}
 			argument_outcome := module_expand_source(
 				call_args[argument_index], definitions, &argument_builder, stack, depth,
-				parameters, args, arg_count, allocator, namespace, runtime_subtraction,
+				parameters, args, arg_count, allocator, namespace, runtime_subtraction, runtime_factorial,
 			)
 			if argument_outcome.kind != .None {
 				strings.builder_destroy(&argument_builder)
@@ -1505,7 +1527,7 @@ module_expand_source :: proc(
 		outcome := module_expand_source(
 			body, definitions, builder, stack, depth+1,
 			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
-			runtime_subtraction,
+			runtime_subtraction, runtime_factorial,
 		)
 		delete(body, allocator)
 		if outcome.kind != .None do return outcome
@@ -1694,7 +1716,8 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	if init_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = init_error} }
 	stack: [module_loader_depth]int
 	runtime_subtraction := false
-	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator, "", &runtime_subtraction)
+	runtime_factorial := false
+	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator, "", &runtime_subtraction, &runtime_factorial)
 	if outcome.kind != .None { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, outcome }
 	output_source := strings.to_string(builder)
 	data_builder: strings.Builder
@@ -1752,5 +1775,6 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 		data_after_caller = append_data,
 		data_scalar_add = data_scalar_add,
 		runtime_subtraction = runtime_subtraction,
+		runtime_factorial = runtime_factorial,
 	}
 }
