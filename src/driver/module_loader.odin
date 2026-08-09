@@ -46,11 +46,9 @@ Module_Outcome :: struct {
 	resource_error: runtime.Allocator_Error,
 	data_input: []byte,
 	data_after_caller: bool,
-	runtime_subtraction: bool,
 }
 
 module_loader_depth :: 64
-module_runtime_error_key_prefix :: "__jq_odin_subtraction__"
 
 module_space :: proc(bytes: string, at: ^int) {
 	for at^ < len(bytes) {
@@ -251,40 +249,9 @@ module_data_array_literal :: proc(data: string, allocator: runtime.Allocator) ->
 }
 
 module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, append_data: ^bool) -> bool {
-	// Data imports are represented by a separate stream.  Find a real variable
-	// reference before lowering; comments and strings are deliberately ignored.
-	{
-	at := 0
-	in_string := false
-	escaped := false
-	in_comment := false
-	for at < len(input) {
-		byte := input[at]
-		if in_comment { if byte == '\n' do in_comment = false; at += 1; continue }
-		if in_string { if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }; at += 1; continue }
-		if byte == '"' { in_string = true; at += 1; continue }
-		if byte == '#' { in_comment = true; at += 1; continue }
-		if byte == '$' && at+1 < len(input) && is_module_identifier_start(input[at+1]) {
-			end := at+2
-			for end < len(input) && is_module_identifier_byte(input[end]) do end += 1
-			for imported in imports {
-				if imported.alias != input[at+1:end] do continue
-				data := imported.data
-				if end+3 <= len(input) && input[end:end+3] == "[0]" && end+3 < len(input) && input[end+3] == '.' {
-					data = imported.data[1:len(imported.data)-1]
-				}
-				data_input^ = data
-				prefix_nonspace := false
-				for prefix_byte in input[:at] {
-					if prefix_byte != ' ' && prefix_byte != '\t' && prefix_byte != '\r' && prefix_byte != '\n' { prefix_nonspace = true; break }
-				}
-				append_data^ = prefix_nonspace
-				return module_write(builder, ".")
-			}
-		}
-		at += 1
-	}
-	}
+	// Data imports are represented by a separate stream.  Lower the alias and
+	// consume only the stream-selection postfix; the caller's remaining filter
+	// must stay in the output source (for example `$c[0].x` becomes `.x`).
 	at := 0
 	skip_data_comma := false
 	for at < len(input) {
@@ -326,12 +293,14 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 		for imported in imports {
 			if imported.alias != alias do continue
 			matched = true
-			// The current integrated syntax slice does not yet expose array
-			// literals or variable bindings.  Lower the two jq data-import
-			// forms used by the driver contract to ordinary input/field syntax,
-			// while retaining the parsed JSON as the execution input.  This is
-			// deliberately structure-aware: indexed fields select the first
-			// parsed stream value, never a textually matching key.
+			prefix_nonspace := false
+			for prefix_byte in input[:start] {
+				if prefix_byte != ' ' && prefix_byte != '\t' && prefix_byte != '\r' && prefix_byte != '\n' { prefix_nonspace = true; break }
+			}
+			if prefix_nonspace do append_data^ = true
+			// The loader wraps a data-module stream in an array.  `$c[0]`
+			// selects that stream's first value, so remove the wrapper while
+			// retaining every caller postfix after the selector.
 			if at+3 <= len(input) && input[at:at+3] == "[0]" {
 				skip_data_comma = false
 				if at+3 < len(input) && input[at+3] == '.' {
@@ -341,7 +310,7 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 				} else {
 					if !module_write(builder, ".") do return false
 					at += 3
-					data_input^ = imported.data
+					data_input^ = imported.data[1:len(imported.data)-1]
 				}
 			} else {
 				if !skip_data_comma && !module_write(builder, ".") do return false
@@ -1131,7 +1100,6 @@ module_expand_literal_countdown :: proc(
 	args: [dynamic]string,
 	call_count: int,
 	builder: ^strings.Builder,
-	runtime_subtraction: ^bool,
 ) -> bool {
 	if call_count != 1 || len(args) != 1 || module_parameter_count(definition.parameters) != 1 {
 		return false
@@ -1155,31 +1123,9 @@ module_expand_literal_countdown :: proc(
 	)
 	argument := module_trim(args[0])
 	if len(argument) == 0 do return false
-	// The integrated evaluator has no callable-definition frame yet. This
-	// narrow runtime form is nevertheless executable: for the terminating
-	// countdown recurrence, a nonnegative JSON number reaches the zero branch.
-	// A dynamic argument must remain dynamic. In particular, `.` may be a
-	// string at runtime, in which case jq reports the subtraction type error.
-	// Only the literal-number cases below are eligible for folding.
-	if argument == "." && (module_trim(definition.body) == expected || module_trim(definition.body) == expected_le) {
-		// The current evaluator has no callable-definition frames yet. Preserve
-		// the defining recurrence's observable distinction: numeric inputs take
-		// the non-error path, while a nonnumeric input still executes subtraction
-		// and reports jq's runtime type error instead of becoming a constant.
-		// The supported compiler slice has no comparison/arithmetic nodes
-		// yet.  Keep this as an executable field failure for dynamic
-		// nonnumeric inputs instead of emitting an unresolved recursive call
-		// that fails during parsing.
-		// Preserve the runtime argument as the operand.  The previous `.x`
-		// marker fabricated a field lookup, so numeric input failed before the
-		// recurrence could reach its zero branch.  Subtracting the value from
-		// itself has the same result as the terminating countdown for this
-		// proven recurrence, while retaining jq's runtime subtraction failure
-		// for nonnumeric values.  The marker keeps the CLI's jq-compatible
-		// diagnostic wording for that failure.
-		if runtime_subtraction != nil do runtime_subtraction^ = true
-		return module_write(builder, "0")
-	}
+	// Dynamic calls cannot be safely folded until the evaluator has callable
+	// definition frames.  Keep literal calls below, but never replace a
+	// runtime recurrence with a fabricated constant.
 	value: i64 = 0
 	for byte in argument {
 		if byte < '0' || byte > '9' do return false
@@ -1221,7 +1167,6 @@ module_expand_source :: proc(
 	arg_count: int,
 	allocator: runtime.Allocator,
 	namespace: string = "",
-	runtime_subtraction: ^bool = nil,
 ) -> Module_Outcome {
 	if depth >= module_loader_depth do return {kind = .Depth_Overflow}
 	at := 0
@@ -1287,7 +1232,7 @@ module_expand_source :: proc(
 			if !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			outcome := module_expand_source(
 				args[parameter_index], definitions, builder, stack, depth,
-				parameters, args, arg_count, allocator, namespace, runtime_subtraction,
+				parameters, args, arg_count, allocator, namespace,
 			)
 			if outcome.kind != .None do return outcome
 			if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
@@ -1320,7 +1265,7 @@ module_expand_source :: proc(
 			call_count = parsed_count
 		}
 		if call_count != module_parameter_count(definition.parameters) do return {kind = .Unsupported_Syntax}
-		if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
+		if module_expand_literal_countdown(definition, call_args, call_count, builder) {
 			continue
 		}
 		definition_active := false
@@ -1334,14 +1279,13 @@ module_expand_source :: proc(
 		}
 		if definition_active {
 			if !definition_is_self_recursive do return {kind = .Cycle}
-			if module_expand_literal_countdown(definition, call_args, call_count, builder, runtime_subtraction) {
+			if module_expand_literal_countdown(definition, call_args, call_count, builder) {
 				continue
 			}
-			// A self-recursive definition is a runtime decision: its call may be
-			// guarded by a terminating condition. Preserve that call for the
-			// ordinary compiler instead of misclassifying it as an import cycle.
-			if !module_write(builder, input[start:at]) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
-			continue
+			// A self-recursive definition is a runtime decision. The current
+			// compiler has no callable-definition frame, so report the limitation
+			// explicitly instead of claiming jq compatibility with a constant.
+			return {kind = .Unsupported_Syntax}
 		}
 		// Resolve actual arguments in the caller's environment before binding
 		// them to the callee. Otherwise `id(x)` in outer(x) rebinds x as the
@@ -1359,7 +1303,7 @@ module_expand_source :: proc(
 			}
 			argument_outcome := module_expand_source(
 				call_args[argument_index], definitions, &argument_builder, stack, depth,
-				parameters, args, arg_count, allocator, namespace, runtime_subtraction,
+				parameters, args, arg_count, allocator, namespace,
 			)
 			if argument_outcome.kind != .None {
 				strings.builder_destroy(&argument_builder)
@@ -1407,7 +1351,7 @@ module_expand_source :: proc(
 		}
 		outcome := module_expand_source(
 			body, definitions, builder, stack, depth+1,
-			definition.parameters, expanded_args, call_count, allocator, definition_namespace, runtime_subtraction,
+			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
 		)
 		delete(body, allocator)
 		if outcome.kind != .None do return outcome
@@ -1595,8 +1539,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	_, init_error := strings.builder_init(&builder, allocator)
 	if init_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = init_error} }
 	stack: [module_loader_depth]int
-	runtime_subtraction := false
-	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator, "", &runtime_subtraction)
+	outcome := module_expand_source(filter[i:], definitions, &builder, &stack, 0, "", {}, 0, allocator)
 	if outcome.kind != .None { strings.builder_destroy(&builder); destroy_module_definitions(&definitions, allocator); return nil, outcome }
 	output_source := strings.to_string(builder)
 	data_builder: strings.Builder
@@ -1636,6 +1579,5 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	return transmute([]byte)output, {
 		data_input = owned_data_input,
 		data_after_caller = append_data,
-		runtime_subtraction = runtime_subtraction,
 	}
 }

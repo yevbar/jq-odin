@@ -112,7 +112,6 @@ Run_Result :: struct {
 	module_input_memory: []byte,
 	module_stream_memory: []byte,
 	module_data_append: bool,
-	module_runtime_subtraction: bool,
 }
 
 // Compiled_Filter owns the parser/program produced once for one CLI
@@ -570,7 +569,6 @@ run_with_options :: proc(
 	result.preserve_compilation = options.retain_compilation
 	if options.compiled_filter != nil {
 		result.shared_compiled = options.compiled_filter
-		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
 		result.module_data_append = options.compiled_filter.owner.module_data_append
 	} else {
 		filter_source := filter
@@ -585,7 +583,6 @@ run_with_options :: proc(
 		if len(filter_memory) > 0 {
 			result.filter_memory = filter_memory
 			filter_source = transmute(string)filter_memory
-			result.module_runtime_subtraction = module_outcome.runtime_subtraction
 			result.module_data_append = module_outcome.data_after_caller
 			result.module_input_memory = module_outcome.data_input
 		}
@@ -680,51 +677,6 @@ run_with_options :: proc(
 		}
 		if done do return finish(result, {})
 
-		// The module loader only emits this marker for the proven dynamic
-		// countdown recurrence.  Its lowered body is the terminating literal
-		// `0`; reject nonnumeric runtime arguments before that literal can hide
-		// jq's subtraction type error. Numeric arguments continue through the
-		// ordinary evaluator and produce the terminating value.
-		if result.module_runtime_subtraction && value.kind_of(&result.input) != .Number {
-			if key_error := free_owned(&result.runtime_key_memory, result.allocator); key_error != nil {
-				return allocation_or_cleanup_error(result, key_error)
-			}
-			encoded_key, key_error := strings.concatenate(
-				[]string{module_runtime_error_key_prefix, module_trim(effective_json_input)}, result.allocator,
-			)
-			if key_error != nil do return allocation_or_cleanup_error(result, key_error)
-			result.runtime_key_memory = transmute([]byte)encoded_key
-			return finish(result, {
-				kind = .Runtime,
-				runtime_kind = .Cannot_Index_With_String,
-				runtime_input_kind = value.kind_of(&result.input),
-				runtime_key = transmute(string)result.runtime_key_memory,
-			})
-		}
-		// Dynamic countdown lowering is only proven for nonnegative integral
-		// inputs.  Fractional and negative values must not be turned into the
-		// terminating literal; report the subtraction failure rather than
-		// fabricating a successful zero result.
-		if result.module_runtime_subtraction {
-			number, number_ok := value.number_value_get(&result.input)
-			if !number_ok || number < 0 || number != cast(f64)cast(i64)number {
-				if key_error := free_owned(&result.runtime_key_memory, result.allocator); key_error != nil {
-					return allocation_or_cleanup_error(result, key_error)
-				}
-				encoded_key, key_error := strings.concatenate(
-					[]string{module_runtime_error_key_prefix, module_trim(effective_json_input)}, result.allocator,
-				)
-				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
-				result.runtime_key_memory = transmute([]byte)encoded_key
-				return finish(result, {
-					kind = .Runtime,
-					runtime_kind = .Cannot_Index_With_String,
-					runtime_input_kind = .Number,
-					runtime_key = transmute(string)result.runtime_key_memory,
-				})
-			}
-		}
-
 		if evaluator_error := allocate_evaluator(result); evaluator_error != nil {
 			return allocation_or_cleanup_error(result, evaluator_error)
 		}
@@ -794,18 +746,6 @@ run_with_options :: proc(
 			case .Runtime_Error:
 				if key_error := copy_runtime_key(result, step.runtime_error.key); key_error != nil {
 					return allocation_or_cleanup_error(result, key_error)
-				}
-				if result.module_runtime_subtraction {
-					if cleanup_error := free_owned(&result.runtime_key_memory, result.allocator); cleanup_error != nil {
-						return allocation_or_cleanup_error(result, cleanup_error)
-					}
-					encoded_key, key_error := strings.concatenate(
-						[]string{module_runtime_error_key_prefix, module_trim(effective_json_input)}, result.allocator,
-					)
-					if key_error != nil {
-						return allocation_or_cleanup_error(result, key_error)
-					}
-					result.runtime_key_memory = transmute([]byte)encoded_key
 				}
 				key := ""
 				if len(result.runtime_key_memory) > 0 do key = transmute(string)result.runtime_key_memory

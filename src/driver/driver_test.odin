@@ -738,8 +738,9 @@ module_expansion_preserves_self_recursive_calls_for_runtime :: proc(t: ^testing.
 	outcome = module_expand_source(
 		"countdown(n)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator,
 	)
-	testing.expect(t, outcome.kind != .Cycle)
-	testing.expect(t, strings.contains(strings.to_string(builder), "countdown("))
+	// Dynamic recursive calls are not executable in this compiler slice. They
+	// must remain an explicit unsupported outcome, never a fabricated literal.
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.Unsupported_Syntax)
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
