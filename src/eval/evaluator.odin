@@ -1752,6 +1752,24 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if kind == .String { s, ok := value.string_borrowed(input); if ok do return value.number_value(f64(len(s))), .None, nil }
 		return {}, .Cannot_Length, nil
 	}
+	if opcode == .Add_Builtin {
+		if kind != .Array do return {}, .Cannot_Add, nil
+		n, ok := value.array_length(input)
+		if !ok || n == 0 do return value.null_value(), .None, nil
+		acc, copy_ok := value.array_element_copy(input, 0)
+		if !copy_ok do return {}, .Cannot_Add, nil
+		for i in 1..<n {
+			item, item_ok := value.array_element_copy(input, i)
+			if !item_ok { _ = value.destroy_value(&acc); return {}, .Cannot_Add, nil }
+			result, add_error := value.value_add(&acc, &item, allocator)
+			kind_error := value.value_add_error_kind(&add_error)
+			_ = value.destroy_value(&acc)
+			_ = value.destroy_value(&item)
+			if kind_error != .None { return {}, .Cannot_Add, nil }
+			acc = result
+		}
+		return acc, .None, nil
+	}
 	if kind == .Array {
 		out, err := value.array_value(allocator)
 		if value.array_error_kind(&err) != .None { return {}, .None, .Out_Of_Memory }
@@ -2121,7 +2139,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
