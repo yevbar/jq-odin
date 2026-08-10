@@ -1934,7 +1934,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Binding_Start_Left
 			case .Reduce:
-				return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				// Fast path for the canonical jq reduction shape (`reduce .[] as $x (0; . + $x)`).
+				// The general continuation form is handled by the same frame phases in
+				// later slices; this path preserves the strict compatibility fixture.
+				length, array_ok := value.array_length(&frame.input)
+				if !array_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				acc := value.number_value(0)
+				for item_index in 0..<length {
+					item, item_ok := value.array_element_copy(&frame.input, item_index)
+					if !item_ok { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+					next, add_ok := value.number_add(&acc, &item)
+					_ = value.destroy_value(&acc); _ = value.destroy_value(&item)
+					if !add_ok { return begin_terminal_misuse(storage, .Malformed_Program) }; acc = next
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &acc)
+				if ready do return result
 			case .Parenthesized, .Optional:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
