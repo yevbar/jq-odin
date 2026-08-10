@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import pathlib
 import select
@@ -22,8 +24,38 @@ except ModuleNotFoundError:
     class OracleAuthError(Exception):
         pass
 
-    def authenticate_oracle(path: pathlib.Path, _trusted_sha256: str, _candidate: pathlib.Path):
-        return path.resolve(strict=True), None
+    def authenticate_oracle(
+        path: pathlib.Path, trusted_sha256: str, _candidate: pathlib.Path
+    ) -> tuple[pathlib.Path, str]:
+        """Authenticate a standalone oracle without the optional helpers.
+
+        The standalone test runner is still handed an untrusted path (for
+        example, from ``JQ_ORACLE``).  Optional Vers helpers add filesystem
+        hardening, but their absence must never turn the trusted digest into a
+        comment.  Keep this fallback deliberately small and fail closed before
+        returning the path to any subprocess caller.
+        """
+        trusted = trusted_sha256.strip().lower()
+        if len(trusted) != hashlib.sha256().digest_size * 2 or any(
+            character not in "0123456789abcdef" for character in trusted
+        ):
+            raise OracleAuthError(
+                "trusted oracle SHA-256 must be exactly 64 hex digits"
+            )
+        try:
+            resolved = path.resolve(strict=True)
+            digest = hashlib.sha256()
+            with resolved.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            actual = digest.hexdigest()
+        except OSError as exc:
+            raise OracleAuthError(f"cannot authenticate oracle {path}: {exc}") from exc
+        if not hmac.compare_digest(actual, trusted):
+            raise OracleAuthError(
+                f"oracle SHA-256 mismatch: trusted {trusted}, actual {actual}"
+            )
+        return resolved, actual
 
     IsolatedCandidate = None
 
