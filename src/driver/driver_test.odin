@@ -400,6 +400,16 @@ zero_one_and_many_outputs_are_lf_delimited :: proc(t: ^testing.T) {
 }
 
 @(test)
+object_binding_shorthand_uses_name_as_key_and_variable_as_value :: proc(t: ^testing.T) {
+	expect_run(t, `"v" as $x | {$x}`, "null", "{\n  \"x\": \"v\"\n}\n")
+}
+
+@(test)
+computed_object_key_variable_stream_is_evaluated :: proc(t: ^testing.T) {
+	expect_run(t, `"k" as $k | {($k): 1}`, "null", "{\n  \"k\": 1\n}\n")
+}
+
+@(test)
 stream_inputs_and_output_modes_match_jq_bytes :: proc(t: ^testing.T) {
 	input := "  1\n2[3,4]{\"a\":[true,{\"b\":null}]} \t"
 	expect_run(
@@ -527,13 +537,18 @@ module_data_reference_index_expands_object_literal :: proc(t: ^testing.T) {
 	scalar_add := false
 	replace_input := false
 	scalar_field_error := false
+	cleanup_value: value.Value
+	cleanup_parse_error: json.Scalar_Parse_Error
 	ok := module_expand_data_references(
 		"$c[0]", imports, &builder, &data_input, &data_owned,
-		&append_data, &scalar_add, &replace_input, &scalar_field_error, context.allocator,
+		&append_data, &scalar_add, &replace_input, &scalar_field_error,
+		&cleanup_value, &cleanup_parse_error, context.allocator,
 	)
 	testing.expect(t, ok)
 	testing.expect(t, !scalar_field_error)
 	testing.expect_value(t, strings.to_string(builder), `{"x":1}`)
+	testing.expect_value(t, value.destroy_value(&cleanup_value), runtime.Allocator_Error(nil))
+	testing.expect_value(t, json.destroy_scalar_parse_error(&cleanup_parse_error), runtime.Allocator_Error(nil))
 	strings.builder_destroy(&builder)
 	destroy_module_data_imports(&imports, context.allocator)
 }

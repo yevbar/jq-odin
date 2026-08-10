@@ -566,6 +566,7 @@ retain_constructor_object_error :: proc(frame: ^eval_frame, err: ^value.Object_O
 collect_constructor_key_stream :: proc(
 	storage: ^evaluator_storage,
 	instruction_index: program.Instruction_Index,
+	producer: int,
 	input: ^value.Value,
 	output: ^value.Value,
 ) -> bool {
@@ -591,13 +592,22 @@ collect_constructor_key_stream :: proc(
 	case .Parenthesized, .Optional:
 		child, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
-		return collect_constructor_key_stream(storage, child, input, output)
+		return collect_constructor_key_stream(storage, child, producer, input, output)
+	case .Variable:
+		key, variable_ok := variable_result(storage, producer, instruction)
+		if !variable_ok do return false
+		_, append_error := value.array_append_take(output, &key)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_array_error(&append_error)
+			_ = value.destroy_value(&key)
+			return false
+		}
 	case .Fork:
 		left, left_ok := child_instruction(storage, instruction, 0)
 		right, right_ok := child_instruction(storage, instruction, 1)
 		if !left_ok || !right_ok do return false
-		return collect_constructor_key_stream(storage, left, input, output) &&
-			collect_constructor_key_stream(storage, right, input, output)
+		return collect_constructor_key_stream(storage, left, producer, input, output) &&
+			collect_constructor_key_stream(storage, right, producer, input, output)
 	case .Sequence:
 		left, left_ok := child_instruction(storage, instruction, 0)
 		right, right_ok := child_instruction(storage, instruction, 1)
@@ -607,7 +617,7 @@ collect_constructor_key_stream :: proc(
 			_ = value.destroy_array_error(&left_error)
 			return false
 		}
-		left_ok = collect_constructor_key_stream(storage, left, input, &left_stream)
+		left_ok = collect_constructor_key_stream(storage, left, producer, input, &left_stream)
 		if !left_ok {
 			_ = value.destroy_value(&left_stream)
 			return false
@@ -623,7 +633,7 @@ collect_constructor_key_stream :: proc(
 				_ = value.destroy_value(&left_stream)
 				return false
 			}
-			if !collect_constructor_key_stream(storage, right, &left_value, output) {
+			if !collect_constructor_key_stream(storage, right, producer, &left_value, output) {
 				_ = value.destroy_value(&left_value)
 				_ = value.destroy_value(&left_stream)
 				return false
@@ -1836,7 +1846,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				key_operand, key_operand_ok := program.program_operand(storage.compiled, program.Operand_Index(key_offset))
 				key_ok := false
 				if key_operand_ok && key_operand.kind == .Instruction {
-					key_ok = collect_constructor_key_stream(storage, key_operand.instruction, &frame.input, &key_stream)
+					key_ok = collect_constructor_key_stream(storage, key_operand.instruction, index, &frame.input, &key_stream)
 				} else if key_operand_ok && key_operand.kind == .Text {
 					key_text, text_ok := program.operand_text(storage.compiled, key_operand)
 					if text_ok {

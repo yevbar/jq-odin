@@ -321,7 +321,7 @@ lower_filter :: proc(
 						if key_node.kind == .String && key_node.has_string_text {
 							key_bytes = u64(len(key_node.string_text))
 						} else if key_node.kind == .Field && key_node.has_name_span {
-							key_start, key_end, key_ok := diagnostic.span_offsets(source, entry.name_span)
+							key_start, key_end, key_ok := diagnostic.span_offsets(source, key_node.name_span)
 							if !key_ok || key_end < key_start do return Lower_Outcome{kind = .Invalid_AST}
 							key_bytes = u64(key_end-key_start)
 						} else {
@@ -502,7 +502,7 @@ lower_filter :: proc(
 							operand_at += 1
 							text_at += u32(len(key))
 						} else if key_node.kind == .Field && key_node.has_name_span {
-							key_start, key_end, key_ok := diagnostic.span_offsets(source, entry.name_span)
+							key_start, key_end, key_ok := diagnostic.span_offsets(source, key_node.name_span)
 							assert(key_ok)
 							key := bytes[key_start:key_end]
 							text_ok := program.set_text(output, program.Byte_Offset(text_at), key)

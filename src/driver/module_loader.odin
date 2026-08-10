@@ -4,7 +4,9 @@ import "base:runtime"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import diagnostic "jq:diagnostic"
 import json "jq:json"
+import syntax "jq:syntax"
 import value "jq:value"
 
 Module_Error_Kind :: enum u8 {
@@ -57,6 +59,11 @@ Module_Outcome :: struct {
 	data_scalar_field_error: bool,
 	runtime_subtraction: bool,
 	runtime_factorial: bool,
+	// A decoded module-data key whose Value teardown exhausted the bounded
+	// retry budget remains owned here. The caller transfers it into its stable
+	// Run_Result so a later cleanup retry cannot lose the allocation.
+	cleanup_value: value.Value,
+	cleanup_parse_error: json.Scalar_Parse_Error,
 }
 
 module_loader_depth :: 64
@@ -347,8 +354,8 @@ module_data_first_element_literal :: proc(data: string) -> string {
 	return data[start:i]
 }
 
-module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime.Allocator) -> (key_end: int, key_matches: bool) {
-	if at < 0 || at >= len(data) || data[at] != '"' do return at, false
+module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime.Allocator) -> (key_end: int, key_matches: bool, cleanup_value: value.Value, cleanup_error: runtime.Allocator_Error, cleanup_parse_error: json.Scalar_Parse_Error) {
+	if at < 0 || at >= len(data) || data[at] != '"' do return at, false, {}, nil, {}
 	key_end = at + 1
 	escaped := false
 	for key_end < len(data) {
@@ -364,16 +371,16 @@ module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime
 		}
 		if byte == '"' do break
 	}
-	if key_end > len(data) || data[key_end-1] != '"' do return key_end, false
+	if key_end > len(data) || data[key_end-1] != '"' do return key_end, false, {}, nil, {}
 	decoded, parse_error := json.parse_value(data[at:key_end], allocator)
 	if parse_error.kind != .None {
 		// Cleanup is fallible. Retry a bounded number of times so a pathological
 		// allocator cannot spin the module loader forever; the parser error is
 		// local scratch and no longer usable after the bounded retirement attempt.
 		for attempt := 0; attempt < 8; attempt += 1 {
-			if json.destroy_scalar_parse_error(&parse_error) == nil do break
+			if json.destroy_scalar_parse_error(&parse_error) == nil do return key_end, false, {}, nil, {}
 		}
-		return key_end, false
+		return key_end, false, {}, .Invalid_Pointer, parse_error
 	}
 	text, text_ok := value.string_borrowed(&decoded)
 	key_matches = text_ok && text == field
@@ -381,15 +388,18 @@ module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime
 	// value owner. Retry a bounded number of times; unlike the old unbounded
 	// loop, a persistent allocator failure cannot hang module loading.
 	for attempt := 0; attempt < 8; attempt += 1 {
-		if value.destroy_value(&decoded) == nil do break
+		if value.destroy_value(&decoded) == nil do return key_end, key_matches, {}, nil, {}
 	}
-	return key_end, key_matches
+	// Do not let a bounded cleanup failure drop the decoded Value on scope
+	// exit. Transfer its exact owner to the module-loader result for retry by
+	// the outer Run_Result lifecycle.
+	return key_end, false, value.take_value(&decoded), .Invalid_Pointer, {}
 }
 
-module_data_field_literal :: proc(source, field: string, allocator: runtime.Allocator) -> (literal: string, object: bool) {
+module_data_field_literal :: proc(source, field: string, allocator: runtime.Allocator) -> (literal: string, object: bool, cleanup_value: value.Value, cleanup_error: runtime.Allocator_Error, cleanup_parse_error: json.Scalar_Parse_Error) {
 	data := module_data_first_element_literal(source)
 	first := module_trim(data)
-	if len(first) == 0 || first[0] != '{' do return first, false
+	if len(first) == 0 || first[0] != '{' do return first, false, {}, nil, {}
 	needle := fmt.tprintf("\"%s\"", field)
 	depth := 0
 	in_string := false
@@ -401,7 +411,8 @@ module_data_field_literal :: proc(source, field: string, allocator: runtime.Allo
 			continue
 		}
 		if byte == '"' {
-			key_end, decoded_key_matches := module_data_key_matches(data, field, at, allocator)
+			key_end, decoded_key_matches, key_cleanup, key_cleanup_error, key_parse_cleanup := module_data_key_matches(data, field, at, allocator)
+			if key_cleanup_error != nil do return "", false, key_cleanup, key_cleanup_error, key_parse_cleanup
 			if depth == 1 &&
 			   (data[at:at+len(needle)] == needle ||
 			    decoded_key_matches) {
@@ -419,7 +430,7 @@ module_data_field_literal :: proc(source, field: string, allocator: runtime.Allo
 							value_byte := data[i]; i += 1
 							if escaped { escaped = false } else if value_byte == '\\' { escaped = true } else if value_byte == '"' { break }
 						}
-						return data[start:i], true
+						return data[start:i], true, {}, nil, {}
 					}
 					value_depth := 0
 					in_value_string := false
@@ -436,7 +447,7 @@ module_data_field_literal :: proc(source, field: string, allocator: runtime.Allo
 						} else if value_depth == 0 && value_byte == ',' { break }
 						i += 1
 					}
-					return module_trim(data[start:i]), true
+					return module_trim(data[start:i]), true, {}, nil, {}
 				}
 			}
 			in_string = true
@@ -446,7 +457,7 @@ module_data_field_literal :: proc(source, field: string, allocator: runtime.Allo
 	// jq's object lookup yields null for an absent field. Keep that result
 	// distinct from allocation failure in the caller; an empty string is a
 	// valid JSON literal and must also remain writable.
-	return "null", true
+	return "null", true, {}, nil, {}
 }
 
 module_binder_position :: proc(input, alias: string) -> int {
@@ -473,7 +484,7 @@ module_binder_position :: proc(input, alias: string) -> int {
 	return -1
 }
 
-module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, data_replace_input: ^bool, data_scalar_field_error: ^bool, allocator: runtime.Allocator) -> bool {
+module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, data_replace_input: ^bool, data_scalar_field_error: ^bool, cleanup_value: ^value.Value, cleanup_parse_error: ^json.Scalar_Parse_Error, allocator: runtime.Allocator) -> bool {
 	// A data import is an owned constant binding.  Inline its complete JSON
 	// array literal into the surrounding filter so it cannot become a second
 	// caller input stream.  The ordinary compiler then owns cardinality/order
@@ -536,9 +547,14 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 					field_start := at+1
 					field_end := field_start
 					for field_end < len(input) && is_module_identifier_byte(input[field_end]) do field_end += 1
-					literal, is_object := module_data_field_literal(
+					literal, is_object, key_cleanup, key_cleanup_error, key_parse_cleanup := module_data_field_literal(
 						imported.data, input[field_start:field_end], allocator,
 					)
+					if key_cleanup_error != nil {
+						if cleanup_value != nil do cleanup_value^ = value.take_value(&key_cleanup)
+						if cleanup_parse_error != nil do cleanup_parse_error^ = key_parse_cleanup
+						return false
+					}
 					if !is_object {
 						// Keep the postfix operation in the generated filter so the
 						// evaluator reports jq's type error for scalar indexing rather
@@ -608,13 +624,57 @@ read_data_module :: proc(name: string, paths: []string, allocator: runtime.Alloc
 	return read_module_extension(name, ".json", paths, allocator)
 }
 
-module_definition_body_is_valid :: proc(source: string) -> bool {
+module_definition_body_is_valid :: proc(source: string, allocator: runtime.Allocator) -> (valid: bool, resource_error: runtime.Allocator_Error) {
 	trimmed := module_trim(source)
-	if len(trimmed) == 0 do return false
-	// The integrated parser does not yet expose callable-definition IR, so
-	// validate the scanner-sensitive malformed forms here. A trailing dot is
-	// never a complete jq filter (`.a.` is rejected even when unused).
-	return trimmed[len(trimmed)-1] != '.'
+	if len(trimmed) == 0 do return false, nil
+	// The scanner's trailing-dot boundary is unambiguously malformed even
+	// when a body is otherwise made of legacy module-call syntax.
+	if trimmed[len(trimmed)-1] == '.' && len(trimmed) > 1 &&
+	   is_module_identifier_byte(trimmed[len(trimmed)-2]) {
+		return false, nil
+	}
+	// The syntax parser is the source of truth for complete filter syntax. Module
+	// calls are expanded textually by this loader and are not yet represented in
+	// the parser AST; retain those call-bearing bodies for expansion while still
+	// rejecting parser errors in all ordinary filter bodies.
+	parser: syntax.Parser
+	source_view := diagnostic.borrow_source("<module-definition>", trimmed)
+	if !syntax.init_parser(&parser, source_view, allocator) do return false, .Out_Of_Memory
+	parsed := syntax.parse_filter(&parser)
+	cleanup_error := syntax.destroy_parser(&parser)
+	if cleanup_error != nil do return false, cleanup_error
+	switch parsed.kind {
+	case .Success:
+		return true, nil
+	case .Resource_Failure:
+		return false, parsed.resource_error
+	case .Input_Error:
+		// A callable module body (e.g. `id(x)`) is valid jq and is expanded
+		// later, but this parser slice intentionally has no call AST yet.
+		if module_body_contains_legacy_syntax(trimmed) do return true, nil
+		return false, nil
+	case .Misuse:
+		return false, .Invalid_Argument
+	}
+	return false, .Invalid_Argument
+}
+
+module_body_contains_legacy_syntax :: proc(source: string) -> bool {
+	for at := 0; at < len(source); at += 1 {
+		if !is_module_identifier_start(source[at]) do continue
+		end := at + 1
+		for end < len(source) && is_module_identifier_byte(source[end]) do end += 1
+		word := source[at:end]
+		if word == "true" || word == "false" || word == "null" {
+			at = end
+			continue
+		}
+		j := end
+		module_space(source, &j)
+		if j < len(source) && source[j] == '(' do return true
+		return true
+	}
+	return false
 }
 
 module_search_paths :: proc(search: string, paths: []string, allocator: runtime.Allocator) -> ([dynamic]string, runtime.Allocator_Error) {
@@ -903,6 +963,9 @@ find_module_definitions :: proc(bytes: string, definitions: ^[dynamic]module_def
 			if in_string || i > len(bytes) || i == len(bytes) && (len(bytes) == 0 || bytes[i-1] != ';') || parentheses != 0 || brackets != 0 || braces != 0 do return {kind = .Unsupported_Syntax}
 			body := bytes[body_start:i-1]
 			if !module_body_has_filter(body) do return {kind = .Unsupported_Syntax}
+			body_valid, body_resource_error := module_definition_body_is_valid(body, allocator)
+			if body_resource_error != nil do return {kind = .Read_Failure, resource_error = body_resource_error}
+			if !body_valid do return {kind = .Unsupported_Syntax}
 			owned_name, name_error := strings.clone(bytes[name_start:name_end], allocator)
 			if name_error != nil do return {kind = .Read_Failure, resource_error = name_error}
 			owned_body, body_error := strings.clone(body, allocator)
@@ -1758,7 +1821,14 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 	outcome = find_module_definitions(bytes[i:], &local, allocator)
 	if outcome.kind != .None { delete(data, allocator); destroy_module_definitions(&local, allocator); active^[active_count] = ""; return outcome }
 	for definition in local {
-		if !module_definition_body_is_valid(definition.body) {
+		body_valid, body_resource_error := module_definition_body_is_valid(definition.body, allocator)
+		if body_resource_error != nil {
+			delete(data, allocator)
+			destroy_module_definitions(&local, allocator)
+			active^[active_count] = ""
+			return {kind = .Read_Failure, resource_error = body_resource_error}
+		}
+		if !body_valid {
 			delete(data, allocator)
 			destroy_module_definitions(&local, allocator)
 			active^[active_count] = ""
@@ -1922,10 +1992,12 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	data_scalar_add := false
 	data_replace_input := false
 	data_scalar_field_error := false
-	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, &data_scalar_add, &data_replace_input, &data_scalar_field_error, allocator) {
+	key_cleanup_value: value.Value
+	key_cleanup_parse_error: json.Scalar_Parse_Error
+	if !module_expand_data_references(output_source, data_imports, &data_builder, &data_input, &data_input_owned, &append_data, &data_scalar_add, &data_replace_input, &data_scalar_field_error, &key_cleanup_value, &key_cleanup_parse_error, allocator) {
 		strings.builder_destroy(&data_builder); strings.builder_destroy(&builder)
 		destroy_module_definitions(&definitions, allocator)
-		return nil, {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+		return nil, {kind = .Read_Failure, resource_error = .Invalid_Pointer, cleanup_value = value.take_value(&key_cleanup_value), cleanup_parse_error = key_cleanup_parse_error}
 	}
 	final_builder: strings.Builder
 	_, final_builder_error := strings.builder_init(&final_builder, allocator)

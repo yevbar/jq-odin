@@ -1195,7 +1195,7 @@ parse_container :: proc(parser: ^Parser, opener: Token_Kind) -> (Node_Id, bool) 
 		key: Node_Id
 		shorthand := false
 		#partial switch parser.lookahead.token.kind {
-		case .Identifier, .Binding, .As, .Import, .Include, .Module, .Def,
+		case .Identifier, .As, .Import, .Include, .Module, .Def,
 		     .If, .Then, .Else, .Else_If, .And, .Or, .End, .Reduce,
 		     .Foreach, .Try, .Catch, .Label, .Break:
 			key_token := parser.lookahead.token
@@ -1205,6 +1205,24 @@ parse_container :: proc(parser: ^Parser, opener: Token_Kind) -> (Node_Id, bool) 
 				span = key_token.span,
 				name_span = key_token.value_span if key_token.has_value_span else key_token.span,
 				has_name_span = true,
+			})
+			if !key_ok {
+				parser.container_depth -= 1
+				return {}, false
+			}
+			advance(parser)
+			shorthand = !token_is(parser, .Colon)
+		case .Binding:
+			// In object position `$x` is a dynamic key expression. If the
+			// colon is omitted the shorthand branch below will replace the key
+			// with the literal name while retaining this Variable as its value.
+			key_token := parser.lookahead.token
+			key_ok: bool
+			key, key_ok = append_node(parser, Node{
+				kind = .Variable,
+				span = key_token.span,
+				name_span = key_token.value_span,
+				has_name_span = key_token.has_value_span,
 			})
 			if !key_ok {
 				parser.container_depth -= 1
@@ -1252,6 +1270,24 @@ parse_container :: proc(parser: ^Parser, opener: Token_Kind) -> (Node_Id, bool) 
 					parser.container_depth -= 1
 					return {}, false
 				}
+			} else if parser.nodes.storage[int(key)].kind == .Variable {
+				// {$x} is jq's binding shorthand: the key is the lexical name
+				// "x", while the value is the variable reference $x. Keep both
+				// nodes distinct so lowering does not evaluate $x as a key.
+				variable := key
+				variable_node := parser.nodes.storage[int(variable)]
+				key_ok: bool
+				key, key_ok = append_node(parser, Node{
+					kind = .Field,
+					span = variable_node.span,
+					name_span = variable_node.name_span,
+					has_name_span = variable_node.has_name_span,
+				})
+				if !key_ok {
+					parser.container_depth -= 1
+					return {}, false
+				}
+				value = variable
 			} else {
 				value = key
 			}

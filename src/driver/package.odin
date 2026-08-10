@@ -116,6 +116,11 @@ Run_Result :: struct {
 	serialized:        json.Compact_Result,
 	current_output:    value.Value,
 	module_scalar_data: value.Value,
+	// A module-data key decoder can retain a Value when its bounded teardown
+	// retries all fail. Keep that owner in the address-stable run result so
+	// destruction can retry instead of silently discarding it.
+	module_cleanup_value: value.Value,
+	module_cleanup_parse_error: json.Scalar_Parse_Error,
 	json_error:        json.Scalar_Parse_Error,
 	shared_compiled:   ^Compiled_Filter,
 	owns_compilation:  bool,
@@ -218,6 +223,8 @@ cleanup_input :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 	if err := json.destroy_compact_result(&result.serialized); err != nil do return err
 	if err := value.destroy_value(&result.current_output); err != nil do return err
 	if err := value.destroy_value(&result.module_scalar_data); err != nil do return err
+	if err := value.destroy_value(&result.module_cleanup_value); err != nil do return err
+	if err := json.destroy_scalar_parse_error(&result.module_cleanup_parse_error); err != nil do return err
 	if result.evaluator != nil {
 		if err := eval.destroy_evaluator(result.evaluator); err != nil do return err
 		if len(result.evaluator_memory) == 0 do return .Invalid_Pointer
@@ -597,6 +604,8 @@ run_with_options :: proc(
 		filter_source := filter
 		filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
 		if module_outcome.kind != .None {
+			result.module_cleanup_value = value.take_value(&module_outcome.cleanup_value)
+			result.module_cleanup_parse_error = module_outcome.cleanup_parse_error
 			if module_outcome.resource_error != nil {
 				return allocation_error(result, module_outcome.resource_error)
 			}
