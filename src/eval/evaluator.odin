@@ -662,6 +662,35 @@ collect_constructor_key_stream :: proc(
 			_ = value.destroy_value(&left_value)
 		}
 		_ = value.destroy_value(&left_stream)
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+		left, left_ok := child_instruction(storage, instruction, 0)
+		right, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok || instruction.operands_count != 2 do return false
+		left_stream, left_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&left_error) != .None { _ = value.destroy_array_error(&left_error); return false }
+		right_stream, right_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&right_error) != .None { _ = value.destroy_array_error(&right_error); _ = value.destroy_value(&left_stream); return false }
+	if !collect_constructor_key_stream(storage, left, producer, input, &left_stream) ||
+	   !collect_constructor_key_stream(storage, right, producer, input, &right_stream) {
+		_ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false
+		}
+	left_length, left_length_ok := value.array_length(&left_stream)
+	right_length, right_length_ok := value.array_length(&right_stream)
+	if !left_length_ok || !right_length_ok { _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
+	for left_index in 0..<left_length {
+		left_value, left_value_ok := value.array_element_copy(&left_stream, left_index)
+		if !left_value_ok { _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
+		for right_index in 0..<right_length {
+			right_value, right_value_ok := value.array_element_copy(&right_stream, right_index)
+			if !right_value_ok { _ = value.destroy_value(&left_value); _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
+			combined, runtime_kind, resource_error := apply_binary(instruction.opcode, &left_value, &right_value, instruction.operator_span, storage.allocator)
+			_ = value.destroy_value(&left_value); _ = value.destroy_value(&right_value)
+			if runtime_kind != .None || resource_error != nil || value.kind_of(&combined) == .Invalid { _ = value.destroy_value(&combined); _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
+			_, append_error := value.array_append_take(output, &combined)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&combined); _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
+		}
+	}
+	_ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream)
 	case .Field:
 		if instruction.operands_count != 1 do return false
 		temp := eval_frame{input = value.clone_value(input)}
@@ -1388,7 +1417,7 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Binary_Right_Active:
 		_ = value.destroy_value(&frame.binary_left)
-		frame.phase = .Binary_Start_Left
+		frame.phase = .Binary_Left_Active
 	case .Binding_Left_Active:
 		frame.phase = .Complete
 	case .Binding_Body_Active:
