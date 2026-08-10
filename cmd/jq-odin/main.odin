@@ -871,6 +871,11 @@ process_available :: proc(
 		whitespace := 0
 		for whitespace < buffer.length &&
 		   is_json_whitespace(buffer.memory[whitespace]) {
+			// The framer intentionally leaves delimiters and inter-value
+			// whitespace in the buffer after a scalar.  Account for those
+			// consumed newlines before reporting the next value's source line;
+			// counting only bytes in [:end] would miss this leading region.
+			if input_line != nil && buffer.memory[whitespace] == '\n' do input_line^ += 1
 			whitespace += 1
 		}
 		if whitespace > 0 {
