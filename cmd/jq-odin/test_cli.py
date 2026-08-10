@@ -1414,6 +1414,9 @@ def expect_differential(candidate: pathlib.Path, oracle: pathlib.Path) -> int:
         (["-c", "length"], b"[1,2,3] {\"a\":1,\"b\":2} null"),
         (["-c", "keys"], b"{\"b\":1,\"a\":2} [true,false]"),
         (["-c", "type"], b'null true 1 "x" [] {}'),
+        (["-c", "abs"], b'-3 3.5 "x"'),
+        (["-c", "sqrt"], b'0 2 3.5 -1'),
+        (["-c", "fabs"], b'-3 3.5'),
     ]
     for args, stdin in cases:
         reference = run_program(oracle, args, stdin)

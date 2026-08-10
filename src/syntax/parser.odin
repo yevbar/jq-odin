@@ -21,6 +21,9 @@ Node_Kind :: enum {
 	Length,
 	Keys,
 	Type,
+	Abs,
+	Sqrt,
+	Fabs,
 }
 
 Node_Id :: distinct int
@@ -624,6 +627,12 @@ parse_pipe :: proc(
 					kind = .Keys
 				} else if spelling == "type" {
 					kind = .Type
+				} else if spelling == "abs" {
+					kind = .Abs
+				} else if spelling == "sqrt" {
+					kind = .Sqrt
+				} else if spelling == "fabs" {
+					kind = .Fabs
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

@@ -16,6 +16,7 @@ Runtime_Error_Kind :: enum u8 {
 	Cannot_Modulo,
 	Cannot_Iterate,
 	Cannot_Length,
+	Cannot_Number,
 }
 
 Runtime_Error :: struct {
@@ -1732,6 +1733,18 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
 		return result, .None, nil
 	}
+	if opcode == .Abs || opcode == .Sqrt || opcode == .Fabs {
+		if kind == .String && opcode == .Abs {
+			copy := value.clone_value(input)
+			if value.kind_of(&copy) != .Invalid do return copy, .None, nil
+		}
+		if kind != .Number do return {}, .Cannot_Number, nil
+		n, ok := value.number_value_get(input)
+		if !ok do return {}, .Cannot_Number, nil
+		if opcode == .Abs || opcode == .Fabs do n = math.abs(n)
+		if opcode == .Sqrt do n = math.sqrt(n)
+		return value.number_value(n), .None, nil
+	}
 	if opcode == .Length {
 		if kind == .Null do return value.number_value(0), .None, nil
 		if kind == .Array { n, ok := value.array_length(input); if ok do return value.number_value(f64(n)), .None, nil }
@@ -2108,7 +2121,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
