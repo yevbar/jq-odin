@@ -710,6 +710,7 @@ module_body_contains_legacy_syntax :: proc(source: string) -> bool {
 		if !is_module_identifier_byte(trimmed[at]) { identifier_only = false; break }
 	}
 	if identifier_only do return true
+	if trimmed[0] == '.' || trimmed[0] == '@' do return true
 	if strings.contains(trimmed, "::") do return true
 	control := module_word(trimmed, 0, "if") || module_word(trimmed, 0, "reduce") || module_word(trimmed, 0, "foreach") || module_word(trimmed, 0, "try") || module_word(trimmed, 0, "label") || module_word(trimmed, 0, "break")
 	if control do return true

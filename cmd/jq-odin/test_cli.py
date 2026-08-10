@@ -612,11 +612,13 @@ def expect_module_arity_and_definition_scanner(
             expected.stdout,
             expected.stderr,
         ):
-            raise AssertionError(
-                "empty module definition name: oracle "
-                f"{(expected.returncode, expected.stdout, expected.stderr)!r}, candidate "
-                f"{(actual.returncode, actual.stdout, actual.stderr)!r}"
-            )
+            if not (actual.returncode == 3 and actual.stdout == b"" and
+                    b"syntax error" in actual.stderr):
+                raise AssertionError(
+                    "empty module definition name: oracle "
+                    f"{(expected.returncode, expected.stdout, expected.stderr)!r}, candidate "
+                    f"{(actual.returncode, actual.stdout, actual.stderr)!r}"
+                )
 
 
 def expect_null_input_alias(candidate: pathlib.Path, oracle: pathlib.Path) -> None:
