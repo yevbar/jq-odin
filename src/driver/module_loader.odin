@@ -699,6 +699,22 @@ module_body_ends_with_operator :: proc(source: string) -> bool {
 }
 
 module_body_contains_legacy_syntax :: proc(source: string) -> bool {
+	trimmed := module_trim(source)
+	if len(trimmed) == 0 do return false
+	// A bare definition reference is valid; adjacent terms such as `foo 1`
+	// are not.  Keep the textual-expansion escape hatch limited to calls,
+	// qualified names, and control forms that the parser slice does not yet
+	// lower into callable-definition IR.
+	identifier_only := true
+	for at := 0; at < len(trimmed); at += 1 {
+		if !is_module_identifier_byte(trimmed[at]) { identifier_only = false; break }
+	}
+	if identifier_only do return true
+	if strings.contains(trimmed, "::") do return true
+	control := module_word(trimmed, 0, "if") || module_word(trimmed, 0, "reduce") || module_word(trimmed, 0, "foreach") || module_word(trimmed, 0, "try") || module_word(trimmed, 0, "label") || module_word(trimmed, 0, "break")
+	if control do return true
+	control = strings.contains(trimmed, " then ") || strings.contains(trimmed, " else ") || strings.contains(trimmed, " end") || strings.contains(trimmed, " catch ")
+	if control do return true
 	for at := 0; at < len(source); at += 1 {
 		if !is_module_identifier_start(source[at]) do continue
 		end := at + 1
@@ -711,7 +727,6 @@ module_body_contains_legacy_syntax :: proc(source: string) -> bool {
 		j := end
 		module_space(source, &j)
 		if j < len(source) && source[j] == '(' do return true
-		return true
 	}
 	return false
 }
