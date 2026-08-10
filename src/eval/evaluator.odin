@@ -963,6 +963,15 @@ capture_composite_instruction :: proc(
 		_, child_ok := child_instruction(storage, instruction, 0)
 		_, text_ok := field_text(storage, instruction)
 		if !child_ok || !text_ok do return false
+	case .Binding:
+		if instruction.operands_count != 3 do return false
+		_, left_ok := child_instruction(storage, instruction, 0)
+		_, right_ok := child_instruction(storage, instruction, 1)
+		name_operand, name_ok := program.program_operand(
+			storage.compiled,
+			program.Operand_Index(u32(instruction.operands_start)+2),
+		)
+		if !left_ok || !right_ok || !name_ok || name_operand.kind != .Text do return false
 	case .Fork, .Sequence:
 		if instruction.operands_count != 2 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
