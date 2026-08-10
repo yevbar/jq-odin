@@ -1681,7 +1681,17 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 		if kind == .Out_Of_Memory || kind == .Size_Overflow || kind == .Allocator_Unsupported do return {}, .None, .Out_Of_Memory
 		return {}, .Cannot_Add, nil
 	case .Subtract:
-		if value.kind_of(left) == .Array && value.kind_of(right) == .Array do return {}, .Cannot_Subtract, nil
+		if value.kind_of(left) == .Array && value.kind_of(right) == .Array {
+			result, array_error := array_subtract(left, right, allocator)
+			kind := value.array_error_kind(&array_error)
+			if kind == .None do return result, .None, nil
+			cleanup_error := value.destroy_array_error(&array_error)
+			if cleanup_error != nil do return {}, .None, cleanup_error
+			if kind == .Out_Of_Memory || kind == .Size_Overflow || kind == .Allocator_Unsupported {
+				return {}, .None, .Out_Of_Memory
+			}
+			return {}, .Cannot_Subtract, nil
+		}
 		result, kind := value.number_subtract(left, right)
 		if kind == .Success do return result, .None, nil
 		return {}, .Cannot_Subtract, nil
@@ -1710,6 +1720,38 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 		}
 	}
 	return {}, .None, .Out_Of_Memory
+}
+
+@(private)
+array_subtract :: proc(left, right: ^value.Value, allocator: runtime.Allocator) -> (value.Value, value.Array_Operation_Error) {
+	result, create_error := value.array_value(allocator)
+	if value.array_error_kind(&create_error) != .None do return {}, create_error
+	left_length, left_ok := value.array_length(left)
+	right_length, right_ok := value.array_length(right)
+	if !left_ok || !right_ok {
+		_ = value.destroy_value(&result)
+		return {}, value.Array_Operation_Error{}
+	}
+	for i in 0..<left_length {
+		item, item_ok := value.array_element_copy(left, i)
+		if !item_ok { _ = value.destroy_value(&result); return {}, value.Array_Operation_Error{} }
+		remove := false
+		for j in 0..<right_length {
+			other, other_ok := value.array_element_copy(right, j)
+			if !other_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, value.Array_Operation_Error{} }
+			if value.values_equal(&item, &other) do remove = true
+			_ = value.destroy_value(&other)
+			if remove do break
+		}
+		if remove { _ = value.destroy_value(&item); continue }
+		_, append_error := value.array_append_take(&result, &item)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_value(&item)
+			_ = value.destroy_value(&result)
+			return {}, append_error
+		}
+	}
+	return result, {}
 }
 
 @(private)
