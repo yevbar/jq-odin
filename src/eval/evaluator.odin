@@ -14,6 +14,7 @@ Runtime_Error_Kind :: enum u8 {
 	Cannot_Multiply,
 	Cannot_Divide,
 	Cannot_Modulo,
+	Cannot_Iterate,
 }
 
 Runtime_Error :: struct {
@@ -93,6 +94,7 @@ frame_phase :: enum u8 {
 	Field_Start_Child,
 	Field_Child_Active,
 	Field_Result_Active,
+	Iterator_Active,
 	Binding_Start_Left,
 	Binding_Left_Active,
 	Binding_Body_Active,
@@ -138,6 +140,9 @@ eval_frame :: struct {
 	binding_value: value.Value,
 	// Binary operators retain the left result while the right generator runs.
 	binary_left: value.Value,
+	iterator_cursor: int,
+	reduce_accumulator: value.Value,
+	reduce_binding: value.Value,
 }
 
 @(private)
@@ -531,6 +536,10 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	free_error = value.destroy_value(&frame.constructor_current)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.binding_value)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.reduce_accumulator)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.reduce_binding)
 	if free_error != nil do return free_error
 	frame.constructor_child = 0
 	frame.constructor_cursor = 0
@@ -997,6 +1006,10 @@ capture_composite_instruction :: proc(
 	case .Reduce:
 		if instruction.operands_count != 4 do return false
 		for i in 0..<3 { _, ok := child_instruction(storage, instruction, u32(i)); if !ok do return false }
+		frame.saved_instruction = instruction
+		frame.saved_operand_count = 3
+		frame.has_saved_instruction = true
+		return true
 	case .Fork, .Sequence:
 		if instruction.operands_count != 2 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -1045,7 +1058,7 @@ resumed_composite_instruction_valid :: proc(
 		   (instruction.opcode != .Parenthesized && instruction.opcode != .Optional) {
 			return false
 		}
-	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
+	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active, .Iterator_Active:
 		if frame.mode != .Normal || instruction.opcode != .Field do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
@@ -1369,6 +1382,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Field_Result_Active:
 		frame.phase = .Field_Child_Active
+	case .Iterator_Active:
+		frame.phase = .Complete
 	case .Binary_Left_Active:
 		frame.phase = .Complete
 	case .Binary_Right_Active:
@@ -1554,6 +1569,8 @@ propagate_output :: proc(
 			frame.phase = .Field_Result_Active
 			return {}, false
 		case .Field_Result_Active:
+			current = parent
+		case .Iterator_Active:
 			current = parent
 		case .Binary_Left_Active:
 			if value.kind_of(&frame.binary_left) != .Invalid {
@@ -1956,6 +1973,27 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					result, ready := propagate_output(storage, index, &output)
 					if ready do return result
 				} else if instruction.operands_count == 2 {
+					// An empty field name is the parser's representation of `.[]`.
+					// Keep the source value owned by this frame and yield one owned
+					// element per step, matching jq's generator cardinality.
+					name, name_ok := field_text(storage, instruction)
+					if !name_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					if name == "" {
+						kind := value.kind_of(&frame.input)
+						if kind != .Array && kind != .Object {
+							result, ready := raise_runtime(storage, index, Runtime_Error{
+								kind = .Cannot_Iterate, input_kind = kind, span = instruction.span,
+							})
+							if ready do return result
+							continue
+						}
+						if !capture_composite_instruction(storage, frame, instruction) {
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						frame.iterator_cursor = 0
+						frame.phase = .Iterator_Active
+						continue
+					}
 					if !capture_composite_instruction(storage, frame, instruction) {
 						return begin_terminal_misuse(storage, .Malformed_Program)
 					}
@@ -1975,12 +2013,30 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Binding_Start_Left
 			case .Reduce:
-				// Fast path for the canonical jq reduction shape (`reduce .[] as $x (0; . + $x)`).
-				// The general continuation form is handled by the same frame phases in
-				// later slices; this path preserves the strict compatibility fixture.
+				// Evaluate the reduction seed from its compiled INIT expression.  The
+				// current slice handles the common `.[]` stream and scalar UPDATE
+				// forms without materializing a coroutine.
+				if !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				init_index, init_ok := child_instruction(storage, instruction, 1)
+				update_index, update_ok := child_instruction(storage, instruction, 2)
+				init_instruction, init_valid := program.program_instruction(storage.compiled, init_index)
+				update_instruction, update_valid := program.program_instruction(storage.compiled, update_index)
+				if !init_ok || !update_ok || !init_valid || !update_valid do return begin_terminal_misuse(storage, .Malformed_Program)
+				seed_frame := eval_frame{input = value.clone_value(&frame.input)}
+				seed, seed_error, seed_cleanup := literal_value(storage, init_instruction)
+				_ = value.destroy_value(&seed_frame.input)
+				if seed_cleanup != nil || seed_error != .None do return begin_terminal_misuse(storage, .Malformed_Program)
+				if update_instruction.opcode == .Identity {
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &seed)
+					if ready do return result
+					continue
+				}
 				length, array_ok := value.array_length(&frame.input)
 				if !array_ok do return begin_terminal_misuse(storage, .Malformed_Program)
-				acc := value.number_value(0)
+				acc := seed
 				for item_index in 0..<length {
 					item, item_ok := value.array_element_copy(&frame.input, item_index)
 					if !item_ok { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
@@ -2174,6 +2230,31 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			if frame.constructor_cursor >= frame.constructor_total {
 				frame.phase = .Complete
 			}
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
+
+		case .Iterator_Active:
+			length, length_ok := value.array_length(&frame.input)
+			if !length_ok {
+				length, length_ok = value.object_length(&frame.input)
+			}
+			if !length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			if frame.iterator_cursor >= length {
+				frame.phase = .Complete
+				continue
+			}
+			output: value.Value
+			if value.kind_of(&frame.input) == .Array {
+				output, length_ok = value.array_element_copy(&frame.input, frame.iterator_cursor)
+			} else {
+				key: value.Value
+				key, output, length_ok = value.object_entry_copy(&frame.input, frame.iterator_cursor)
+				_ = value.destroy_value(&key)
+			}
+			if !length_ok || value.kind_of(&output) == .Invalid {
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			frame.iterator_cursor += 1
 			result, ready := propagate_output(storage, index, &output)
 			if ready do return result
 

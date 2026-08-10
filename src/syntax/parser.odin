@@ -1973,7 +1973,22 @@ append_postfix :: proc(
 			advance(parser)
 			span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
 			assert(span_ok)
-			parser.nodes.storage[int(node)].span = span
+			empty_at, _, empty_ok := diagnostic.span_offsets(parser.source, close.span)
+			assert(empty_ok)
+			empty_name, empty_name_ok := diagnostic.make_span(parser.source, empty_at, empty_at)
+			assert(empty_name_ok)
+			// `.[ ]` is the stream iterator. Represent it as a Field with an
+			// empty name so the compiler/evaluator can preserve generator
+			// cardinality instead of collapsing the suffix to identity.
+			node, ok = append_node(parser, Node{
+				kind = .Field,
+				span = span,
+				child = node,
+				has_child = true,
+				name_span = empty_name,
+				has_name_span = true,
+			})
+			if !ok do return {}, false
 			_ = open
 			continue
 		}

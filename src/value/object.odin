@@ -223,6 +223,25 @@ object_length :: proc(value: ^Value) -> (int, bool) {
 	return p.object_length, true
 }
 
+// object_entry_copy returns the insertion-ordered key and value at index.
+// Both handles are independent owners; callers must destroy or transfer them.
+// Exposing this narrow accessor keeps object iteration out of the evaluator's
+// representation-private storage while preserving jq's stable insertion order.
+object_entry_copy :: proc(value: ^Value, index: int) -> (key, entry: Value, ok: bool) {
+	p, valid := object_storage_of(value)
+	if !valid || index < 0 || index >= p.object_length do return {}, {}, false
+	slots := object_payload_slots(p)
+	seen := 0
+	for i in 0..<p.object_next_free {
+		if kind_of(&slots[i].key) != .String do continue
+		if seen == index {
+			return clone_value(&slots[i].key), clone_value(&slots[i].value), true
+		}
+		seen += 1
+	}
+	return {}, {}, false
+}
+
 @(private)
 object_hash :: proc(bytes: string) -> u32 {
 	// Hash choice is representation-private: jq-visible iteration follows slot
