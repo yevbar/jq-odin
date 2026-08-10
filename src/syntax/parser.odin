@@ -20,6 +20,7 @@ Node_Kind :: enum {
 	Reduce,
 	Length,
 	Keys,
+	Type,
 }
 
 Node_Id :: distinct int
@@ -621,6 +622,8 @@ parse_pipe :: proc(
 					kind = .Length
 				} else if spelling == "keys" {
 					kind = .Keys
+				} else if spelling == "type" {
+					kind = .Type
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

@@ -1717,6 +1717,21 @@ is_binary_opcode :: proc(opcode: program.Opcode) -> bool {
 @(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
+	if opcode == .Type {
+		name := "invalid"
+		switch kind {
+		case .Null: name = "null"
+		case .Boolean: name = "boolean"
+		case .Number: name = "number"
+		case .String: name = "string"
+		case .Array: name = "array"
+		case .Object: name = "object"
+		case .Invalid:
+		}
+		result, err := value.string_value(name, allocator)
+		if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
+		return result, .None, nil
+	}
 	if opcode == .Length {
 		if kind == .Null do return value.number_value(0), .None, nil
 		if kind == .Array { n, ok := value.array_length(input); if ok do return value.number_value(f64(n)), .None, nil }
@@ -2093,7 +2108,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys:
+			case .Length, .Keys, .Type:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
