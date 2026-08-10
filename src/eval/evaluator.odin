@@ -686,12 +686,15 @@ collect_constructor_key_stream :: proc(
 		for right_index in 0..<right_length {
 			right_value, right_value_ok := value.array_element_copy(&right_stream, right_index)
 			if !right_value_ok { _ = value.destroy_value(&left_value); _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
-			combined, runtime_kind, resource_error := apply_binary(instruction.opcode, &left_value, &right_value, instruction.operator_span, storage.allocator)
-			_ = value.destroy_value(&left_value); _ = value.destroy_value(&right_value)
+			left_for_right := value.clone_value(&left_value)
+			if value.kind_of(&left_for_right) == .Invalid { _ = value.destroy_value(&right_value); _ = value.destroy_value(&left_value); _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
+			combined, runtime_kind, resource_error := apply_binary(instruction.opcode, &left_for_right, &right_value, instruction.operator_span, storage.allocator)
+			_ = value.destroy_value(&left_for_right); _ = value.destroy_value(&right_value)
 			if runtime_kind != .None || resource_error != nil || value.kind_of(&combined) == .Invalid { _ = value.destroy_value(&combined); _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
 			_, append_error := value.array_append_take(output, &combined)
 			if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&combined); _ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream); return false }
 		}
+		_ = value.destroy_value(&left_value)
 	}
 	_ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream)
 	case .Field:
