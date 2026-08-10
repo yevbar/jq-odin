@@ -1,6 +1,7 @@
 package eval
 
 import "base:runtime"
+import "core:math"
 import "core:sync"
 import program "jq:program"
 import value "jq:value"
@@ -8,6 +9,11 @@ import value "jq:value"
 Runtime_Error_Kind :: enum u8 {
 	None,
 	Cannot_Index_With_String,
+	Cannot_Add,
+	Cannot_Subtract,
+	Cannot_Multiply,
+	Cannot_Divide,
+	Cannot_Modulo,
 }
 
 Runtime_Error :: struct {
