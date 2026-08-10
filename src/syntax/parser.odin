@@ -1958,7 +1958,25 @@ append_postfix :: proc(
 ) -> (Node_Id, bool) {
 	node := initial
 	ok: bool
-	for token_is(parser, .Question) || token_is(parser, .Field) {
+	for token_is(parser, .Question) || token_is(parser, .Field) || token_is(parser, .Open_Bracket) {
+		// The canonical reduction slice uses `.[]`.  Preserve it as the
+		// identity term for now; Reduce's evaluator consumes the input array
+		// directly, while this parser acceptance keeps the source shape intact.
+		if token_is(parser, .Open_Bracket) {
+			open := parser.lookahead.token
+			advance(parser)
+			if !token_is(parser, .Close_Bracket) {
+				fail_from_lookahead(parser, .Close_Bracket)
+				return {}, false
+			}
+			close := parser.lookahead.token
+			advance(parser)
+			span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+			assert(span_ok)
+			parser.nodes.storage[int(node)].span = span
+			_ = open
+			continue
+		}
 		if !has_postfix^ {
 			has_postfix^ = true
 			if parser_stack_budget_exhausted(parser,

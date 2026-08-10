@@ -1743,7 +1743,12 @@ module_expand_source :: proc(
 		// A definition body is an expression boundary.  Keep that boundary in
 		// the expanded source: without it, `def value: 1 + 2; value * 3`
 		// becomes `1 + 2 * 3`, changing jq's call precedence.
-		if !module_write(builder, "(") {
+		body_is_reduce := false
+		trimmed_definition_body := module_trim(definition.body)
+		if len(trimmed_definition_body) >= 6 && trimmed_definition_body[:6] == "reduce" {
+			body_is_reduce = true
+		}
+		if !body_is_reduce && !module_write(builder, "(") {
 			return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 		}
 		for binding_index := 0; binding_index < call_count; binding_index += 1 {
@@ -1768,7 +1773,7 @@ module_expand_source :: proc(
 		)
 		delete(body, allocator)
 		if outcome.kind != .None do return outcome
-		if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+		if !body_is_reduce && !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 	}
 	return {}
 }

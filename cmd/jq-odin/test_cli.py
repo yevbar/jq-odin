@@ -557,10 +557,10 @@ def expect_module_loading(
             ["-L", directory, 'include "references"; answer'],
             b"[1,2,3]\n",
         )
-        actual = run(candidate, ["-L", directory, "-n", 'include "references"; text'])
-        wanted = (3, b"", b"jq-odin: filter compile error\n")
-        if (actual.returncode, actual.stdout, actual.stderr) != wanted:
-            raise AssertionError(f"quoted semicolon definition: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
+        expect_oracle_case(
+            "quoted semicolon definition",
+            ["-L", directory, "-n", 'include "references"; text'],
+        )
 
         (root / "cycle-a.jq").write_text('include "cycle-b";\ndef a: 1;\n', encoding="utf-8")
         (root / "cycle-b.jq").write_text('include "cycle-a";\ndef b: 2;\n', encoding="utf-8")
