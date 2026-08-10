@@ -1719,6 +1719,17 @@ is_binary_opcode :: proc(opcode: program.Opcode) -> bool {
 }
 
 @(private)
+utf8_codepoint_length :: proc(text: string) -> int {
+	count := 0
+	for i in 0..<len(text) {
+		// Continuation bytes belong to the preceding codepoint. Counting
+		// leading bytes matches jq's Unicode character length.
+		if (text[i] & 0xc0) != 0x80 do count += 1
+	}
+	return count
+}
+
+@(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Type {
@@ -1752,7 +1763,7 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if kind == .Null do return value.number_value(0), .None, nil
 		if kind == .Array { n, ok := value.array_length(input); if ok do return value.number_value(f64(n)), .None, nil }
 		if kind == .Object { n, ok := value.object_length(input); if ok do return value.number_value(f64(n)), .None, nil }
-		if kind == .String { s, ok := value.string_borrowed(input); if ok do return value.number_value(f64(len(s))), .None, nil }
+		if kind == .String { s, ok := value.string_borrowed(input); if ok do return value.number_value(f64(utf8_codepoint_length(s))), .None, nil }
 		return {}, .Cannot_Length, nil
 	}
 	if opcode == .Add_Builtin {
