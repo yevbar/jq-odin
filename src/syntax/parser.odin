@@ -18,6 +18,8 @@ Node_Kind :: enum {
 	Variable,
 	Binding,
 	Reduce,
+	Length,
+	Keys,
 }
 
 Node_Id :: distinct int
@@ -615,6 +617,10 @@ parse_pipe :: proc(
 					boolean_value = true
 				} else if spelling == "false" {
 					kind = .Boolean
+				} else if spelling == "length" {
+					kind = .Length
+				} else if spelling == "keys" {
+					kind = .Keys
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

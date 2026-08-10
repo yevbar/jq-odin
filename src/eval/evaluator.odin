@@ -15,6 +15,7 @@ Runtime_Error_Kind :: enum u8 {
 	Cannot_Divide,
 	Cannot_Modulo,
 	Cannot_Iterate,
+	Cannot_Length,
 }
 
 Runtime_Error :: struct {
@@ -1714,6 +1715,33 @@ is_binary_opcode :: proc(opcode: program.Opcode) -> bool {
 }
 
 @(private)
+builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	kind := value.kind_of(input)
+	if opcode == .Length {
+		if kind == .Null do return value.number_value(0), .None, nil
+		if kind == .Array { n, ok := value.array_length(input); if ok do return value.number_value(f64(n)), .None, nil }
+		if kind == .Object { n, ok := value.object_length(input); if ok do return value.number_value(f64(n)), .None, nil }
+		if kind == .String { s, ok := value.string_borrowed(input); if ok do return value.number_value(f64(len(s))), .None, nil }
+		return {}, .Cannot_Length, nil
+	}
+	if kind == .Array {
+		out, err := value.array_value(allocator)
+		if value.array_error_kind(&err) != .None { return {}, .None, .Out_Of_Memory }
+		n, _ := value.array_length(input)
+		for i in 0..<n { item := value.number_value(f64(i)); _, ae := value.array_append_take(&out, &item); if value.array_error_kind(&ae) != .None { _ = value.destroy_value(&out); return {}, .None, .Out_Of_Memory } }
+		return out, .None, nil
+	}
+	if kind == .Object {
+		out, err := value.array_value(allocator)
+		if value.array_error_kind(&err) != .None { return {}, .None, .Out_Of_Memory }
+		n, _ := value.object_length(input)
+		for i in 0..<n { key, _, ok := value.object_entry_copy(input, i); if !ok { _ = value.destroy_value(&out); return {}, .None, nil }; _, ae := value.array_append_take(&out, &key); if value.array_error_kind(&ae) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&out); return {}, .None, .Out_Of_Memory } }
+		return out, .None, nil
+	}
+	return {}, .Cannot_Length, nil
+}
+
+@(private)
 apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: program.Source_Span, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	_ = span
 	#partial switch opcode {
@@ -2033,6 +2061,20 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			case .Variable:
 				output, variable_ok := variable_result(storage, index, instruction)
 				if !variable_ok || value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Length, .Keys:
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				output, runtime_kind, resource_error := builtin_result(instruction.opcode, &frame.input, storage.allocator)
+				if resource_error != nil do return resource_step(resource_error)
+				if runtime_kind != .None {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
