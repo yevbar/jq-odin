@@ -1584,7 +1584,6 @@ propagate_output :: proc(
 				return result_step, ready
 			}
 			_ = value.destroy_value(owned)
-			_ = value.destroy_value(&frame.binary_left)
 			return propagate_output(storage, parent, &result)
 		case .Binding_Left_Active:
 			// Each output of the bound expression starts the body with the
@@ -2125,7 +2124,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				_, append_error := value.array_append_take(&frame.constructor_key_results, &key_stream)
 				if value.array_error_kind(&append_error) != .None {
 					retain_constructor_array_error(frame, &append_error)
-					_ = value.destroy_value(&key_stream)
+					// array_append_take does not consume the operand on failure.
+					// Preserve the key stream for retryable cleanup instead of
+					// dropping its owned string values.
+					frame.pending_constructor_value = value.take_value(&key_stream)
 					return resource_step(.Out_Of_Memory)
 				}
 			}
