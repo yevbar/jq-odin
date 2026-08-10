@@ -1736,6 +1736,35 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if value.array_error_kind(&err) != .None { return {}, .None, .Out_Of_Memory }
 		n, _ := value.object_length(input)
 		for i in 0..<n { key, _, ok := value.object_entry_copy(input, i); if !ok { _ = value.destroy_value(&out); return {}, .None, nil }; _, ae := value.array_append_take(&out, &key); if value.array_error_kind(&ae) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&out); return {}, .None, .Out_Of_Memory } }
+		// jq's `keys` sorts object names lexicographically, independent of
+		// insertion order. The array owns each key, so swapping handles is a
+		// move operation rather than a shallow copy.
+		for i in 0..<n {
+			for j in i+1..<n {
+				left, lok := value.array_element_copy(&out, i)
+				right, rok := value.array_element_copy(&out, j)
+				if !lok || !rok { _ = value.destroy_value(&left); _ = value.destroy_value(&right); continue }
+				ls, lsok := value.string_borrowed(&left)
+				rs, rsok := value.string_borrowed(&right)
+				if lsok && rsok && ls > rs {
+					displaced, left_error := value.array_set_take(&out, i, &right)
+					if value.array_error_kind(&left_error) == .None {
+						_ = value.destroy_value(&displaced)
+						displaced_right, right_error := value.array_set_take(&out, j, &left)
+						_ = value.destroy_value(&displaced_right)
+						if value.array_error_kind(&right_error) != .None {
+							_ = value.destroy_value(&left)
+						}
+					} else {
+						_ = value.destroy_value(&left)
+						_ = value.destroy_value(&right)
+					}
+				} else {
+					_ = value.destroy_value(&left)
+					_ = value.destroy_value(&right)
+				}
+			}
+		}
 		return out, .None, nil
 	}
 	return {}, .Cannot_Length, nil
