@@ -87,6 +87,12 @@ frame_phase :: enum u8 {
 	Field_Start_Child,
 	Field_Child_Active,
 	Field_Result_Active,
+	Binding_Start_Left,
+	Binding_Left_Active,
+	Binding_Body_Active,
+	Constructor_Start,
+	Constructor_Child_Active,
+	Constructor_Emit,
 	Complete,
 }
 
@@ -101,9 +107,25 @@ eval_frame :: struct {
 	// that established their phase. Resumption compares the live Program bytes
 	// before using either the saved phase or a current operand.
 	saved_instruction: program.Instruction,
-	saved_operands:    [2]program.Operand,
+	saved_operands:    [3]program.Operand,
 	saved_operand_count: u8,
 	has_saved_instruction: bool,
+	// Constructors materialize each child generator into one owned array before
+	// emitting Cartesian-product results. This keeps jq's zero/one/many stream
+	// cardinality explicit without pretending Odin has coroutines.
+	constructor_results: value.Value,
+	constructor_key_results: value.Value,
+	constructor_current: value.Value,
+	constructor_child: int,
+	constructor_cursor: u64,
+	constructor_total: u64,
+	constructor_seen_output: bool,
+	pending_constructor_value: value.Value,
+	pending_constructor_key: value.Value,
+	pending_array_error: value.Array_Operation_Error,
+	pending_object_error: value.Object_Operation_Error,
+	constructor_pending_failure: bool,
+	binding_value: value.Value,
 }
 
 @(private)
@@ -480,6 +502,187 @@ push_frame :: proc(
 }
 
 @(private)
+constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error {
+	if frame == nil do return nil
+	free_error := value.destroy_array_error(&frame.pending_array_error)
+	if free_error != nil do return free_error
+	free_error = value.destroy_object_error(&frame.pending_object_error)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.pending_constructor_key)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.pending_constructor_value)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.constructor_results)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.constructor_key_results)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.constructor_current)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.binding_value)
+	if free_error != nil do return free_error
+	frame.constructor_child = 0
+	frame.constructor_cursor = 0
+	frame.constructor_total = 0
+	frame.constructor_seen_output = false
+	return nil
+}
+
+@(private)
+constructor_frame_retry_pending :: proc(frame: ^eval_frame) -> runtime.Allocator_Error {
+	if frame == nil do return nil
+	free_error := value.destroy_array_error(&frame.pending_array_error)
+	if free_error != nil do return free_error
+	free_error = value.destroy_object_error(&frame.pending_object_error)
+	if free_error != nil do return free_error
+	// The failed constructor operation did not consume these operands. Once
+	// its allocator cleanup succeeds, retire the preserved operands before the
+	// evaluator reports the terminal malformed/resource outcome.
+	free_error = value.destroy_value(&frame.pending_constructor_key)
+	if free_error != nil do return free_error
+	return value.destroy_value(&frame.pending_constructor_value)
+}
+
+@(private)
+retain_constructor_array_error :: proc(frame: ^eval_frame, err: ^value.Array_Operation_Error) {
+	if value.array_error_needs_cleanup(err) {
+		frame.pending_array_error = value.take_array_error(err)
+	} else {
+		_ = value.destroy_array_error(err)
+	}
+	frame.constructor_pending_failure = true
+}
+
+@(private)
+retain_constructor_object_error :: proc(frame: ^eval_frame, err: ^value.Object_Operation_Error) {
+	if value.object_error_needs_cleanup(err) {
+		frame.pending_object_error = value.take_object_error(err)
+	} else {
+		_ = value.destroy_object_error(err)
+	}
+	frame.constructor_pending_failure = true
+}
+
+@(private)
+collect_constructor_key_stream :: proc(
+	storage: ^evaluator_storage,
+	instruction_index: program.Instruction_Index,
+	input: ^value.Value,
+	output: ^value.Value,
+) -> bool {
+	instruction, instruction_ok := program.program_instruction(storage.compiled, instruction_index)
+	if !instruction_ok do return false
+	#partial switch instruction.opcode {
+	case .Identity:
+		key: value.Value
+		if instruction.has_literal {
+			literal_error: value.Error
+			cleanup_error: runtime.Allocator_Error
+			key, literal_error, cleanup_error = literal_value(storage, instruction)
+			if cleanup_error != nil || literal_error != .None do return false
+		} else {
+			key = value.clone_value(input)
+		}
+		_, append_error := value.array_append_take(output, &key)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_array_error(&append_error)
+			_ = value.destroy_value(&key)
+			return false
+		}
+	case .Parenthesized, .Optional:
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
+		return collect_constructor_key_stream(storage, child, input, output)
+	case .Fork:
+		left, left_ok := child_instruction(storage, instruction, 0)
+		right, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok do return false
+		return collect_constructor_key_stream(storage, left, input, output) &&
+			collect_constructor_key_stream(storage, right, input, output)
+	case .Sequence:
+		left, left_ok := child_instruction(storage, instruction, 0)
+		right, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok do return false
+		left_stream, left_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&left_error) != .None {
+			_ = value.destroy_array_error(&left_error)
+			return false
+		}
+		left_ok = collect_constructor_key_stream(storage, left, input, &left_stream)
+		if !left_ok {
+			_ = value.destroy_value(&left_stream)
+			return false
+		}
+		left_length, length_ok := value.array_length(&left_stream)
+		if !length_ok {
+			_ = value.destroy_value(&left_stream)
+			return false
+		}
+		for index in 0..<left_length {
+			left_value, item_ok := value.array_element_copy(&left_stream, index)
+			if !item_ok {
+				_ = value.destroy_value(&left_stream)
+				return false
+			}
+			if !collect_constructor_key_stream(storage, right, &left_value, output) {
+				_ = value.destroy_value(&left_value)
+				_ = value.destroy_value(&left_stream)
+				return false
+			}
+			_ = value.destroy_value(&left_value)
+		}
+		_ = value.destroy_value(&left_stream)
+	case .Field:
+		if instruction.operands_count != 1 do return false
+		temp := eval_frame{input = value.clone_value(input)}
+		key, runtime_error, field_ok := field_result(storage, &temp, instruction)
+		_ = value.destroy_value(&temp.input)
+		if !field_ok || runtime_error.kind != .None {
+			_ = value.destroy_value(&key)
+			return false
+		}
+		_, append_error := value.array_append_take(output, &key)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_array_error(&append_error)
+			_ = value.destroy_value(&key)
+			return false
+		}
+	case:
+		return false
+	}
+	return true
+}
+
+@(private)
+constructor_start :: proc(storage: ^evaluator_storage, frame: ^eval_frame, instruction: program.Instruction) -> bool {
+	if instruction.opcode != .Array && instruction.opcode != .Object do return false
+	// results is an array of per-child output arrays. Each child stream is
+	// collected independently; emission later takes one element from each,
+	// yielding the Cartesian product required by jq constructors.
+	results, result_error := value.array_value(storage.allocator)
+	if value.array_error_kind(&result_error) != .None {
+		retain_constructor_array_error(frame, &result_error)
+		return false
+	}
+	frame.constructor_results = value.take_value(&results)
+	if instruction.opcode == .Object {
+		key_results, key_results_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&key_results_error) != .None {
+			retain_constructor_array_error(frame, &key_results_error)
+			_ = value.destroy_value(&frame.constructor_results)
+			return false
+		}
+		frame.constructor_key_results = value.take_value(&key_results)
+	}
+	frame.constructor_child = 0
+	frame.constructor_cursor = 0
+	frame.constructor_total = 1
+	frame.constructor_seen_output = false
+	frame.phase = .Constructor_Start
+	return true
+}
+
+
+@(private)
 child_instruction :: proc(
 	storage: ^evaluator_storage,
 	instruction: program.Instruction,
@@ -492,6 +695,163 @@ child_instruction :: proc(
 	)
 	if !ok || operand.kind != .Instruction do return {}, false
 	return operand.instruction, true
+}
+
+@(private)
+variable_result :: proc(storage: ^evaluator_storage, producer: int, instruction: program.Instruction) -> (value.Value, bool) {
+	if instruction.opcode != .Variable || instruction.operands_count != 1 do return {}, false
+	name_operand, name_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	if !name_ok || name_operand.kind != .Text do return {}, false
+	name, text_ok := program.operand_text(storage.compiled, name_operand)
+	if !text_ok do return {}, false
+	current := storage.frames[producer].parent
+	for current >= 0 {
+		frame := &storage.frames[current]
+		bound_instruction, instruction_ok := program.program_instruction(storage.compiled, frame.instruction)
+		if !instruction_ok do return {}, false
+		if bound_instruction.opcode == .Binding && value.kind_of(&frame.binding_value) != .Invalid {
+			bound_operand, bound_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(bound_instruction.operands_start)+2))
+			if !bound_ok || bound_operand.kind != .Text do return {}, false
+			bound_name, bound_text_ok := program.operand_text(storage.compiled, bound_operand)
+			if !bound_text_ok do return {}, false
+			if bound_name == name do return value.clone_value(&frame.binding_value), true
+		}
+		current = frame.parent
+	}
+	return {}, false
+}
+
+@(private)
+constructor_child_instruction :: proc(
+	storage: ^evaluator_storage,
+	instruction: program.Instruction,
+	child: int,
+) -> (program.Instruction_Index, bool) {
+	offset := child
+	if instruction.opcode == .Object do offset = child*2 + 1
+	if offset < 0 || u32(offset) >= u32(instruction.operands_count) do return {}, false
+	return child_instruction(storage, instruction, u32(offset))
+}
+
+@(private)
+constructor_emit :: proc(
+	storage: ^evaluator_storage,
+	frame: ^eval_frame,
+	instruction: program.Instruction,
+) -> (value.Value, bool) {
+	if frame.constructor_total == 0 do return {}, false
+	child_count := int(instruction.operands_count)
+	if instruction.opcode == .Object do child_count /= 2
+	if child_count != 0 && frame.constructor_cursor >= frame.constructor_total do return {}, false
+	result: value.Value
+	if instruction.opcode == .Array {
+		array_result, array_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&array_error) != .None {
+			retain_constructor_array_error(frame, &array_error)
+			return {}, false
+		}
+		result = value.take_value(&array_result)
+	} else {
+		object_result, object_error := value.object_value(storage.allocator)
+		if value.object_error_kind(&object_error) != .None {
+			retain_constructor_object_error(frame, &object_error)
+			return {}, false
+		}
+		result = value.take_value(&object_result)
+	}
+	quotient := frame.constructor_cursor
+	for child in 0..<child_count {
+		child_stream, stream_ok := value.array_element_copy(
+			&frame.constructor_results,
+			child,
+		)
+		if !stream_ok {
+			_ = value.destroy_value(&result)
+			return {}, false
+		}
+		length, length_ok := value.array_length(&child_stream)
+		if !length_ok {
+			_ = value.destroy_value(&child_stream)
+			_ = value.destroy_value(&result)
+			return {}, false
+		}
+		if instruction.opcode == .Array {
+			for selected in 0..<length {
+				item, item_ok := value.array_element_copy(&child_stream, selected)
+				if !item_ok {
+					_ = value.destroy_value(&child_stream)
+					_ = value.destroy_value(&result)
+					return {}, false
+				}
+			_, append_error := value.array_append_take(&result, &item)
+			if value.array_error_kind(&append_error) != .None {
+				frame.constructor_pending_failure = true
+				frame.pending_constructor_value = value.take_value(&item)
+				if value.array_error_needs_cleanup(&append_error) {
+					frame.pending_array_error = value.take_array_error(&append_error)
+				} else {
+					_ = value.destroy_array_error(&append_error)
+				}
+				_ = value.destroy_value(&result)
+				return {}, false
+			}
+			}
+		} else {
+			if length <= 0 {
+				_ = value.destroy_value(&child_stream)
+				_ = value.destroy_value(&result)
+				return {}, false
+			}
+			selected := int(quotient % u64(length))
+			quotient /= u64(length)
+			item, item_ok := value.array_element_copy(&child_stream, selected)
+			if !item_ok {
+				_ = value.destroy_value(&child_stream)
+				_ = value.destroy_value(&result)
+				return {}, false
+			}
+			key_stream, key_stream_ok := value.array_element_copy(&frame.constructor_key_results, child)
+			if !key_stream_ok {
+				_ = value.destroy_value(&item)
+				_ = value.destroy_value(&result)
+				return {}, false
+			}
+			key_length, key_length_ok := value.array_length(&key_stream)
+			if !key_length_ok || key_length <= 0 {
+				_ = value.destroy_value(&key_stream)
+				_ = value.destroy_value(&item)
+				_ = value.destroy_value(&result)
+				return {}, false
+			}
+			key_index := int(quotient % u64(key_length))
+			quotient /= u64(key_length)
+			key, key_ok := value.array_element_copy(&key_stream, key_index)
+			_ = value.destroy_value(&key_stream)
+			if !key_ok {
+				_ = value.destroy_value(&item)
+				_ = value.destroy_value(&result)
+				return {}, false
+			}
+			duplicate, displaced, set_error := value.object_set_take(&result, &key, &item)
+			if value.object_error_kind(&set_error) != .None {
+				frame.constructor_pending_failure = true
+				frame.pending_constructor_key = value.take_value(&key)
+				frame.pending_constructor_value = value.take_value(&item)
+				if value.object_error_needs_cleanup(&set_error) {
+					frame.pending_object_error = value.take_object_error(&set_error)
+				} else {
+					_ = value.destroy_object_error(&set_error)
+				}
+				_ = value.destroy_value(&displaced)
+				_ = value.destroy_value(&result)
+				return {}, false
+			}
+			_ = value.destroy_value(&duplicate)
+			_ = value.destroy_value(&displaced)
+		}
+		_ = value.destroy_value(&child_stream)
+	}
+	return result, true
 }
 
 @(private)
@@ -608,6 +968,13 @@ capture_composite_instruction :: proc(
 		_, left_ok := child_instruction(storage, instruction, 0)
 		_, right_ok := child_instruction(storage, instruction, 1)
 		if !left_ok || !right_ok do return false
+	case .Array, .Object:
+		// Constructor operands are validated by Program; only the live
+		// instruction/operand snapshot is needed for mutation detection here.
+		frame.saved_instruction = instruction
+		frame.saved_operand_count = 0
+		frame.has_saved_instruction = true
+		return true
 	case:
 		return false
 	}
@@ -644,12 +1011,24 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
 	case .Sequence_Start_Left, .Sequence_Left_Active, .Sequence_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Sequence do return false
+	case .Binding_Start_Left, .Binding_Left_Active, .Binding_Body_Active:
+		if frame.mode != .Normal || instruction.opcode != .Binding do return false
+	case .Constructor_Start, .Constructor_Child_Active, .Constructor_Emit:
+		if frame.mode != .Normal || (instruction.opcode != .Array && instruction.opcode != .Object) {
+			return false
+		}
+		return frame.has_saved_instruction && instruction.opcode == frame.saved_instruction.opcode
 	case:
 		return true
 	}
 	expected_operand_count: u8
 	if frame.phase == .Unary_Active do expected_operand_count = 1
-	else do expected_operand_count = 2
+	else if frame.phase == .Constructor_Start || frame.phase == .Constructor_Child_Active || frame.phase == .Constructor_Emit {
+		expected_operand_count = u8(instruction.operands_count)
+	}
+	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
+		expected_operand_count = 3
+	} else do expected_operand_count = 2
 	if !frame.has_saved_instruction ||
 	   frame.saved_operand_count != expected_operand_count ||
 	   instruction != frame.saved_instruction {
@@ -737,6 +1116,8 @@ destroy_frames_to :: proc(storage: ^evaluator_storage, target_count: int) -> run
 	for storage.frame_count > target_count {
 		index := storage.frame_count-1
 		free_error := value.destroy_value(&storage.frames[index].input)
+		if free_error != nil do return free_error
+		free_error = constructor_frame_destroy(&storage.frames[index])
 		if free_error != nil do return free_error
 		storage.frames[index] = {}
 		storage.frame_count -= 1
@@ -944,6 +1325,61 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Field_Result_Active:
 		frame.phase = .Field_Child_Active
+	case .Binding_Left_Active:
+		frame.phase = .Complete
+	case .Binding_Body_Active:
+		frame.phase = .Binding_Left_Active
+	case .Constructor_Child_Active:
+		// A constructor child has completed its complete generator stream.
+		// An empty stream makes the whole constructor empty; otherwise retain
+		// the materialized child stream and advance to the next operand.
+		current_length, current_ok := value.array_length(&frame.constructor_current)
+		if !current_ok do return false
+		if current_length == 0 && instruction.opcode == .Object {
+			frame.phase = .Complete
+			return true
+		}
+		_, append_error := value.array_append_take(
+			&frame.constructor_results,
+			&frame.constructor_current,
+		)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_array_error(&append_error)
+			return false
+		}
+		frame.constructor_child += 1
+		child_count := int(instruction.operands_count)
+		if instruction.opcode == .Object do child_count /= 2
+		if frame.constructor_child >= child_count {
+			frame.constructor_total = 1
+			if instruction.opcode == .Array {
+				// Array constructors collect every output from every child into
+				// one array; they do not Cartesian-expand stream elements.
+				frame.constructor_total = 1
+			} else {
+			for child_index in 0..<child_count {
+				child_stream, child_ok := value.array_element_copy(
+					&frame.constructor_results,
+					child_index,
+				)
+				if !child_ok do return false
+				length, length_ok := value.array_length(&child_stream)
+				_ = value.destroy_value(&child_stream)
+				if !length_ok || length <= 0 do return false
+				if u64(length) > max(u64)/frame.constructor_total do return false
+				frame.constructor_total *= u64(length)
+				key_stream, key_ok := value.array_element_copy(&frame.constructor_key_results, child_index)
+				if !key_ok do return false
+				key_length, key_length_ok := value.array_length(&key_stream)
+				_ = value.destroy_value(&key_stream)
+				if !key_length_ok || key_length <= 0 || u64(key_length) > max(u64)/frame.constructor_total do return false
+				frame.constructor_total *= u64(key_length)
+			}
+			}
+			frame.phase = .Constructor_Emit
+		} else {
+			frame.phase = .Constructor_Start
+		}
 	case:
 		frame.phase = .Complete
 	}
@@ -956,6 +1392,8 @@ finish_top_frame :: proc(storage: ^evaluator_storage) -> (runtime.Allocator_Erro
 	index := storage.frame_count-1
 	parent := storage.frames[index].parent
 	free_error := value.destroy_value(&storage.frames[index].input)
+	if free_error != nil do return free_error, true
+	free_error = constructor_frame_destroy(&storage.frames[index])
 	if free_error != nil do return free_error, true
 	storage.frames[index] = {}
 	storage.frame_count -= 1
@@ -1066,6 +1504,53 @@ propagate_output :: proc(
 			return {}, false
 		case .Field_Result_Active:
 			current = parent
+		case .Binding_Left_Active:
+			// Each output of the bound expression starts the body with the
+			// original input, while the yielded value becomes the nearest lexical
+			// binding owned by this frame.
+			if value.kind_of(owned) == .Invalid do return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			free_error := value.destroy_value(&frame.binding_value)
+			if free_error != nil { storage.pending_value = value.take_value(owned); return resource_step(free_error), true }
+			frame.binding_value = value.take_value(owned)
+			body, body_ok := child_instruction(storage, instruction, 1)
+			input_copy := value.clone_value(&frame.input)
+			if !body_ok || value.kind_of(&input_copy) == .Invalid {
+				_ = value.destroy_value(&input_copy)
+				return begin_terminal_misuse(storage, .Malformed_Program), true
+			}
+			if storage.frame_count == len(storage.frames) {
+				capacity_error := grow_frames(storage)
+				if capacity_error != nil { _ = value.destroy_value(&input_copy); return resource_step(capacity_error), true }
+				frame = &storage.frames[parent]
+			}
+			if !push_frame(storage, body, parent, &input_copy) {
+				_ = value.destroy_value(&input_copy)
+				return begin_terminal_misuse(storage, .Malformed_Program), true
+			}
+			frame = &storage.frames[parent]
+			frame.phase = .Binding_Body_Active
+			return {}, false
+		case .Binding_Body_Active:
+			current = parent
+		case .Constructor_Child_Active:
+			// Consume one output into the current child stream. The child frame
+			// remains suspended at its yield point; its eventual exhaustion is
+			// what advances the constructor to the next operand.
+			_, append_error := value.array_append_take(
+				&frame.constructor_current,
+				owned,
+			)
+			if value.array_error_kind(&append_error) != .None {
+				frame.constructor_pending_failure = true
+				frame.pending_constructor_value = value.take_value(owned)
+				if value.array_error_needs_cleanup(&append_error) {
+					frame.pending_array_error = value.take_array_error(&append_error)
+				} else {
+					_ = value.destroy_array_error(&append_error)
+				}
+				return begin_terminal_misuse(storage, .Malformed_Program), true
+			}
+			return {}, false
 		case:
 			return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
 		}
@@ -1143,6 +1628,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		instruction, instruction_ok := program.program_instruction(storage.compiled, frame.instruction)
 		if !instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 		if !resumed_composite_instruction_valid(storage, frame, instruction) {
+			return begin_terminal_misuse(storage, .Malformed_Program)
+		}
+		if frame.constructor_pending_failure {
+			free_error := constructor_frame_retry_pending(frame)
+			if free_error != nil do return resource_step(free_error)
+			frame.constructor_pending_failure = false
 			return begin_terminal_misuse(storage, .Malformed_Program)
 		}
 
@@ -1226,6 +1717,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				} else {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
+			case .Variable:
+				output, variable_ok := variable_result(storage, index, instruction)
+				if !variable_ok || value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Binding:
+				if instruction.operands_count != 3 || !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				frame.phase = .Binding_Start_Left
 			case .Parenthesized, .Optional:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
@@ -1262,11 +1764,16 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				// unchanged or fabricated value. The frame cleanup below still owns
 				// and releases the input before terminal replay.
 				return begin_terminal_misuse(storage, .Unsupported_Opcode)
+			case .Array, .Object:
+				if !capture_composite_instruction(storage, frame, instruction) ||
+				   !constructor_start(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
 			case:
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Field_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left:
+		case .Field_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -1283,6 +1790,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				offset, next_phase = 1, .Fork_Right_Active
 			case .Sequence_Start_Left:
 				offset, next_phase = 0, .Sequence_Left_Active
+			case .Binding_Start_Left:
+				offset, next_phase = 0, .Binding_Left_Active
 			case:
 			}
 			child, ok := child_instruction(storage, instruction, offset)
@@ -1295,6 +1804,113 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			}
 			frame.phase = next_phase
 
+		case .Constructor_Start:
+			child_count := int(instruction.operands_count)
+			if instruction.opcode == .Object do child_count /= 2
+			if frame.constructor_child >= child_count {
+				// Empty [] and {} have one result. Nonempty constructors reach
+				// this state only after a prior child was appended.
+				if child_count == 0 {
+					frame.constructor_total = 1
+					frame.phase = .Constructor_Emit
+					continue
+				}
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			if instruction.opcode == .Object {
+				key_stream, key_stream_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&key_stream_error) != .None {
+					_ = value.destroy_array_error(&key_stream_error)
+					return resource_step(.Out_Of_Memory)
+				}
+				key_offset := u32(instruction.operands_start) + u32(frame.constructor_child*2)
+				key_operand, key_operand_ok := program.program_operand(storage.compiled, program.Operand_Index(key_offset))
+				key_ok := false
+				if key_operand_ok && key_operand.kind == .Instruction {
+					key_ok = collect_constructor_key_stream(storage, key_operand.instruction, &frame.input, &key_stream)
+				} else if key_operand_ok && key_operand.kind == .Text {
+					key_text, text_ok := program.operand_text(storage.compiled, key_operand)
+					if text_ok {
+						key, key_error := value.string_value(key_text, storage.allocator)
+						if value.constructor_error_kind(&key_error) == .None {
+							_, append_error := value.array_append_take(&key_stream, &key)
+							key_ok = value.array_error_kind(&append_error) == .None
+							if !key_ok do _ = value.destroy_array_error(&append_error)
+						}
+						if !key_ok do _ = value.destroy_constructor_error(&key_error)
+					}
+				}
+				if !key_ok {
+					_ = value.destroy_value(&key_stream)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				key_length, key_length_ok := value.array_length(&key_stream)
+				if !key_length_ok {
+					_ = value.destroy_value(&key_stream)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				for key_index in 0..<key_length {
+					key_value, key_value_ok := value.array_element_copy(&key_stream, key_index)
+					if !key_value_ok || value.kind_of(&key_value) != .String {
+						_ = value.destroy_value(&key_value)
+						_ = value.destroy_value(&key_stream)
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					_ = value.destroy_value(&key_value)
+				}
+				_, append_error := value.array_append_take(&frame.constructor_key_results, &key_stream)
+				if value.array_error_kind(&append_error) != .None {
+					retain_constructor_array_error(frame, &append_error)
+					_ = value.destroy_value(&key_stream)
+					return resource_step(.Out_Of_Memory)
+				}
+			}
+			current, current_error := value.array_value(storage.allocator)
+			if value.array_error_kind(&current_error) != .None {
+				retain_constructor_array_error(frame, &current_error)
+				return resource_step(.Out_Of_Memory)
+			}
+			frame.constructor_current = value.take_value(&current)
+			child, child_ok := constructor_child_instruction(storage, instruction, frame.constructor_child)
+			input_copy := value.clone_value(&frame.input)
+			if !child_ok || value.kind_of(&input_copy) == .Invalid {
+				_ = value.destroy_value(&input_copy)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			if storage.frame_count == len(storage.frames) {
+				capacity_error := grow_frames(storage)
+				if capacity_error != nil {
+					_ = value.destroy_value(&input_copy)
+					return resource_step(capacity_error)
+				}
+				frame = &storage.frames[index]
+			}
+			if !push_frame(storage, child, index, &input_copy) {
+				_ = value.destroy_value(&input_copy)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			// push_frame may only mutate the frame arena, but reacquire the
+			// parent after any preceding growth so this write never targets a
+			// retired arena.
+			frame = &storage.frames[index]
+			frame.phase = .Constructor_Child_Active
+
+		case .Constructor_Emit:
+			if frame.constructor_cursor >= frame.constructor_total {
+				frame.phase = .Complete
+				continue
+			}
+			output, output_ok := constructor_emit(storage, frame, instruction)
+			if !output_ok || value.kind_of(&output) == .Invalid {
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			frame.constructor_cursor += 1
+			if frame.constructor_cursor >= frame.constructor_total {
+				frame.phase = .Complete
+			}
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
+
 		case .Leaf_Yielded, .Complete:
 			free_error, continuation_ok := finish_top_frame(storage)
 			if free_error != nil do return resource_step(free_error)
@@ -1302,7 +1918,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		case .Unary_Active, .Fork_Left_Active, .Fork_Right_Active,
 		     .Sequence_Left_Active, .Sequence_Right_Active,
-		     .Field_Child_Active, .Field_Result_Active:
+		     .Field_Child_Active, .Field_Result_Active,
+		     .Binding_Left_Active, .Binding_Body_Active, .Constructor_Child_Active:
 			// An active consumer is never the top frame: its producer is above it.
 			return begin_terminal_misuse(storage, .Malformed_Program)
 		}

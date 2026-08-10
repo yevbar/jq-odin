@@ -367,19 +367,22 @@ module_data_key_matches :: proc(data, field: string, at: int, allocator: runtime
 	if key_end > len(data) || data[key_end-1] != '"' do return key_end, false
 	decoded, parse_error := json.parse_value(data[at:key_end], allocator)
 	if parse_error.kind != .None {
-		// A parse error may retain scratch storage after a failed cleanup. Do
-		// not discard that owner: retry until the allocator accepts retirement.
-		for json.destroy_scalar_parse_error(&parse_error) != nil {}
+		// Cleanup is fallible. Retry a bounded number of times so a pathological
+		// allocator cannot spin the module loader forever; the parser error is
+		// local scratch and no longer usable after the bounded retirement attempt.
+		for attempt := 0; attempt < 8; attempt += 1 {
+			if json.destroy_scalar_parse_error(&parse_error) == nil do break
+		}
 		return key_end, false
 	}
 	text, text_ok := value.string_borrowed(&decoded)
 	key_matches = text_ok && text == field
 	// Destruction can report a transient allocator failure while retaining the
-	// value owner. Keep the decoded handle live and retry several times before
-	// abandoning the match; never overwrite it while a Free is still pending.
-	// A failed Free leaves `decoded` as the live owner. Retry without a fixed
-	// cap so transient allocator failures cannot make the owner unreachable.
-	for value.destroy_value(&decoded) != nil {}
+	// value owner. Retry a bounded number of times; unlike the old unbounded
+	// loop, a persistent allocator failure cannot hang module loading.
+	for attempt := 0; attempt < 8; attempt += 1 {
+		if value.destroy_value(&decoded) == nil do break
+	}
 	return key_end, key_matches
 }
 

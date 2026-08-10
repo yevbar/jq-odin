@@ -52,6 +52,196 @@ binary_opcodes_report_structured_unsupported_result :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+array_constructor_yields_empty_and_cartesian_outputs :: proc(t: ^testing.T) {
+	// [1, 2] has one output and [] has one empty-array output. The evaluator
+	// must execute constructors as streams rather than returning Unsupported.
+	instructions := [?]program.Instruction{
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 1, operands_count = 1},
+		{opcode = .Array, operands_start = 2, operands_count = 2},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 1, kind = .Text},
+		{text_start = 1, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 0},
+		{kind = .Instruction, instruction = 1},
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "12", 2)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	testing.expect_value(t, value.kind_of(&output), value.Kind.Array)
+	output_length, output_length_ok := value.array_length(&output)
+	testing.expect(t, output_length_ok)
+	testing.expect_value(t, output_length, 2)
+	first, first_ok := value.array_element_copy(&output, 0)
+	second, second_ok := value.array_element_copy(&output, 1)
+	testing.expect(t, first_ok && second_ok)
+	expect_number(t, &first, 1)
+	expect_number(t, &second, 2)
+	testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+
+	empty_instructions := [?]program.Instruction{{opcode = .Array}}
+	empty_program: program.Program
+	build_program(t, &empty_program, empty_instructions[:], nil, "", 0)
+	empty_input := value.null_value()
+	empty_evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&empty_evaluator, &empty_program, &empty_input, context.allocator).kind, Init_Error_Kind.None)
+	empty_output := step_take(t, &empty_evaluator)
+	testing.expect_value(t, value.kind_of(&empty_output), value.Kind.Array)
+	empty_length, empty_length_ok := value.array_length(&empty_output)
+	testing.expect(t, empty_length_ok)
+	testing.expect_value(t, empty_length, 0)
+	testing.expect_value(t, value.destroy_value(&empty_output), runtime.Allocator_Error(nil))
+	testing.expect_value(t, step_evaluator(&empty_evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&empty_evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &empty_program)
+}
+
+@(test)
+object_constructor_uses_literal_keys :: proc(t: ^testing.T) {
+	instructions := [?]program.Instruction{
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Object, operands_start = 1, operands_count = 2},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 1, kind = .Text},
+		{text_start = 1, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 0},
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "1a", 1)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	testing.expect_value(t, value.kind_of(&output), value.Kind.Object)
+	got, found := value.object_get_copy(&output, "a")
+	testing.expect(t, found)
+	expect_number(t, &got, 1)
+	testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
+object_constructor_evaluates_computed_literal_key :: proc(t: ^testing.T) {
+	instructions := [?]program.Instruction{
+		{opcode = .Identity, has_literal = true, literal_kind = .String,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Parenthesized, operands_start = 1, operands_count = 1},
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 2, operands_count = 1},
+		{opcode = .Object, operands_start = 3, operands_count = 2},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 0},
+		{text_start = 1, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 1},
+		{kind = .Instruction, instruction = 2},
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "a1", 3)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	got, found := value.object_get_copy(&output, "a")
+	testing.expect(t, found)
+	expect_number(t, &got, 1)
+	_ = value.destroy_value(&output)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
+object_constructor_computed_key_generator_emits_each_key :: proc(t: ^testing.T) {
+	instructions := [?]program.Instruction{
+		{opcode = .Identity, has_literal = true, literal_kind = .String,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Identity, has_literal = true, literal_kind = .String,
+			operands_start = 1, operands_count = 1},
+		{opcode = .Fork, operands_start = 2, operands_count = 2},
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 4, operands_count = 1},
+		{opcode = .Object, operands_start = 5, operands_count = 2},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 1, kind = .Text},
+		{text_start = 1, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 0},
+		{kind = .Instruction, instruction = 1},
+		{text_start = 2, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 2},
+		{kind = .Instruction, instruction = 3},
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "ab1", 4)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	keys := [2]string{"a", "b"}
+	for key in keys {
+		output := step_take(t, &evaluator)
+		got, found := value.object_get_copy(&output, key)
+		testing.expect(t, found)
+		expect_number(t, &got, 1)
+		_ = value.destroy_value(&output)
+	}
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
+array_constructor_preserves_child_stream_cardinality :: proc(t: ^testing.T) {
+	// [(1, 2)] must yield one array containing both stream values.
+	instructions := [?]program.Instruction{
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 1, operands_count = 1},
+		{opcode = .Fork, operands_start = 2, operands_count = 2},
+		{opcode = .Array, operands_start = 4, operands_count = 1},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 1, kind = .Text},
+		{text_start = 1, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 0},
+		{kind = .Instruction, instruction = 1},
+		{kind = .Instruction, instruction = 2},
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "12", 3)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	length, length_ok := value.array_length(&output)
+	testing.expect(t, length_ok && length == 2)
+	first, first_ok := value.array_element_copy(&output, 0)
+	second, second_ok := value.array_element_copy(&output, 1)
+	testing.expect(t, first_ok && second_ok)
+	expect_number(t, &first, 1)
+	expect_number(t, &second, 2)
+	_ = value.destroy_value(&output)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
 @(private)
 build_program :: proc(
 	t: ^testing.T,

@@ -15,6 +15,8 @@ Node_Kind :: enum {
 	Number,
 	String,
 	Negate,
+	Variable,
+	Binding,
 }
 
 Node_Id :: distinct int
@@ -22,6 +24,13 @@ Node_Id :: distinct int
 Node_Form :: enum u8 {
 	Kinded,
 	Binary,
+}
+
+Container_Kind :: enum u8 {
+	None,
+	Array,
+	Object,
+	Object_Entry,
 }
 
 Binary_Operator :: enum u8 {
@@ -49,24 +58,40 @@ Binary_Operator :: enum u8 {
 // corresponding has_* flag is true and remains valid until Parser destruction
 // begins. child and left/right are indices into the Parser-owned node arena.
 // Field has child only when it is a postfix suffix; a standalone field applies
-// to implicit identity and therefore has no explicit child node. Binary has
-// left and right operands plus an exact operator_span; neither span owns source
-// bytes.
+// to implicit identity and therefore has no explicit child node. Container
+// nodes retain their source role in container_kind and use value/next links
+// into this same arena; these links are source syntax, not runtime Values.
+// Binary has left and right operands plus an exact operator_span; neither span
+// owns source bytes.
 Node :: struct {
 	form:              Node_Form,
 	kind:              Node_Kind,
+	container_kind:    Container_Kind,
 	span:              diagnostic.Span,
 	child:             Node_Id,
 	has_child:         bool,
+	next:              Node_Id,
+	has_next:          bool,
 	left:              Node_Id,
 	right:             Node_Id,
 	name_span:         diagnostic.Span,
 	has_name_span:     bool,
+	value:             Node_Id,
+	has_value:         bool,
+	key:               Node_Id,
+	has_key:           bool,
 	boolean_value:     bool,
 	number_text:       string,
 	has_number_text:   bool,
 	string_text:       string,
 	has_string_text:   bool,
+	// A quoted object shorthand (e.g. {"name"}) uses the decoded string as
+	// its key but evaluates the input field of that name as its value.  Keep
+	// this distinction explicit in the source node instead of aliasing the
+	// key literal as the value expression.
+	string_shorthand:  bool,
+	binding_name_span: diagnostic.Span,
+	has_binding_name_span: bool,
 	binary_operator:   Binary_Operator,
 	operator_span:     diagnostic.Span,
 	has_operator_span: bool,
@@ -81,6 +106,8 @@ Parse_Error_Kind :: enum {
 Parse_Expectation :: enum {
 	Expression,
 	Close_Paren,
+	Close_Bracket,
+	Close_Brace,
 	Close_String,
 	End_Of_Input,
 }
@@ -128,6 +155,11 @@ Parser_State :: enum u8 {
 // live entries. These fixed grammar-state costs reproduce that live-stack
 // high-water without allocating a second stack or counting completed AST nodes.
 JQ_PARSER_STACK_CAP                :: 10_000
+// Container parsing shares the generated-parser stack budget below. The
+// native guard is retained only to switch arrays to their iterative flattening
+// path; it is never an object-depth failure threshold.
+JQ_CONTAINER_NESTING_CAP            :: 9_994
+JQ_NATIVE_CONTAINER_RECURSION_GUARD :: 512
 JQ_PREFIX_STACK_OVERHEAD           :: 5
 JQ_GROUP_OR_ORDERED_STACK_OVERHEAD :: 6
 JQ_QUERY_OPERATOR_STACK_OVERHEAD   :: 7
@@ -176,6 +208,7 @@ Parser :: struct {
 	frames:              Fallible_Buffer(Parse_Frame),
 	number_allocations:  Fallible_Buffer(Number_Allocation),
 	string_allocations:  Fallible_Buffer(String_Allocation),
+	container_depth:     int,
 	allocator:           runtime.Allocator,
 	state:               Parser_State,
 	self:                ^Parser,
@@ -401,7 +434,11 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 // placeholders and are completed before success. Partial state remains owned
 // by the Parser on every input or resource failure.
 @(private="package")
-parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
+parse_pipe :: proc(
+	parser: ^Parser,
+	closing := Token_Kind.Invalid,
+	stop_at_comma := false,
+) -> (Node_Id, bool) {
 	invalid_id := Node_Id(-1)
 	current, pipe_root, pipe_tail := invalid_id, invalid_id, invalid_id
 	term := invalid_id
@@ -442,7 +479,7 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 					minus_before_group = true
 				}
 				term_prefix_overhead = JQ_GROUP_OR_ORDERED_STACK_OVERHEAD
-				if parser_stack_budget_exhausted(
+				if parser_stack_budget_exhausted(parser,
 					group_depth+minus_depth,
 					live_pipe_count,
 					live_comma_count,
@@ -480,6 +517,12 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				current_pipe_count = 0
 				advance(parser)
 				continue
+			case .Open_Bracket, .Open_Brace:
+				new_term, container_ok := parse_container(parser, token.kind)
+				if !container_ok {
+					return {}, false
+				}
+				term = new_term
 			case .Dot:
 				advance(parser)
 				new_term, ok := append_node(parser, Node{
@@ -532,7 +575,7 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				} else if minus_before_group {
 					term_prefix_overhead = JQ_GROUP_OR_ORDERED_STACK_OVERHEAD
 				}
-				if parser_stack_budget_exhausted(
+				if parser_stack_budget_exhausted(parser,
 					group_depth+minus_depth,
 					live_pipe_count,
 					live_comma_count,
@@ -587,6 +630,19 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 				if !ok {
 					return {}, false
 				}
+				term = new_term
+			case .Binding:
+				// A binding reference is a filter term.  The lexer keeps the
+				// `$` outside value_span; retain only the identifier span so the
+				// compiler can own the name without borrowing parser storage.
+				advance(parser)
+				new_term, ok := append_node(parser, Node{
+					kind = .Variable,
+					span = token.span,
+					name_span = token.value_span,
+					has_name_span = true,
+				})
+				if !ok { return {}, false }
 				term = new_term
 			case:
 				fail_at_current(parser, .Unexpected_Token, .Expression)
@@ -651,7 +707,7 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			return {}, false
 		}
 		if has_binary_operator {
-			if parser_stack_budget_exhausted(
+			if parser_stack_budget_exhausted(parser,
 				group_depth+minus_depth,
 				live_pipe_count,
 				live_comma_count,
@@ -704,8 +760,8 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 		}
 		term_ready = false
 
-		if token_is(parser, .Comma) {
-			if parser_stack_budget_exhausted(
+		if (!stop_at_comma || group_depth > 0) && token_is(parser, .Comma) {
+			if parser_stack_budget_exhausted(parser,
 				group_depth+minus_depth,
 				live_pipe_count,
 				live_comma_count,
@@ -734,7 +790,7 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 		}
 
 		if token_is(parser, .Pipe) {
-			if parser_stack_budget_exhausted(
+			if parser_stack_budget_exhausted(parser,
 				group_depth+minus_depth,
 				live_pipe_count,
 				live_comma_count,
@@ -794,6 +850,45 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 			result = pipe_root
 		}
 
+		// jq's `expr as $name | body` is a low-precedence lexical binding.
+		// Parse the body with a fresh precedence state so the binding covers
+		// the complete remaining filter, while the caller's closing delimiter
+		// remains honored by the recursive parse.
+		if token_is(parser, .As) {
+			left := result
+			advance(parser)
+			if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {
+				fail_from_lookahead(parser, .Expression)
+				return {}, false
+			}
+			binding_token := parser.lookahead.token
+			advance(parser)
+			if !token_is(parser, .Pipe) {
+				fail_from_lookahead(parser, .Expression)
+				return {}, false
+			}
+			advance(parser)
+			right, body_ok := parse_pipe(parser, closing, stop_at_comma)
+			if !body_ok { return {}, false }
+			span, span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(right)].span)
+			assert(span_ok)
+			bound, bound_ok := append_node(parser, Node{
+				kind = .Binding,
+				span = span,
+				left = left,
+				right = right,
+				name_span = binding_token.value_span,
+				has_name_span = true,
+			})
+			if !bound_ok { return {}, false }
+			return bound, true
+		}
+
+		if (closing != .Invalid && token_is(parser, closing)) ||
+		   (stop_at_comma && token_is(parser, .Comma)) {
+			return result, true
+		}
+
 		if token_is(parser, .Close_Paren) && parser.frames.count > 0 {
 			close := parser.lookahead.token
 			advance(parser)
@@ -834,13 +929,404 @@ parse_pipe :: proc(parser: ^Parser) -> (Node_Id, bool) {
 }
 
 @(private="package")
+parse_deep_array_chain :: proc(parser: ^Parser) -> (Node_Id, bool) {
+	invalid_id := Node_Id(-1)
+	head := invalid_id
+	count := 0
+
+	for {
+		if parser.lookahead.kind != .Token ||
+		   parser.lookahead.token.kind != .Open_Bracket {
+			break
+		}
+		count += 1
+		if parser.container_depth + count - 1 > JQ_CONTAINER_NESTING_CAP {
+			fail_resource(parser, .Out_Of_Memory)
+			return {}, false
+		}
+		open_span := parser.lookahead.token.span
+		advance(parser)
+		node, ok := append_node(parser, Node{
+			kind = .Identity,
+			container_kind = .Array,
+			span = open_span,
+			next = head,
+			has_next = head != invalid_id,
+		})
+		if !ok {
+			return {}, false
+		}
+		head = node
+	}
+
+	// The flattened openers are all still live while their contents are parsed.
+	// Charge them to the same budget used by the precedence parser; otherwise a
+	// deep container prefix could be combined with an independently accepted
+	// deep expression prefix.
+	parser.container_depth += count - 1
+	value: Node_Id
+	ok: bool
+	first_close_consumed := false
+	if token_is(parser, .Close_Bracket) {
+		close_span := parser.lookahead.token.span
+		advance(parser)
+		node := &parser.nodes.storage[int(head)]
+		value = head
+		span, span_ok := spanning(parser, node.span, close_span)
+		assert(span_ok)
+		node.span = span
+		node.has_value = false
+		next := node.next if node.has_next else invalid_id
+		node.next = 0
+		node.has_next = false
+		head = next
+		first_close_consumed = true
+	} else {
+		value, ok = parse_pipe(parser, .Close_Bracket, false)
+		if !ok {
+			parser.container_depth -= count - 1
+			return {}, false
+		}
+	}
+	if !first_close_consumed {
+		if !token_is(parser, .Close_Bracket) {
+			fail_from_lookahead(parser, .Close_Bracket)
+			parser.container_depth -= count - 1
+			return {}, false
+		}
+		close_span := parser.lookahead.token.span
+		advance(parser)
+		node := &parser.nodes.storage[int(head)]
+		next := node.next if node.has_next else invalid_id
+		span, span_ok := spanning(parser, node.span, close_span)
+		assert(span_ok)
+		node.value = value
+		node.has_value = true
+		node.span = span
+		node.next = 0
+		node.has_next = false
+		value = head
+		head = next
+	}
+	// The first close belongs to the innermost flattened array. If its enclosing
+	// array query continues, reduce that continuation here before unwinding the
+	// remaining closers. This is the iterative equivalent of returning to the
+	// general query parser after an inner array term.
+	postfix_seen := false
+	for head != invalid_id {
+		if token_is(parser, .Question) || token_is(parser, .Field) {
+			value, ok = append_postfix(parser, value, 0, 0, 0, 0, 0, &postfix_seen)
+			if !ok {
+				parser.container_depth -= count - 1
+				return {}, false
+			}
+			continue
+		}
+		if token_is(parser, .Comma) {
+			operator := parser.lookahead.token
+			advance(parser)
+			right, right_ok := parse_pipe(parser, .Close_Bracket, false)
+			if !right_ok {
+				parser.container_depth -= count - 1
+				return {}, false
+			}
+			value, ok = append_node(parser, Node{
+				kind = .Comma,
+				span = operator.span,
+				left = value,
+				right = right,
+				has_child = false,
+			})
+			if !ok {
+				parser.container_depth -= count - 1
+				return {}, false
+			}
+			continue
+		}
+		if token_is(parser, .Pipe) {
+			operator := parser.lookahead.token
+			advance(parser)
+			right, right_ok := parse_pipe(parser, .Close_Bracket, false)
+			if !right_ok {
+				parser.container_depth -= count - 1
+				return {}, false
+			}
+			value, ok = append_node(parser, Node{
+				kind = .Pipe,
+				span = operator.span,
+				left = value,
+				right = right,
+				has_child = false,
+			})
+			if !ok {
+				parser.container_depth -= count - 1
+				return {}, false
+			}
+			continue
+		}
+		binary_operator, _, has_binary := binary_from_token(parser)
+		if has_binary {
+			operator := parser.lookahead.token
+			advance(parser)
+			right, right_ok := parse_pipe(parser, .Close_Bracket, false)
+			if !right_ok {
+				parser.container_depth -= count - 1
+				return {}, false
+			}
+			span, span_ok := spanning(parser, parser.nodes.storage[int(value)].span,
+				parser.nodes.storage[int(right)].span)
+			assert(span_ok)
+			value, ok = append_node(parser, Node{
+				form = .Binary,
+				span = span,
+				left = value,
+				right = right,
+				binary_operator = binary_operator,
+				operator_span = operator.span,
+				has_operator_span = true,
+			})
+			if !ok {
+				parser.container_depth -= count - 1
+				return {}, false
+			}
+			continue
+		}
+		// Each flattened frame owns the next close independently.  Close it
+		// immediately after its query continuation has been reduced so the
+		// next enclosing frame gets a fresh lookahead check.  Deferring all
+		// closes until after this loop loses continuations after the first one.
+		if !token_is(parser, .Close_Bracket) {
+			fail_from_lookahead(parser, .Close_Bracket)
+			parser.container_depth -= count - 1
+			return {}, false
+		}
+		close_span := parser.lookahead.token.span
+		advance(parser)
+		node := &parser.nodes.storage[int(head)]
+		next := node.next if node.has_next else invalid_id
+		span, span_ok := spanning(parser, node.span, close_span)
+		assert(span_ok)
+		node.value = value
+		node.has_value = true
+		node.span = span
+		node.next = 0
+		node.has_next = false
+		value = head
+		head = next
+	}
+	parser.container_depth -= count - 1
+	return value, true
+}
+
+@(private="package")
+parse_container :: proc(parser: ^Parser, opener: Token_Kind) -> (Node_Id, bool) {
+	// Check before incrementing: the cap is the number of live container
+	// entries, so the 9,995th opener must fail when 9,994 are already live.
+	if parser.container_depth >= JQ_CONTAINER_NESTING_CAP {
+		fail_resource(parser, .Out_Of_Memory)
+		return {}, false
+	}
+	parser.container_depth += 1
+	if opener == .Open_Bracket &&
+	   parser.container_depth >= JQ_NATIVE_CONTAINER_RECURSION_GUARD {
+		value, ok := parse_deep_array_chain(parser)
+		parser.container_depth -= 1
+		return value, ok
+	}
+	close := Token_Kind.Close_Bracket if opener == .Open_Bracket else .Close_Brace
+	expectation := Parse_Expectation.Close_Bracket if opener == .Open_Bracket else .Close_Brace
+	open_span := parser.lookahead.token.span
+	advance(parser)
+
+	if token_is(parser, close) {
+		close_span := parser.lookahead.token.span
+		advance(parser)
+		container_kind := Container_Kind.Array if opener == .Open_Bracket else .Object
+		node, ok := append_node(parser, Node{
+			kind = .Identity,
+			container_kind = container_kind,
+			span = open_span,
+		})
+		if !ok {
+			parser.container_depth -= 1
+			return {}, false
+		}
+		span, span_ok := spanning(parser, open_span, close_span)
+		assert(span_ok)
+		parser.nodes.storage[int(node)].span = span
+		parser.container_depth -= 1
+		return node, true
+	}
+
+	if opener == .Open_Bracket {
+		contents, ok := parse_pipe(parser, close, false)
+		if !ok {
+			parser.container_depth -= 1
+			return {}, false
+		}
+		if !token_is(parser, close) {
+			fail_from_lookahead(parser, expectation)
+			parser.container_depth -= 1
+			return {}, false
+		}
+		close_span := parser.lookahead.token.span
+		advance(parser)
+		span, span_ok := spanning(parser, open_span, close_span)
+		assert(span_ok)
+		node, node_ok := append_node(parser, Node{
+			kind = .Identity,
+			container_kind = .Array,
+			span = span,
+			value = contents,
+			has_value = true,
+		})
+		parser.container_depth -= 1
+		return node, node_ok
+	}
+
+	first_entry := Node_Id(-1)
+	last_entry := Node_Id(-1)
+	for {
+		if parser.lookahead.kind != .Token {
+			fail_from_lookahead(parser, expectation)
+			parser.container_depth -= 1
+			return {}, false
+		}
+		key: Node_Id
+		shorthand := false
+		#partial switch parser.lookahead.token.kind {
+		case .Identifier, .Binding, .As, .Import, .Include, .Module, .Def,
+		     .If, .Then, .Else, .Else_If, .And, .Or, .End, .Reduce,
+		     .Foreach, .Try, .Catch, .Label, .Break:
+			key_token := parser.lookahead.token
+			key_ok: bool
+			key, key_ok = append_node(parser, Node{
+				kind = .Field,
+				span = key_token.span,
+				name_span = key_token.value_span if key_token.has_value_span else key_token.span,
+				has_name_span = true,
+			})
+			if !key_ok {
+				parser.container_depth -= 1
+				return {}, false
+			}
+			advance(parser)
+			shorthand = !token_is(parser, .Colon)
+		case .String_Start:
+			key_ok: bool
+			key, key_ok = append_string_node(parser, parser.lookahead.token.span, 0, 0, 0, 0, 0, false)
+			if !key_ok {
+				parser.container_depth -= 1
+				return {}, false
+			}
+			shorthand = !token_is(parser, .Colon)
+		case .Open_Paren:
+			// Keep a parenthesized query as source syntax, not a runtime key.
+			key_ok: bool
+			key, key_ok = parse_pipe(parser)
+			if !key_ok {
+				parser.container_depth -= 1
+				return {}, false
+			}
+		case:
+			fail_from_lookahead(parser, expectation)
+			parser.container_depth -= 1
+			return {}, false
+		}
+
+		value: Node_Id
+		if shorthand {
+			if parser.nodes.storage[int(key)].kind == .String {
+				key_node := parser.nodes.storage[int(key)]
+				value_ok: bool
+				value, value_ok = append_node(parser, Node{
+					kind = .Field,
+					span = key_node.span,
+					name_span = key_node.span,
+					has_name_span = true,
+					string_text = key_node.string_text,
+					has_string_text = true,
+					string_shorthand = true,
+				})
+				if !value_ok {
+					parser.container_depth -= 1
+					return {}, false
+				}
+			} else {
+				value = key
+			}
+		} else {
+			if !token_is(parser, .Colon) {
+				fail_from_lookahead(parser, .Expression)
+				parser.container_depth -= 1
+				return {}, false
+			}
+			advance(parser)
+			value_ok: bool
+			value, value_ok = parse_pipe(parser, close, true)
+			if !value_ok {
+				parser.container_depth -= 1
+				return {}, false
+			}
+		}
+		entry_span, entry_span_ok := spanning(parser, parser.nodes.storage[int(key)].span, parser.nodes.storage[int(value)].span)
+		assert(entry_span_ok)
+		entry, entry_ok := append_node(parser, Node{
+			kind = .Field,
+			container_kind = .Object_Entry,
+			span = entry_span,
+			name_span = parser.nodes.storage[int(key)].span,
+			has_name_span = true,
+			value = value,
+			has_value = true,
+			key = key,
+			has_key = true,
+		})
+		if !entry_ok {
+			parser.container_depth -= 1
+			return {}, false
+		}
+		if first_entry == Node_Id(-1) {
+			first_entry = entry
+		} else {
+			parser.nodes.storage[int(last_entry)].next = entry
+			parser.nodes.storage[int(last_entry)].has_next = true
+		}
+		last_entry = entry
+		if token_is(parser, .Comma) {
+			advance(parser)
+			continue
+		}
+		if !token_is(parser, close) {
+			fail_from_lookahead(parser, expectation)
+			parser.container_depth -= 1
+			return {}, false
+		}
+		close_span := parser.lookahead.token.span
+		advance(parser)
+		span, span_ok := spanning(parser, open_span, close_span)
+		assert(span_ok)
+		object, object_ok := append_node(parser, Node{
+			kind = .Identity,
+			container_kind = .Object,
+			span = span,
+			value = first_entry,
+			has_value = true,
+		})
+		parser.container_depth -= 1
+		return object, object_ok
+	}
+}
+
+@(private="package")
 lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 	if parser.lookahead.kind != .Token {
 		return false
 	}
 	token := parser.lookahead.token
 	#partial switch token.kind {
-	case .Dot, .Field, .Number, .String_Start, .Minus, .Open_Paren:
+	case .Dot, .Field, .Number, .String_Start, .Minus, .Open_Paren,
+	     .Open_Bracket, .Open_Brace, .Binding:
 		return true
 	case .Identifier:
 		spelling := token_spelling(parser, token)
@@ -965,6 +1451,7 @@ reduce_binary_nodes :: proc(
 
 @(private="package")
 parser_stack_budget_exhausted :: proc(
+	parser: ^Parser,
 	live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead: int,
 	has_postfix: bool,
 ) -> bool {
@@ -974,7 +1461,8 @@ parser_stack_budget_exhausted :: proc(
 	if has_postfix {
 		postfix_increment = JQ_FIRST_POSTFIX_STACK_INCREMENT
 	}
-	return live_prefix_depth+
+	return parser.container_depth+
+	       live_prefix_depth+
 	       live_pipe_count*JQ_OPEN_PIPE_STACK_ENTRIES+
 	       live_comma_count*JQ_OPEN_COMMA_STACK_ENTRIES+
 	       live_binary_count*JQ_OPEN_BINARY_STACK_ENTRIES+
@@ -1049,7 +1537,7 @@ append_string_node :: proc(
 	// discovered while fetching the first string lookahead wins before that
 	// state is entered, matching jq's event-local parser-stack behavior.
 	if parser.lookahead.kind != .Lexical_Error &&
-	   parser_stack_budget_exhausted(
+	   parser_stack_budget_exhausted(parser,
 		live_prefix_depth,
 		live_pipe_count,
 		live_comma_count,
@@ -1412,7 +1900,7 @@ append_postfix :: proc(
 	for token_is(parser, .Question) || token_is(parser, .Field) {
 		if !has_postfix^ {
 			has_postfix^ = true
-			if parser_stack_budget_exhausted(
+			if parser_stack_budget_exhausted(parser,
 				live_prefix_depth,
 				live_pipe_count,
 				live_comma_count,

@@ -35,6 +35,12 @@ Opcode :: enum u8 {
 	Less_Equal,
 	Greater,
 	Greater_Equal,
+	// Constructors are appended to preserve the serialized discriminants of
+	// the existing vertical slice.
+	Array,
+	Object,
+	Variable,
+	Binding,
 }
 
 Operand_Kind :: enum u8 {
@@ -53,8 +59,10 @@ Literal_Kind :: enum u8 {
 // Sequence operands are ordered left then right. Fork operands are likewise
 // left then right, but describe independently resumable generator branches.
 // Field has an optional leading Instruction operand followed by one Text
-// operand. Literal has one Text operand for Number/String and none for
-// Null/Boolean. Parenthesized and Optional have one Instruction operand.
+// operand. Object operands alternate a static Text key or compiled key
+// Instruction with a value Instruction. Literal has one Text operand for
+// Number/String and none for Null/Boolean. Parenthesized and Optional have
+// one Instruction operand.
 Instruction :: struct {
 	opcode:         Opcode,
 	has_literal:    bool,
@@ -105,7 +113,7 @@ Validation_State :: enum u8 {
 @(private="package")
 Validation_Record :: struct {
 	state:      Validation_State,
-	next_child: u8,
+	next_child: Count,
 	parent:     Instruction_Index,
 	has_parent: bool,
 }
@@ -289,7 +297,8 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		return true
-	case .Identity, .Field, .Parenthesized, .Sequence, .Fork, .Optional:
+	case .Identity, .Field, .Parenthesized, .Sequence, .Fork, .Optional,
+	     .Array, .Object, .Variable, .Binding:
 		return false
 	}
 	return false
@@ -332,6 +341,16 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		expected_count = count
 	case .Parenthesized, .Optional:
 		expected_count = 1
+	case .Array:
+		expected_count = count
+	case .Object:
+		// Object operands alternate a text key and a value instruction.
+		if count % 2 != 0 do return false
+		expected_count = count
+	case .Variable:
+		expected_count = 1
+	case .Binding:
+		expected_count = 3
 	case .Sequence, .Fork,
 	     .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
@@ -370,6 +389,18 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		   (instruction.has_literal && offset == 0) {
 			expected_kind = .Text
 		}
+	if instruction.opcode == .Object && offset % 2 == 0 {
+			// Object keys are either static Text operands or compiled key
+			// expressions. Values remain Instruction operands at odd offsets.
+			if operand.kind != .Text && operand.kind != .Instruction do return false
+			expected_kind = operand.kind
+		}
+		if instruction.opcode == .Variable && offset == 0 {
+			expected_kind = .Text
+		}
+		if instruction.opcode == .Binding && offset == 2 {
+			expected_kind = .Text
+		}
 		if operand.kind != expected_kind {
 			return false
 		}
@@ -391,7 +422,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 }
 
 @(private="package")
-instruction_child_count :: proc(instruction: Instruction) -> u8 {
+instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> Count {
 	switch instruction.opcode {
 	case .Identity:
 		return 0
@@ -399,6 +430,22 @@ instruction_child_count :: proc(instruction: Instruction) -> u8 {
 		return 1 if instruction.operands_count == 2 else 0
 	case .Parenthesized, .Optional:
 		return 1
+	case .Array:
+		return instruction.operands_count
+	case .Object:
+		// Object operands alternate key/value.  Text keys have no graph edge,
+		// while computed key instructions do.  Count both key and value edges so
+		// cycle validation covers the complete instruction graph.
+		count: Count
+		for offset in 0..<instruction.operands_count {
+			operand := program.operands[int(u64(instruction.operands_start)+u64(offset))]
+			if operand.kind == .Instruction do count += 1
+		}
+		return count
+	case .Binding:
+		return 2
+	case .Variable:
+		return 0
 	case .Sequence, .Fork,
 	     .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
@@ -408,10 +455,24 @@ instruction_child_count :: proc(instruction: Instruction) -> u8 {
 }
 
 @(private="package")
-instruction_child_at :: proc(program: ^Program, instruction: Instruction, offset: u8) -> Instruction_Index {
-	assert(offset < instruction_child_count(instruction))
-	operand_offset := u32(offset)
-	return program.operands[int(u32(instruction.operands_start)+operand_offset)].instruction
+instruction_child_at :: proc(program: ^Program, instruction: Instruction, offset: Count) -> Instruction_Index {
+	assert(offset < instruction_child_count(program, instruction))
+	operand_offset: Count
+	if instruction.opcode != .Object {
+		operand_offset = offset
+	} else {
+		edge: Count
+		for candidate in 0..<instruction.operands_count {
+			operand := program.operands[int(u64(instruction.operands_start)+u64(candidate))]
+			if operand.kind != .Instruction do continue
+			if edge == offset {
+				operand_offset = candidate
+				break
+			}
+			edge += 1
+		}
+	}
+	return program.operands[int(u64(instruction.operands_start)+u64(operand_offset))].instruction
 }
 
 @(private="package")
@@ -430,7 +491,7 @@ validate_instruction_graph :: proc(program: ^Program) -> bool {
 		for {
 			record := &records[int(current)]
 			instruction := program.instructions[int(current)]
-			child_count := instruction_child_count(instruction)
+			child_count := instruction_child_count(program, instruction)
 			if record.next_child < child_count {
 				child := instruction_child_at(program, instruction, record.next_child)
 				record.next_child += 1

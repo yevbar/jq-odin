@@ -205,6 +205,40 @@ scalar_literals_lower_to_owned_literal_metadata :: proc(t: ^testing.T) {
 }
 
 @(test)
+object_and_array_constructors_lower_to_owned_operands :: proc(t: ^testing.T) {
+	Case :: struct { text: string, opcode: program.Opcode, operands: int }
+	cases := [?]Case{
+		{"{}", .Object, 0},
+		{"{a:1}", .Object, 2},
+		{"{\"a\":1}", .Object, 2},
+		{"{(\"a\"):1}", .Object, 2},
+		{"{a:1,b:[2]}", .Object, 4},
+		{"{a}", .Object, 2},
+		{"[1]", .Array, 1},
+	}
+	for test_case in cases {
+		parser: syntax.Parser
+		compiled: program.Program
+		_, parsed, lowered := parse_and_lower(t, test_case.text, &parser, &compiled)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+		root := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+		testing.expect_value(t, root.opcode, test_case.opcode)
+		testing.expect_value(t, root.operands_count, program.Count(test_case.operands))
+		if test_case.text == "{(\"a\"):1}" {
+			key := instruction_operand(&compiled, root, 0)
+			testing.expect_value(t, key.kind, program.Operand_Kind.Instruction)
+		} else if test_case.opcode == .Object && test_case.operands > 0 {
+			key := instruction_operand(&compiled, root, 0)
+			testing.expect_value(t, key.kind, program.Operand_Kind.Text)
+			key_text, key_ok := program.operand_text(&compiled, key)
+			testing.expect(t, key_ok)
+			testing.expect_value(t, key_text, "a")
+		}
+		expect_cleanup(t, &parser, &compiled)
+	}
+}
+
+@(test)
 scalar_and_general_negate_ast_nodes_validate_without_lowering_or_allocation :: proc(t: ^testing.T) {
 	texts := [?]string{
 		"-.", "-.a", "-(.)", "-(.a)", "-(. | .)", "-(., .)",
@@ -275,7 +309,7 @@ scalar_keyword_call_parse_failure_never_reaches_compiler_allocation :: proc(t: ^
 @(test)
 every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.T) {
 	parser: syntax.Parser
-	source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-2,(.)?,.a|.`)
+	source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-2,(.)?,.a|.,1 as $x | $x`)
 	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
 	parsed := syntax.parse_filter(&parser)
 	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)

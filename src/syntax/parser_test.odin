@@ -54,6 +54,261 @@ expect_binary_node :: proc(
 }
 
 @(test)
+test_parser_lexical_as_binding_and_variable_reference :: proc(t: ^testing.T) {
+	parser: Parser
+	source, outcome := parse_test_filter(t, &parser, "2 as $c | $c")
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Binding)
+	expect_span(t, source, root.name_span, 6, 7)
+	testing.expect_value(t, parser.nodes.storage[int(root.left)].kind, Node_Kind.Number)
+	testing.expect_value(t, parser.nodes.storage[int(root.right)].kind, Node_Kind.Variable)
+	expect_span(t, source, parser.nodes.storage[int(root.right)].name_span, 11, 12)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_parser_container_literals_preserve_source_structure :: proc(t: ^testing.T) {
+	Case :: struct { text: string, kind: Container_Kind }
+	cases := [?]Case{{"[]", .Array}, {"{}", .Object}}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		expect_parse_success(t, &parser, outcome)
+		root := parser.nodes.storage[int(outcome.root)]
+		testing.expect_value(t, root.container_kind, test_case.kind)
+		expect_span(t, source, root.span, 0, len(test_case.text))
+		testing.expect(t, !root.has_child && !root.has_value)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+
+	parser: Parser
+	source, outcome := parse_test_filter(t, &parser, "{a: []}")
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.container_kind, Container_Kind.Object)
+	testing.expect(t, root.has_value)
+	entry := parser.nodes.storage[int(root.value)]
+	testing.expect_value(t, entry.container_kind, Container_Kind.Object_Entry)
+	testing.expect(t, entry.has_name_span && entry.has_value)
+	expect_span(t, source, entry.name_span, 1, 2)
+	value := parser.nodes.storage[int(entry.value)]
+	testing.expect_value(t, value.container_kind, Container_Kind.Array)
+	expect_span(t, source, value.span, 4, 6)
+	expect_span(t, source, root.span, 0, 7)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_parser_object_keys_cover_source_forms :: proc(t: ^testing.T) {
+	cases := [?]string{"{\"a\":1}", "{a}", "{if:1}", "{(.):1}"}
+	for text in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		expect_parse_success(t, &parser, outcome)
+		root := parser.nodes.storage[int(outcome.root)]
+		entry := parser.nodes.storage[int(root.value)]
+		testing.expect(t, entry.has_key && entry.has_value)
+		testing.expect_value(t, parser.nodes.storage[int(entry.key)].span.start, entry.name_span.start)
+		testing.expect_value(t, parser.nodes.storage[int(entry.value)].span.end, entry.span.end)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_parser_container_values_stop_at_entry_commas :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, "{a:1,b:2}")
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	first := parser.nodes.storage[int(root.value)]
+	second := parser.nodes.storage[int(first.next)]
+	testing.expect_value(t, parser.nodes.storage[int(first.value)].number_text, "1")
+	testing.expect_value(t, parser.nodes.storage[int(second.value)].number_text, "2")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+
+	parser = {}
+	_, outcome = parse_test_filter(t, &parser, "{a:(1,2),b:3}")
+	expect_parse_success(t, &parser, outcome)
+	root = parser.nodes.storage[int(outcome.root)]
+	first = parser.nodes.storage[int(root.value)]
+	value := parser.nodes.storage[int(first.value)]
+	testing.expect_value(t, value.kind, Node_Kind.Parenthesized)
+	testing.expect(t, value.has_child)
+	testing.expect_value(t, parser.nodes.storage[int(value.child)].kind, Node_Kind.Comma)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_parser_unary_minus_accepts_recursive_container_terms :: proc(t: ^testing.T) {
+	cases := [?]string{"-[]", "-{}"}
+	for text in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		expect_parse_success(t, &parser, outcome)
+		root := parser.nodes.storage[int(outcome.root)]
+		testing.expect_value(t, root.kind, Node_Kind.Negate)
+		testing.expect(t, root.has_child)
+		testing.expect_value(t, parser.nodes.storage[int(root.child)].container_kind,
+			Container_Kind.Array if text == "-[]" else Container_Kind.Object)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
+test_parser_container_nesting_budget_preserves_jq_depth :: proc(t: ^testing.T) {
+	depth := JQ_CONTAINER_NESTING_CAP
+	opens, open_error := strings.repeat("[", depth)
+	closes, close_error := strings.repeat("]", depth)
+	testing.expect(t, open_error == nil && close_error == nil)
+	text, text_error := strings.concatenate([]string{opens, "0", closes})
+	testing.expect(t, text_error == nil)
+	delete(opens)
+	delete(closes)
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	expect_parse_success(t, &parser, outcome)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	delete(text)
+
+	depth += 1
+	opens, open_error = strings.repeat("[", depth)
+	closes, close_error = strings.repeat("]", depth)
+	testing.expect(t, open_error == nil && close_error == nil)
+	text, text_error = strings.concatenate([]string{opens, "0", closes})
+	testing.expect(t, text_error == nil)
+	delete(opens)
+	delete(closes)
+	parser = {}
+	_, outcome = parse_test_filter(t, &parser, text)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	delete(text)
+}
+
+@(test)
+test_parser_deep_arrays_resume_outer_queries :: proc(t: ^testing.T) {
+	// Every flattened array frame gets its own query lookahead.  In particular,
+	// a continuation may recur at each enclosing close rather than appearing
+	// only immediately after the innermost value.
+	continuations := [?]string{",1]", "|.]", "+1]", ".foo]", "?]"}
+	for continuation in continuations {
+		depth := JQ_NATIVE_CONTAINER_RECURSION_GUARD + 2
+		opens, open_error := strings.repeat("[", depth)
+		repeated, repeated_error := strings.repeat(continuation, depth-1)
+		testing.expect(t, open_error == nil && repeated_error == nil)
+		text, text_error := strings.concatenate([]string{opens, "0]", repeated})
+		testing.expect(t, text_error == nil)
+		delete(opens)
+		delete(repeated)
+
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		expect_parse_success(t, &parser, outcome)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_parser_deep_objects_follow_shared_stack_budget :: proc(t: ^testing.T) {
+		make_nested_object_filter :: proc(depth: int) -> string {
+			prefix, prefix_error := strings.repeat("{a:", depth)
+			suffix, suffix_error := strings.repeat("}", depth)
+			if prefix_error != nil || suffix_error != nil {
+				return ""
+			}
+			text, text_error := strings.concatenate([]string{prefix, "0", suffix})
+			delete(prefix)
+			delete(suffix)
+			if text_error != nil {
+				return ""
+			}
+			return text
+		}
+
+	// Object nesting is governed by the shared parser-stack budget, not the
+	// array-only iterative-path threshold.
+	for depth_index := 0; depth_index < 3; depth_index += 1 {
+		depth := 1070
+		if depth_index == 0 {
+			depth = JQ_NATIVE_CONTAINER_RECURSION_GUARD - 1
+		} else if depth_index == 1 {
+			depth = JQ_NATIVE_CONTAINER_RECURSION_GUARD
+		}
+		text := make_nested_object_filter(depth)
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		expect_parse_success(t, &parser, outcome)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		delete(text)
+	}
+}
+
+@(test)
+test_parser_container_and_expression_depth_share_budget :: proc(t: ^testing.T) {
+	// Both prefixes remain live while the innermost term is shifted. The
+	// independent limits used to accept this although jq exhausts its shared
+	// generated-parser stack.
+	opens, open_error := strings.repeat("[", 6_000)
+	minuses, minus_error := strings.repeat("-", 6_000)
+	closes, close_error := strings.repeat("]", 6_000)
+	text, text_error := strings.concatenate([]string{opens, minuses, "0", closes})
+	testing.expect(t, open_error == nil && minus_error == nil && close_error == nil && text_error == nil)
+	delete(opens)
+	delete(minuses)
+	delete(closes)
+
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, text)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, outcome.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	delete(text)
+}
+
+@(test)
+test_parser_object_budget_checks_before_entering_frame :: proc(t: ^testing.T) {
+	// Model the 9,995th opener directly: with 9,994 object frames already live,
+	// the next object must fail before incrementing or recursing into its value.
+	parser: Parser
+	source, _ := parse_test_filter(t, &parser, "{a:0}")
+	// parse_test_filter has already parsed this source; reinitialize to exercise
+	// the opener boundary without constructing thousands of native frames.
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	parser = {}
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	advance(&parser)
+	parser.container_depth = JQ_CONTAINER_NESTING_CAP
+	_, ok := parse_container(&parser, .Open_Brace)
+	testing.expect(t, !ok)
+	testing.expect_value(t, parser.failure.kind, Parse_Outcome_Kind.Resource_Failure)
+	testing.expect_value(t, parser.failure.resource_error, runtime.Allocator_Error.Out_Of_Memory)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_parser_container_literals_reject_malformed_forms_at_delimiters :: proc(t: ^testing.T) {
+	Case :: struct { text: string, start, end: int, expected: Parse_Expectation }
+	cases := [?]Case{
+		{"[1,]", 3, 4, .Expression},
+		{"{a:}", 3, 4, .Expression},
+		{"{a 1}", 3, 4, .Close_Brace},
+		{"[", 1, 1, .Expression},
+		{"{", 1, 1, .Close_Brace},
+	}
+	for test_case in cases {
+		parser: Parser
+		source, outcome := parse_test_filter(t, &parser, test_case.text)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.expected, test_case.expected)
+		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
 test_parser_scalar_literals_preserve_kinds_spans_and_numeric_source :: proc(t: ^testing.T) {
 	Case :: struct {
 		text: string,
@@ -335,9 +590,6 @@ test_unary_minus_does_not_broaden_identifier_or_unsupported_term_subset :: proc(
 		{"-truex", 1, 6, .Identifier},
 		{"-false_", 1, 7, .Identifier},
 		{"-nullfoo", 1, 8, .Identifier},
-		{"-[]", 1, 2, .Open_Bracket},
-		{"-{}", 1, 2, .Open_Brace},
-		{"-$name", 1, 6, .Binding},
 		{"-+1", 1, 2, .Plus},
 	}
 
@@ -1686,7 +1938,7 @@ test_parser_1818_filter_acceptance_corpus :: proc(t: ^testing.T) {
 		"(.a).?",
 		".a..b",
 		".a?name",
-		"[]",
+		"{a:}",
 		".a.b,",
 	}
 	filter_count := 0
@@ -1727,7 +1979,6 @@ test_parser_rejects_every_unsupported_token_class_and_lexer_errors :: proc(t: ^t
 	}
 	cases := [?]Case{
 		{"name", .Unexpected_Token, 0, 4},
-		{"[]", .Unexpected_Token, 0, 1},
 		{"..", .Unexpected_Token, 0, 2},
 		{"\x00.", .Lexical_Error, 0, 1},
 		{". \xff", .Lexical_Error, 2, 3},
