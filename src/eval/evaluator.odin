@@ -1765,7 +1765,14 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 			kind_error := value.value_add_error_kind(&add_error)
 			_ = value.destroy_value(&acc)
 			_ = value.destroy_value(&item)
-			if kind_error != .None { return {}, .Cannot_Add, nil }
+			if kind_error != .None {
+				// value_add may retain a partial deep-copy/validation chain on
+				// failure. Retire that chain before translating the low-level
+				// error into jq's runtime type error.
+				cleanup_error := value.destroy_value_add_error(&add_error)
+				if cleanup_error != nil do return {}, .None, cleanup_error
+				return {}, .Cannot_Add, nil
+			}
 			acc = result
 		}
 		return acc, .None, nil
