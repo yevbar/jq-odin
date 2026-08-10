@@ -629,8 +629,7 @@ module_definition_body_is_valid :: proc(source: string, allocator: runtime.Alloc
 	if len(trimmed) == 0 do return false, nil
 	// The scanner's trailing-dot boundary is unambiguously malformed even
 	// when a body is otherwise made of legacy module-call syntax.
-	if trimmed[len(trimmed)-1] == '.' && len(trimmed) > 1 &&
-	   is_module_identifier_byte(trimmed[len(trimmed)-2]) {
+	if trimmed[len(trimmed)-1] == '.' {
 		return false, nil
 	}
 	// The syntax parser is the source of truth for complete filter syntax. Module
@@ -651,12 +650,20 @@ module_definition_body_is_valid :: proc(source: string, allocator: runtime.Alloc
 	case .Input_Error:
 		// A callable module body (e.g. `id(x)`) is valid jq and is expanded
 		// later, but this parser slice intentionally has no call AST yet.
+		if module_body_ends_with_operator(trimmed) do return false, nil
 		if module_body_contains_legacy_syntax(trimmed) do return true, nil
 		return false, nil
 	case .Misuse:
 		return false, .Invalid_Argument
 	}
 	return false, .Invalid_Argument
+}
+
+module_body_ends_with_operator :: proc(source: string) -> bool {
+	if len(source) == 0 do return true
+	last := source[len(source)-1]
+	return last == '+' || last == '-' || last == '*' || last == '/' ||
+		last == '|' || last == ',' || last == ':' || last == ';'
 }
 
 module_body_contains_legacy_syntax :: proc(source: string) -> bool {

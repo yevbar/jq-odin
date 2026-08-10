@@ -1567,6 +1567,11 @@ propagate_output :: proc(
 		case .Binary_Right_Active:
 			result, runtime_kind, resource_error := apply_binary(instruction.opcode, &frame.binary_left, owned, instruction.operator_span, storage.allocator)
 			if resource_error != nil {
+				// The right result remains owned by this evaluator frame when the
+				// operation cannot allocate. Preserve it for terminal cleanup;
+				// otherwise the child frame's only owner would be lost.
+				assert(value.kind_of(&storage.pending_value) == .Invalid)
+				storage.pending_value = value.take_value(owned)
 				_ = value.destroy_value(&frame.binary_left)
 				return resource_step(resource_error), true
 			}
@@ -1739,7 +1744,37 @@ compare_values :: proc(left, right: ^value.Value) -> (int, bool) {
 		if value.values_equal(left, right) do return 0, true
 		ll, lok := value.object_length(left); rl, rok := value.object_length(right)
 		if !lok || !rok do return 0, false
-		return (-1 if ll < rl else 1), true
+		if ll < rl do return -1, true
+		if ll > rl do return 1, true
+		// Equal-sized objects are ordered lexicographically by their key/value
+		// pairs. Comparing only lengths makes both directions report `greater`.
+		li := value.object_iterator()
+		ri := value.object_iterator()
+		for {
+			lk, lv, l_ok := value.object_iter_next_copy(left, &li)
+			rk, rv, r_ok := value.object_iter_next_copy(right, &ri)
+			if !l_ok || !r_ok {
+				_ = value.destroy_value(&lk); _ = value.destroy_value(&lv)
+				_ = value.destroy_value(&rk); _ = value.destroy_value(&rv)
+				break
+			}
+			cmp, cmp_ok := compare_values(&lk, &rk)
+			if cmp_ok && cmp != 0 {
+				_ = value.destroy_value(&lk); _ = value.destroy_value(&lv)
+				_ = value.destroy_value(&rk); _ = value.destroy_value(&rv)
+				return cmp, true
+			}
+			if cmp_ok {
+				cmp, cmp_ok = compare_values(&lv, &rv)
+				_ = value.destroy_value(&lk); _ = value.destroy_value(&lv)
+				_ = value.destroy_value(&rk); _ = value.destroy_value(&rv)
+				if cmp_ok && cmp != 0 do return cmp, true
+			} else {
+				_ = value.destroy_value(&lk); _ = value.destroy_value(&lv)
+				_ = value.destroy_value(&rk); _ = value.destroy_value(&rv)
+			}
+		}
+		return 0, true
 	}
 	return 0, false
 }
