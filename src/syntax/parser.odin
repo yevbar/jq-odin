@@ -17,6 +17,7 @@ Node_Kind :: enum {
 	Negate,
 	Variable,
 	Binding,
+	Reduce,
 }
 
 Node_Id :: distinct int
@@ -78,6 +79,8 @@ Node :: struct {
 	has_name_span:     bool,
 	value:             Node_Id,
 	has_value:         bool,
+	reduce_update:     Node_Id,
+	has_reduce_update: bool,
 	key:               Node_Id,
 	has_key:           bool,
 	boolean_value:     bool,
@@ -215,6 +218,8 @@ Parser :: struct {
 	lookahead:           Scan_Outcome,
 	pending_number_text: []byte,
 	pending_string_text: []byte,
+	pending_reduce_name: diagnostic.Span,
+	has_pending_reduce: bool,
 	failed:              bool,
 	failure:             Parse_Outcome,
 }
@@ -644,6 +649,21 @@ parse_pipe :: proc(
 				})
 				if !ok { return {}, false }
 				term = new_term
+			case .Reduce:
+				// reduce EXP as $name (INIT; UPDATE)
+				reduce_span := token.span
+				advance(parser)
+				exp, exp_ok := parse_pipe(parser, .Close_Paren, true)
+				if !exp_ok || !parser.has_pending_reduce { fail_from_lookahead(parser, .Expression); return {}, false }
+				name := parser.pending_reduce_name; parser.has_pending_reduce = false
+				if !token_is(parser, .Open_Paren) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				init, init_ok := parse_pipe(parser, .Close_Paren, true)
+				if !init_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				update, update_ok := parse_pipe(parser, .Close_Paren, true)
+				if !update_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; close := parser.lookahead.token; advance(parser)
+				span, _ := spanning(parser, reduce_span, close.span)
+				new_term, ok := append_node(parser, Node{kind=.Reduce, span=span, left=exp, right=init, reduce_update=update, has_reduce_update=true, name_span=name, has_name_span=true})
+				if !ok { return {}, false }; term = new_term
 			case:
 				fail_at_current(parser, .Unexpected_Token, .Expression)
 				return {}, false
@@ -864,6 +884,11 @@ parse_pipe :: proc(
 			binding_token := parser.lookahead.token
 			advance(parser)
 			if !token_is(parser, .Pipe) {
+				if token_is(parser, .Open_Paren) {
+					parser.pending_reduce_name = binding_token.value_span
+					parser.has_pending_reduce = true
+					return left, true
+				}
 				fail_from_lookahead(parser, .Expression)
 				return {}, false
 			}

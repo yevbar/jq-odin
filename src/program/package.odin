@@ -41,6 +41,7 @@ Opcode :: enum u8 {
 	Object,
 	Variable,
 	Binding,
+	Reduce,
 }
 
 Operand_Kind :: enum u8 {
@@ -298,7 +299,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		return true
 	case .Identity, .Field, .Parenthesized, .Sequence, .Fork, .Optional,
-	     .Array, .Object, .Variable, .Binding:
+	     .Array, .Object, .Variable, .Binding, .Reduce:
 		return false
 	}
 	return false
@@ -350,7 +351,9 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Variable:
 		expected_count = 1
 	case .Binding:
-		expected_count = 3
+		 expected_count = 3
+	case .Reduce:
+		if count != 4 { return false }; expected_count = 4
 	case .Sequence, .Fork,
 	     .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
@@ -444,6 +447,8 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return count
 	case .Binding:
 		return 2
+	case .Reduce:
+		return 3
 	case .Variable:
 		return 0
 	case .Sequence, .Fork,

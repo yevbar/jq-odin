@@ -731,7 +731,7 @@ variable_result :: proc(storage: ^evaluator_storage, producer: int, instruction:
 		frame := &storage.frames[current]
 		bound_instruction, instruction_ok := program.program_instruction(storage.compiled, frame.instruction)
 		if !instruction_ok do return {}, false
-		if bound_instruction.opcode == .Binding && value.kind_of(&frame.binding_value) != .Invalid {
+		if (bound_instruction.opcode == .Binding || bound_instruction.opcode == .Reduce) && value.kind_of(&frame.binding_value) != .Invalid {
 			bound_operand, bound_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(bound_instruction.operands_start)+2))
 			if !bound_ok || bound_operand.kind != .Text do return {}, false
 			bound_name, bound_text_ok := program.operand_text(storage.compiled, bound_operand)
@@ -994,6 +994,9 @@ capture_composite_instruction :: proc(
 			program.Operand_Index(u32(instruction.operands_start)+2),
 		)
 		if !left_ok || !right_ok || !name_ok || name_operand.kind != .Text do return false
+	case .Reduce:
+		if instruction.operands_count != 4 do return false
+		for i in 0..<3 { _, ok := child_instruction(storage, instruction, u32(i)); if !ok do return false }
 	case .Fork, .Sequence:
 		if instruction.operands_count != 2 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -1930,6 +1933,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Binding_Start_Left
+			case .Reduce:
+				return begin_terminal_misuse(storage, .Unsupported_Opcode)
 			case .Parenthesized, .Optional:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
