@@ -1014,7 +1014,7 @@ capture_composite_instruction :: proc(
 	frame: ^eval_frame,
 	instruction: program.Instruction,
 ) -> bool {
-	if frame.mode != .Normal do return false
+	if frame.mode != .Normal && frame.mode != .Field_Only do return false
 	#partial switch instruction.opcode {
 	case .Parenthesized, .Optional:
 		if instruction.operands_count != 1 do return false
@@ -1090,7 +1090,7 @@ resumed_composite_instruction_valid :: proc(
 			return false
 		}
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active, .Iterator_Active:
-		if frame.mode != .Normal || instruction.opcode != .Field do return false
+		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
 	case .Sequence_Start_Left, .Sequence_Left_Active, .Sequence_Right_Active:
@@ -1206,6 +1206,8 @@ destroy_frames_to :: proc(storage: ^evaluator_storage, target_count: int) -> run
 		free_error := value.destroy_value(&storage.frames[index].input)
 		if free_error != nil do return free_error
 		free_error = constructor_frame_destroy(&storage.frames[index])
+		if free_error != nil do return free_error
+		free_error = value.destroy_value(&storage.frames[index].binary_left)
 		if free_error != nil do return free_error
 		storage.frames[index] = {}
 		storage.frame_count -= 1
@@ -1594,7 +1596,8 @@ propagate_output :: proc(
 			current = parent
 		case .Field_Child_Active:
 			_, field_ok := field_text(storage, instruction)
-			if !field_ok || !push_frame(storage, frame.instruction, parent, owned, .Field_Only) {
+			mode := frame_mode.Field_Only
+			if !field_ok || !push_frame(storage, frame.instruction, parent, owned, mode) {
 				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
 			}
 			frame.phase = .Field_Result_Active
@@ -2045,6 +2048,20 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if instruction.opcode != .Field {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
+				name, name_ok := field_text(storage, instruction)
+				if !name_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				if name == "" {
+					kind := value.kind_of(&frame.input)
+					if kind != .Array && kind != .Object {
+						result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=kind, span=instruction.span})
+						if ready do return result
+						continue
+					}
+					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+					frame.iterator_cursor = 0
+					frame.phase = .Iterator_Active
+					continue
+				}
 				input_kind := value.kind_of(&frame.input)
 				if input_kind == .Object || input_kind == .Null {
 					capacity_error := prepare_output(storage, index)
@@ -2118,19 +2135,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					name, name_ok := field_text(storage, instruction)
 					if !name_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 					if name == "" {
-						kind := value.kind_of(&frame.input)
-						if kind != .Array && kind != .Object {
-							result, ready := raise_runtime(storage, index, Runtime_Error{
-								kind = .Cannot_Iterate, input_kind = kind, span = instruction.span,
-							})
-							if ready do return result
-							continue
-						}
+						// Empty-field postfixes have a child (`.a[]` or `.[]`).
+						// Evaluate that child first; the child result is re-entered
+						// through this same instruction by propagate_output, where the
+						// iterator consumes the resulting array/object.
 						if !capture_composite_instruction(storage, frame, instruction) {
 							return begin_terminal_misuse(storage, .Malformed_Program)
 						}
-						frame.iterator_cursor = 0
-						frame.phase = .Iterator_Active
+						frame.phase = .Field_Start_Child
 						continue
 					}
 					if !capture_composite_instruction(storage, frame, instruction) {
