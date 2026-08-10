@@ -629,7 +629,8 @@ module_definition_body_is_valid :: proc(source: string, allocator: runtime.Alloc
 	if len(trimmed) == 0 do return false, nil
 	// The scanner's trailing-dot boundary is unambiguously malformed even
 	// when a body is otherwise made of legacy module-call syntax.
-	if trimmed[len(trimmed)-1] == '.' {
+	if trimmed[len(trimmed)-1] == '.' && len(trimmed) > 1 &&
+	   is_module_identifier_byte(trimmed[len(trimmed)-2]) {
 		return false, nil
 	}
 	// The syntax parser is the source of truth for complete filter syntax. Module
