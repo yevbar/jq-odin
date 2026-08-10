@@ -1767,6 +1767,14 @@ def main() -> int:
     for case in cases:
         expect(candidate, *case)
 
+    if oracle is not None:
+        reference = run(oracle, [".a"], b"1\n")
+        actual = run(candidate, [".a"], b"1\n")
+        expected = (reference.returncode, reference.stdout, reference.stderr)
+        got = (actual.returncode, actual.stdout, actual.stderr)
+        if got != expected:
+            raise AssertionError(f"numeric field runtime diagnostic: oracle {expected!r}, candidate {got!r}")
+
     expect_stdout_failure(candidate)
     expect_stderr_failure(candidate)
     expect_stdin_failure(candidate)

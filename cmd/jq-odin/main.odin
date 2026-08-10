@@ -212,6 +212,16 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "\"\n") && ok
 		return ok
 	}
+	if err.kind == .Runtime && err.runtime_input_kind == .Number && len(err.runtime_key) > 0 {
+		// Ordinary field access on a numeric input uses jq's typed diagnostic,
+		// including its input-independent <unknown> location. Keep this narrow
+		// to string-key indexing so numeric-index failures retain their generic
+		// runtime wording until their own parity slice is implemented.
+		ok := write_all(os.stderr, "jq: error (at <unknown>): Cannot index number with string \"")
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\"\n") && ok
+		return ok
+	}
 	ok := true
 	if err.kind == .Module && (err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error) {
 		column := 1
