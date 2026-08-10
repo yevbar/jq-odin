@@ -82,6 +82,8 @@ Run_Error :: struct {
 	runtime_input_line:   int,
 	serialization_kind:  json.Compact_Error_Kind,
 	resource_error:       runtime.Allocator_Error,
+	module_name:          string,
+	module_arity:         int,
 }
 
 @(private)
@@ -610,6 +612,7 @@ run_with_options :: proc(
 				return allocation_error(result, module_outcome.resource_error)
 			}
 			return finish(result, {kind = .Module, module_kind = module_outcome.kind,
+				module_name = module_outcome.module_name, module_arity = module_outcome.module_arity,
 				resource_error = module_outcome.resource_error})
 		}
 		if len(filter_memory) > 0 {

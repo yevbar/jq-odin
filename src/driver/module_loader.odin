@@ -18,6 +18,8 @@ Module_Error_Kind :: enum u8 {
 	Depth_Overflow,
 	Duplicate_Definition,
 	Cycle,
+	Undefined_Function,
+	Syntax_Error,
 }
 
 module_definition :: struct {
@@ -64,6 +66,10 @@ Module_Outcome :: struct {
 	// Run_Result so a later cleanup retry cannot lose the allocation.
 	cleanup_value: value.Value,
 	cleanup_parse_error: json.Scalar_Parse_Error,
+	// Compile diagnostics for calls that refer to a missing or wrong-arity
+	// module definition. The name borrows the original filter source.
+	module_name: string,
+	module_arity: int,
 }
 
 module_loader_depth :: 64
@@ -484,6 +490,30 @@ module_binder_position :: proc(input, alias: string) -> int {
 	return -1
 }
 
+// Return the end of the lexical expression containing an `as $alias` binder.
+// A binder inside parentheses must not shadow an imported data alias after the
+// closing delimiter; top-level bindings remain in scope through the filter.
+module_binder_scope_end :: proc(input: string, binder: int) -> int {
+	if binder < 0 do return -1
+	depth := 0
+	for at := 0; at < binder; at += 1 {
+		switch input[at] {
+		case '(': depth += 1
+		case ')': depth -= 1
+		}
+	}
+	if depth == 0 do return len(input)
+	for at := binder; at < len(input); at += 1 {
+		switch input[at] {
+		case '(': depth += 1
+		case ')':
+			depth -= 1
+			if depth < 1 do return at
+		}
+	}
+	return len(input)
+}
+
 module_expand_data_references :: proc(input: string, imports: [dynamic]module_data_import, builder: ^strings.Builder, data_input: ^string, data_input_owned: ^bool, append_data: ^bool, data_scalar_add: ^bool, data_replace_input: ^bool, data_scalar_field_error: ^bool, cleanup_value: ^value.Value, cleanup_parse_error: ^json.Scalar_Parse_Error, allocator: runtime.Allocator) -> bool {
 	// A data import is an owned constant binding.  Inline its complete JSON
 	// array literal into the surrounding filter so it cannot become a second
@@ -526,10 +556,11 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 		// imported data alias. Find the binder's variable position once per
 		// input and leave that binding (and its scoped expression) untouched.
 		shadow_start := module_binder_position(input, alias)
+		shadow_end := module_binder_scope_end(input, shadow_start)
 		matched := false
 		for imported in imports {
 			if imported.alias != alias do continue
-			if shadow_start >= 0 && start >= shadow_start do continue
+			if shadow_start >= 0 && start >= shadow_start && (shadow_end < 0 || start < shadow_end) do continue
 			matched = true
 			if module_trim(input) == fmt.tprintf(". + $%s[0]", alias) {
 				if !module_write(builder, ".") do return false
@@ -1642,7 +1673,24 @@ module_expand_source :: proc(
 			continue
 		}
 		index := module_definition_at(input, start, definitions, namespace)
-		if index == -2 do return {kind = .Unsupported_Syntax}
+		if index == -2 {
+			call_next := at
+			for call_next < len(input) && (input[call_next] == ' ' || input[call_next] == '\t' || input[call_next] == '\r' || input[call_next] == '\n') do call_next += 1
+			if call_next < len(input) && input[call_next] == '(' {
+				inner := call_next+1
+				for inner < len(input) && (input[inner] == ' ' || input[inner] == '\t' || input[inner] == '\r' || input[inner] == '\n') do inner += 1
+				if inner < len(input) && input[inner] == ')' {
+					return {kind = .Syntax_Error, module_name = input[start:at], module_arity = 0}
+				}
+			}
+			wanted := 0
+			if call_next < len(input) && input[call_next] == '(' {
+				probe: [dynamic]string
+				_, wanted, _ = module_call_arguments(input, call_next, &probe)
+				delete(probe)
+			}
+			return {kind = .Undefined_Function, module_name = input[start:at], module_arity = wanted}
+		}
 		if index < 0 {
 			if !module_write(builder, input[start:at]) do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			continue

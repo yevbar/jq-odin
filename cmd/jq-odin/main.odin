@@ -182,7 +182,7 @@ json_kind_name :: proc(kind: value.Kind) -> string {
 	return "invalid"
 }
 
-write_driver_error :: proc(err: driver.Run_Error) -> bool {
+write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 	if err.kind == .Runtime && len(err.runtime_key) > len("__jq_odin_subtraction__") &&
 	   err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
 		path := err.runtime_input_path
@@ -212,9 +212,59 @@ write_driver_error :: proc(err: driver.Run_Error) -> bool {
 		ok = write_all(os.stderr, "\"\n") && ok
 		return ok
 	}
-	ok := write_all(os.stderr, "jq-odin: ")
+	ok := true
+	if err.kind == .Module && (err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error) {
+		column := 1
+		for at := 0; at+len(err.module_name) <= len(source); at += 1 {
+			if source[at:at+len(err.module_name)] == err.module_name { column = at+1; break }
+		}
+		if err.module_kind == .Undefined_Function {
+			ok = write_all(os.stderr, "jq: error: ") && ok
+			ok = write_all(os.stderr, err.module_name) && ok
+			ok = write_all(os.stderr, fmt.tprintf("/%d is not defined at <top-level>, line 1, column %d:\n    ", err.module_arity, column)) && ok
+			ok = write_all(os.stderr, source) && ok
+			ok = write_all(os.stderr, "\n    ") && ok
+			for _ in 1..<column do ok = write_all(os.stderr, " ") && ok
+			ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
+			return ok
+		}
+		ok = write_all(os.stderr, "jq: error: syntax error, unexpected ')' at <top-level>, line 1, column ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d:\n    ", column+2)) && ok
+		ok = write_all(os.stderr, source) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 1..<(column+2) do ok = write_all(os.stderr, " ") && ok
+		ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
+		return ok
+	}
 	ok = write_all(os.stderr, kind_name(err.kind)) && ok
 	if err.kind == .Module {
+		if err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error {
+			// Module call failures are compile diagnostics in jq, including the
+			// source excerpt and caret. The module name borrows the original filter.
+			column := 1
+			if len(err.module_name) > 0 {
+				for at := 0; at+len(err.module_name) <= len(source); at += 1 {
+					if source[at:at+len(err.module_name)] == err.module_name { column = at+1; break }
+				}
+			}
+			if err.module_kind == .Undefined_Function {
+				ok = write_all(os.stderr, "jq: error: ") && ok
+				ok = write_all(os.stderr, err.module_name) && ok
+				ok = write_all(os.stderr, fmt.tprintf("/%d is not defined at <top-level>, line 1, column %d:\n    ", err.module_arity, column)) && ok
+				ok = write_all(os.stderr, source) && ok
+				ok = write_all(os.stderr, "\n    ") && ok
+				for _ in 1..<column do ok = write_all(os.stderr, " ") && ok 
+				ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
+				return ok
+			}
+			ok = write_all(os.stderr, "jq: error: syntax error, unexpected ')' at <top-level>, line 1, column ") && ok
+			ok = write_all(os.stderr, fmt.tprintf("%d:\n    ", column+1)) && ok
+			ok = write_all(os.stderr, source) && ok
+			ok = write_all(os.stderr, "\n    ") && ok
+			for _ in 1..<column do ok = write_all(os.stderr, " ") && ok 
+			ok = write_all(os.stderr, " ^\njq: 1 compile error\n") && ok
+			return ok
+		}
 		message := ""
 		switch err.module_kind {
 		case .Not_Found: message = ": module file not found"
@@ -224,6 +274,7 @@ write_driver_error :: proc(err: driver.Run_Error) -> bool {
 		case .Depth_Overflow: message = ": module dependency depth exceeded"
 		case .Duplicate_Definition: message = ": duplicate module definition"
 		case .Cycle: message = ": cyclic module dependency"
+		case .Undefined_Function, .Syntax_Error: message = ""
 		case .None:
 		}
 		ok = write_all(os.stderr, message) && ok
@@ -944,7 +995,7 @@ run_main :: proc() -> (result: int) {
 	)
 	if prepare_error.kind != .None {
 		status := error_status(prepare_error.kind)
-		if !write_driver_error(prepare_error) do status = 2
+		if !write_driver_error(prepare_error, parsed.filter) do status = 2
 		if cleanup_error := driver.destroy_compiled_filter(&prepared); cleanup_error != nil {
 			result = 2
 			_ = write_all(os.stderr, "jq-odin: cleanup error\n")
