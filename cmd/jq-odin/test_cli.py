@@ -1596,6 +1596,10 @@ def main() -> int:
         ("raw output preserves embedded NUL", ["-r", "."], b'"a\\u0000b"\n', 0, b"a\x00b\n", b""),
         ("long compact", ["--compact-output", ".a"], b'{"a":2}', 0, b"2\n", b""),
         ("pipe", [".a | .b"], b'{"a":{"b":3}}', 0, b"3\n", b""),
+        ("array iterator yields each element", ["-c", ".[]"], b"[1,2,3]", 0, b"1\n2\n3\n", b""),
+        ("object iterator yields insertion-order values", ["-c", ".[]"], b'{"a":1,"b":2}', 0, b"1\n2\n", b""),
+        ("reduce honors nonzero identity", ["-c", "reduce .[] as $x (10; . + $x)"], b"[1,2]", 0, b"13\n", b""),
+        ("reduce identity update preserves seed", ["-c", "reduce .[] as $x (10; .)"], b"[1,2]", 0, b"10\n", b""),
         ("chained field", [".a.b"], b'{"a":{"b":4}}', 0, b"4\n", b""),
         ("optional empty", [".a?"], b"1", 0, b"", b""),
         (

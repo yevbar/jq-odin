@@ -2034,6 +2034,29 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if ready do return result
 					continue
 				}
+				if update_instruction.opcode != .Add {
+					_ = value.destroy_value(&seed)
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				}
+				left_index, left_ok := child_instruction(storage, update_instruction, 0)
+				right_index, right_ok := child_instruction(storage, update_instruction, 1)
+				left_instruction, left_valid := program.program_instruction(storage.compiled, left_index)
+				right_instruction, right_valid := program.program_instruction(storage.compiled, right_index)
+				if !left_ok || !right_ok || !left_valid || !right_valid ||
+				   left_instruction.opcode != .Identity || left_instruction.has_literal ||
+				   right_instruction.opcode != .Variable {
+					_ = value.destroy_value(&seed)
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				}
+				name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+3))
+				right_name_operand, right_name_ok := program.program_operand(storage.compiled, right_instruction.operands_start)
+				name, name_text_ok := program.operand_text(storage.compiled, name_operand)
+				right_name, right_text_ok := program.operand_text(storage.compiled, right_name_operand)
+				if !name_ok || !right_name_ok || name_operand.kind != .Text || right_name_operand.kind != .Text ||
+				   !name_text_ok || !right_text_ok || name != right_name {
+					_ = value.destroy_value(&seed)
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				}
 				length, array_ok := value.array_length(&frame.input)
 				if !array_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 				acc := seed
