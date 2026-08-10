@@ -824,9 +824,14 @@ constructor_emit :: proc(
 	}
 	quotient := frame.constructor_cursor
 	for child in 0..<child_count {
+		// jq's object constructor evaluates later entries inside each earlier
+		// result, so the later entry is the least-significant Cartesian
+		// dimension. Arrays retain their existing left-to-right stream order.
+		selected_child := child
+		if instruction.opcode == .Object do selected_child = child_count - 1 - child
 		child_stream, stream_ok := value.array_element_copy(
 			&frame.constructor_results,
-			child,
+			selected_child,
 		)
 		if !stream_ok {
 			_ = value.destroy_value(&result)
@@ -873,7 +878,7 @@ constructor_emit :: proc(
 				_ = value.destroy_value(&result)
 				return {}, false
 			}
-			key_stream, key_stream_ok := value.array_element_copy(&frame.constructor_key_results, child)
+			key_stream, key_stream_ok := value.array_element_copy(&frame.constructor_key_results, selected_child)
 			if !key_stream_ok {
 				_ = value.destroy_value(&item)
 				_ = value.destroy_value(&result)
