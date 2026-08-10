@@ -17,6 +17,7 @@ Runtime_Error_Kind :: enum u8 {
 	Cannot_Iterate,
 	Cannot_Length,
 	Cannot_Number,
+	Cannot_Trim,
 }
 
 Runtime_Error :: struct {
@@ -1766,6 +1767,17 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if kind == .String { s, ok := value.string_borrowed(input); if ok do return value.number_value(f64(utf8_codepoint_length(s))), .None, nil }
 		return {}, .Cannot_Length, nil
 	}
+	if opcode == .Trim || opcode == .Ltrim || opcode == .Rtrim {
+		if kind != .String do return {}, .Cannot_Trim, nil
+		text, ok := value.string_borrowed(input); if !ok do return {}, .Cannot_Trim, nil
+		start, end := 0, len(text)
+		is_ws :: proc(c: u8) -> bool { return c == ' ' || (c >= 9 && c <= 13) }
+		if opcode != .Rtrim { for start < end && is_ws(text[start]) do start += 1 }
+		if opcode != .Ltrim { for end > start && is_ws(text[end-1]) do end -= 1 }
+		result, err := value.string_value(text[start:end], allocator)
+		if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
+		return result, .None, nil
+	}
 	if opcode == .Add_Builtin {
 		if kind != .Array do return {}, .Cannot_Add, nil
 		n, ok := value.array_length(input)
@@ -2169,7 +2181,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

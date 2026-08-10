@@ -1750,6 +1750,9 @@ def main() -> int:
             b"jq-odin: filter parse error\n",
         ),
         ("scalar literal", ["1"], b"null", 0, b"1\n", b""),
+        ("trim whitespace", ["trim"], b' "  hello  "\n', 0, b'"hello"\n', b""),
+        ("ltrim whitespace", ["ltrim"], b' "  hello  "\n', 0, b'"hello  "\n', b""),
+        ("rtrim whitespace", ["rtrim"], b' "  hello  "\n', 0, b'"  hello"\n', b""),
         ("bundled short options", ["-nc", "."], b"", 0, b"null\n", b""),
         ("JSON input", ["."], b"{", 4, b"", b"jq-odin: JSON input error\n"),
         (

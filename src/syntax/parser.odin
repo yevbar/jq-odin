@@ -25,6 +25,9 @@ Node_Kind :: enum {
 	Sqrt,
 	Fabs,
 	Add_Builtin,
+	Trim,
+	Ltrim,
+	Rtrim,
 }
 
 Node_Id :: distinct int
@@ -636,6 +639,12 @@ parse_pipe :: proc(
 					kind = .Fabs
 				} else if spelling == "add" {
 					kind = .Add_Builtin
+				} else if spelling == "trim" {
+					kind = .Trim
+				} else if spelling == "ltrim" {
+					kind = .Ltrim
+				} else if spelling == "rtrim" {
+					kind = .Rtrim
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
