@@ -228,7 +228,11 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 			ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
 			return ok
 		}
-		ok = write_all(os.stderr, "jq: error: syntax error, unexpected ')' at <top-level>, line 1, column ") && ok
+		unexpected := ")"
+		if err.module_arity < 0 { unexpected = ":" }
+		ok = write_all(os.stderr, "jq: error: syntax error, unexpected '") && ok
+		ok = write_all(os.stderr, unexpected) && ok
+		ok = write_all(os.stderr, "' at <top-level>, line 1, column ") && ok
 		ok = write_all(os.stderr, fmt.tprintf("%d:\n    ", column+2)) && ok
 		ok = write_all(os.stderr, source) && ok
 		ok = write_all(os.stderr, "\n    ") && ok

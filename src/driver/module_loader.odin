@@ -806,7 +806,12 @@ validate_module :: proc(bytes: string, paths: []string, allocator: runtime.Alloc
 			// walks their body so malformed module syntax is not hidden.
 			i += len("def")
 			module_space(bytes, &i)
-			if i >= len(bytes) || !is_module_identifier_start(bytes[i]) do return {kind = .Unsupported_Syntax}
+			if i >= len(bytes) || !is_module_identifier_start(bytes[i]) {
+				// Preserve jq's parser classification for an empty definition name
+				// (`def : ...`); callers can render the unexpected-colon diagnostic.
+				if i < len(bytes) && bytes[i] == ':' do return {kind = .Syntax_Error, module_name = ":", module_arity = -1}
+				return {kind = .Unsupported_Syntax}
+			}
 			for i < len(bytes) && is_module_identifier_byte(bytes[i]) do i += 1
 			module_space(bytes, &i)
 			if i >= len(bytes) || bytes[i] != ':' do return {kind = .Unsupported_Syntax}
@@ -935,7 +940,10 @@ find_module_definitions :: proc(bytes: string, definitions: ^[dynamic]module_def
 		if module_word(bytes, i, "def") {
 			i += 3
 			module_space(bytes, &i)
-			if i >= len(bytes) || !is_module_identifier_start(bytes[i]) do return {kind = .Unsupported_Syntax}
+			if i >= len(bytes) || !is_module_identifier_start(bytes[i]) {
+				if i < len(bytes) && bytes[i] == ':' do return {kind = .Syntax_Error, module_name = ":", module_arity = -1}
+				return {kind = .Unsupported_Syntax}
+			}
 			name_start := i
 			for i < len(bytes) && is_module_identifier_byte(bytes[i]) do i += 1
 			name_end := i
