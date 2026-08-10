@@ -236,6 +236,7 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
 		return ok
 	}
+	ok = write_all(os.stderr, "jq-odin: ") && ok
 	ok = write_all(os.stderr, kind_name(err.kind)) && ok
 	if err.kind == .Module {
 		if err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error {
