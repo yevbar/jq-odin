@@ -1,0 +1,16 @@
+# `trunc` truncates a numeric input toward zero.
+trunc
+1.9
+1
+
+trunc
+-1.9
+-1
+
+trunc
+0
+0
+
+trunc
+1e20
+1e+20

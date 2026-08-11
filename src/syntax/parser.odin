@@ -82,6 +82,8 @@ Node_Kind :: enum {
 	Floor,
 	// Round is appended to preserve existing AST discriminants.
 	Round,
+	// Trunc is appended to preserve existing AST discriminants.
+	Trunc,
 	// Transpose is appended to preserve existing AST discriminants.
 	Transpose,
 	// Unique is appended to preserve existing AST discriminants.
@@ -911,6 +913,8 @@ parse_pipe :: proc(
 					kind = .Floor
 				} else if spelling == "round" {
 					kind = .Round
+				} else if spelling == "trunc" {
+					kind = .Trunc
 				} else if spelling == "transpose" {
 					kind = .Transpose
 				} else if spelling == "unique" {
