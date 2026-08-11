@@ -1,0 +1,13 @@
+# Bounded zero-argument @text format filter coverage.
+# Oracle source family: upstream/jq/tests/jq.test:72-82.
+@text
+"!()<>&'\"\t"
+"!()<>&'\"\t"
+
+@text
+"μ"
+"μ"
+
+@text
+42
+"42"
