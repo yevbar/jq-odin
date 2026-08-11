@@ -1,0 +1,7 @@
+# `objects` yields only object inputs.
+objects
+{"a":1}
+{"a":1}
+
+objects
+42
