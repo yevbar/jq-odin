@@ -3452,9 +3452,18 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return result, .None, nil
 	}
 	if opcode == .Tostring {
-		if kind != .String do return {}, .Cannot_Trim, nil
-		result := value.clone_value(input)
-		if value.kind_of(&result) == .Invalid do return {}, .None, .Out_Of_Memory
+		if kind == .String {
+			result := value.clone_value(input)
+			if value.kind_of(&result) == .Invalid do return {}, .None, .Out_Of_Memory
+			return result, .None, nil
+		}
+		text, text_ok, text_error := text_coercion_text(input, allocator)
+		if text_error != nil do return {}, .None, text_error
+		if !text_ok do return {}, .Cannot_Trim, nil
+		result, constructor_error := value.string_value(text, allocator)
+		free_error := runtime.mem_free_bytes(transmute([]byte)text, allocator)
+		if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
+		if constructor_error != nil || free_error != nil do return {}, .None, free_error if free_error != nil else .Out_Of_Memory
 		return result, .None, nil
 	}
 	if opcode == .Utf8bytelength {

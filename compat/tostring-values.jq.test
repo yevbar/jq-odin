@@ -1,0 +1,24 @@
+# jq's tostring preserves strings and JSON-serializes every other value.
+tostring
+null
+"null"
+
+tostring
+true
+"true"
+
+tostring
+1.5
+"1.5"
+
+tostring
+[]
+"[]"
+
+tostring
+{"a":1}
+"{\"a\":1}"
+
+tostring
+"abc"
+"abc"
