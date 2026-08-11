@@ -10,9 +10,10 @@ skipped); null input propagates null, and an empty array produces null/null/[]
 for index/rindex/indices. The cases are derived from
 `upstream/jq/tests/jq.test:1515-1521`, `1555-1557`, and `1559-1571`.
 
-The parser/compiler contract intentionally accepts one literal string needle.
-Empty needles, two-argument forms, array needles, dynamic arguments, and
-non-string diagnostics remain deferred. Array needles
+The parser/compiler contract also accepts comma-separated literal string
+needles, lowering each to the existing scalar index opcode. Empty needles,
+array needles, dynamic arguments, and non-string diagnostics remain deferred.
+Array needles
 are distinct from the supported array *inputs* and are still out of scope.
 
 Run with:

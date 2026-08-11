@@ -1084,7 +1084,7 @@ parse_pipe :: proc(
 					}
 				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all") && token_is(parser, .Open_Paren) {
 					advance(parser)
-					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten")
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
 						fail_from_lookahead(parser, .Close_Paren)
 						return {}, false
@@ -1095,7 +1095,16 @@ parse_pipe :: proc(
 					bsearch_comma := spelling == "bsearch" && argument_node.kind == .Comma
 					join_comma := spelling == "join" && argument_node.kind == .Comma
 					flatten_comma := spelling == "flatten" && argument_node.kind == .Comma
-					literal_sequence := bsearch_comma || join_comma || flatten_comma
+					index_comma := (spelling == "index" || spelling == "rindex" || spelling == "indices") && argument_node.kind == .Comma
+					literal_sequence := bsearch_comma || join_comma || flatten_comma || index_comma
+					// The validation below is shared with scalar index calls. Keep a
+					// literal comma sequence eligible for that path while retaining the
+					// original AST for literal_call_sequence lowering.
+					if index_comma {
+						argument_node.kind = .String
+						argument_node.has_child = false
+						argument_node.has_value = false
+					}
 					any_not_literal := (spelling == "any" || spelling == "all") && argument_node.kind == .Not_Builtin && !argument_node.has_child && !argument_node.has_value
 					index_family := spelling == "index" || spelling == "rindex" || spelling == "indices"
 					array_literal := argument_node.kind == .Identity && argument_node.container_kind == .Array && argument_node.has_value
@@ -2720,6 +2729,7 @@ literal_call_sequence :: proc(parser: ^Parser, node_id: Node_Id, call_kind: Node
 	if call_kind == .Bsearch && node.kind != .Number { return {}, false }
 	if call_kind == .Join && node.kind != .String { return {}, false }
 	if (call_kind == .Flatten || call_kind == .Range) && node.kind != .Number { return {}, false }
+	if (call_kind == .Index_Builtin || call_kind == .Rindex_Builtin || call_kind == .Indices_Builtin) && node.kind != .String && node.kind != .Number { return {}, false }
 	if call_kind == .Range {
 		needle, needle_ok := append_node(parser, Node{kind=call_kind, span=node.span, left=node_id, right=Node_Id(-1)})
 		return needle, needle_ok

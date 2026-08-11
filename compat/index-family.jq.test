@@ -40,3 +40,8 @@ indices("o")
 indices("o")
 "ƒoo"
 [1, 2]
+
+# Literal comma-separated needles produce one result per needle.
+[(index(",","|"), rindex(",","|")), indices(",","|")]
+"a,b|c,d,e||f,g,h,|,|,i,j"
+[1,3,22,19,[1,5,7,12,14,16,18,20,22],[3,9,10,17,19]]
