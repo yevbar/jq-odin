@@ -1,0 +1,7 @@
+# `booleans` yields boolean inputs.
+booleans
+true
+true
+
+booleans
+42
