@@ -1,0 +1,9 @@
+# `transpose` fills missing ragged cells with null.
+transpose
+[[1,2],[3]]
+[[1,3],[2,null]]
+
+# Empty input transposes to an empty array.
+transpose
+[]
+[]

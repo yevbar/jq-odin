@@ -74,6 +74,8 @@ Node_Kind :: enum {
 	Floor,
 	// Round is appended to preserve existing AST discriminants.
 	Round,
+	// Transpose is appended to preserve existing AST discriminants.
+	Transpose,
 }
 
 Node_Id :: distinct int
@@ -737,6 +739,8 @@ parse_pipe :: proc(
 					kind = .Floor
 				} else if spelling == "round" {
 					kind = .Round
+				} else if spelling == "transpose" {
+					kind = .Transpose
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

@@ -1841,6 +1841,39 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if !ok do return {}, .Cannot_Number, nil
 		return value.number_value(math.round(n)), .None, nil
 	}
+	if opcode == .Transpose {
+		if kind != .Array do return {}, .Cannot_Iterate, nil
+		row_count, ok := value.array_length(input)
+		if !ok do return {}, .Cannot_Iterate, nil
+		max_columns := 0
+		for row_index in 0..<row_count {
+			row, row_ok := value.array_element_copy(input, row_index)
+			if !row_ok || value.kind_of(&row) != .Array { _ = value.destroy_value(&row); return {}, .Cannot_Iterate, nil }
+			columns, columns_ok := value.array_length(&row); _ = value.destroy_value(&row)
+			if !columns_ok do return {}, .Cannot_Iterate, nil
+			if columns > max_columns do max_columns = columns
+		}
+		result, array_error := value.array_value(allocator)
+		if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+		for column in 0..<max_columns {
+			transposed, column_error := value.array_value(allocator)
+			if value.array_error_kind(&column_error) != .None { _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+			for row_index in 0..<row_count {
+				row, row_ok := value.array_element_copy(input, row_index)
+				if !row_ok || value.kind_of(&row) != .Array { _ = value.destroy_value(&row); _ = value.destroy_value(&transposed); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+				row_length, length_ok := value.array_length(&row)
+				item := value.null_value()
+				if !length_ok { _ = value.destroy_value(&row); _ = value.destroy_value(&transposed); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+				if column < row_length { item, row_ok = value.array_element_copy(&row, column); if !row_ok { _ = value.destroy_value(&row); _ = value.destroy_value(&transposed); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil } }
+				_ = value.destroy_value(&row)
+				_, append_error := value.array_append_take(&transposed, &item)
+				if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_value(&transposed); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+			}
+			_, append_error := value.array_append_take(&result, &transposed)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&transposed); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+		}
+		return result, .None, nil
+	}
 	if opcode == .Abs || opcode == .Sqrt || opcode == .Fabs {
 		if kind == .String && opcode == .Abs {
 			copy := value.clone_value(input)
@@ -2561,7 +2594,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
