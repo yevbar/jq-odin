@@ -426,12 +426,13 @@ behavioral oracle.
   the full package suite also passes. The catalog remains **172/522 passed and
   350 failed** because the selected predicate cases are grouped with broader
   unsupported expressions.
-- The zero-argument `log` builtin (`c964b84`, decision `0139`) now computes the
-  natural logarithm for numeric inputs using the existing numeric evaluator
-  path. Its focused shard passes 4/4 against the pinned oracle and package/build
-  checks pass; the catalog remains **172/522 passed and 350 failed** because
-  selected log cases are grouped with unsupported expressions. Generator and
-  non-number diagnostic forms remain deferred.
+- The zero-argument `first` builtin (`1e3b491`, corrected by `8edfc71`, decision
+  `0142`) now returns the first element of arrays and `null` for empty arrays or
+  null input, while deferring generator forms and broader wrong-type
+  diagnostics. Its focused shard passes 3/3 against the pinned oracle, and the
+  full package suite passes after the compiler-shape fixture correction. The
+  catalog remains **172/522 passed and 350 failed** because selected `first`
+  cases are generator expressions.
 
 ## Remaining high-value clusters
 
