@@ -1345,7 +1345,12 @@ parse_pipe :: proc(
 		// the complete remaining filter, while the caller's closing delimiter
 		// remains honored by the recursive parse.
 		if token_is(parser, .As) {
-			left := result
+			// A pipe to the left binds more tightly than `as`: in
+			// `input | .[] as $x | body`, only `.[]` is bound and the
+			// resulting Binding node becomes the pipe's right child. The
+			// previous parser wrapped the entire pipe root here, causing the
+			// binding body to see the pre-pipe input instead of the piped value.
+			left := current if pipe_root != invalid_id else result
 			advance(parser)
 			if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {
 				fail_from_lookahead(parser, .Expression)
@@ -1376,6 +1381,25 @@ parse_pipe :: proc(
 				has_name_span = true,
 			})
 			if !bound_ok { return {}, false }
+			if pipe_root != invalid_id {
+				tail := &parser.nodes.storage[int(pipe_tail)]
+				tail.right = bound
+				tail.has_child = false
+				pipe := pipe_root
+				for {
+					pipe_node := &parser.nodes.storage[int(pipe)]
+					pipe_span, pipe_span_ok := spanning(
+						parser,
+						parser.nodes.storage[int(pipe_node.left)].span,
+						parser.nodes.storage[int(bound)].span,
+					)
+					assert(pipe_span_ok)
+					pipe_node.span = pipe_span
+					if pipe == pipe_tail do break
+					pipe = pipe_node.right
+				}
+				return pipe_root, true
+			}
 			return bound, true
 		}
 

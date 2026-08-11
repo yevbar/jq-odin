@@ -546,6 +546,11 @@ behavioral oracle.
   focused shard passes 3/3, package/build checks and full tests pass, and the
   authoritative catalog is **181/522 passed and 341 failed**. Exact parse-error
   wording and dynamic arguments remain deferred.
+- Pipe/binding precedence (`decision 0165`) now attaches `as $name` to the
+  right-hand pipe filter, preserving the piped input and nested Cartesian
+  streams. The focused shard passes 1/1, package/build checks and full tests
+  pass, and the authoritative catalog is **182/522 passed and 340 failed**.
+  Destructuring and dynamic assignment bindings remain deferred.
 
 ## Remaining high-value clusters
 
