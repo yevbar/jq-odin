@@ -185,6 +185,11 @@ behavioral oracle.
   spelling for tiny finite values while preserving ordinary/large-number
   thresholds and overflow behavior. Its focused shard passes 1/1 and the exact
   catalog is now **144/522 passed and 378 failed**.
+- Literal `join(",")` scalar-member coercion (`305366b`) now matches jq for
+  strings, nulls, booleans, and numeric/scientific literals. Its focused shard
+  passes 3/3 and the exact catalog is now **145/522 passed and 377 failed**;
+  arrays/objects, dynamic separators, and native arithmetic-number formatting
+  remain deferred.
 
 ## Remaining high-value clusters
 
