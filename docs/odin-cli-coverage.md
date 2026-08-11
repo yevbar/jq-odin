@@ -240,11 +240,11 @@ behavioral oracle.
   **156/522 passed and 366 failed** because the upstream min/max fixtures are
   grouped with unsupported `min_by`/`max_by`. Non-array diagnostics and those
   parameterized reducers remain deferred.
-- `from_entries` key/value aliases (`64e0e2b`, decision `0112`) now accept jq's
-  lowercase and capitalized `key`/`Key`/`name`/`Name` plus `value`/`Value`
-  spellings. Its focused shard passes 1/1 and the exact catalog is now
-  **157/522 passed and 365 failed**. Malformed entries and non-array diagnostics
-  remain deferred.
+- `from_entries` aliases and missing values (`930145e`, decisions `0112` and
+  the follow-up fix) now accept jq's lowercase/capitalized `key`/`Key`/`name`/
+  `Name` plus `value`/`Value` spellings, defaulting an omitted value to `null`.
+  Its focused shard passes 2/2 and the exact catalog is **157/522 passed and
+  365 failed**. Malformed entries and non-array diagnostics remain deferred.
 
 ## Remaining high-value clusters
 
