@@ -265,6 +265,13 @@ behavioral oracle.
   the exact catalog is now **161/522 passed and 361 failed**. Empty-array
   needles, dynamic/two-argument forms, and detailed diagnostics remain
   deferred.
+- Static object-literal `contains` (`162c906`, fixes `415eac0` and `08402f0`,
+  decision `0116`) now supports recursive object and array subset matching.
+  Nested object/array kind mismatches return `false`, while top-level
+  container mismatches retain jq's runtime-error class. The focused shard
+  passes 7/7 and the string-literal shard remains 4/4; the fresh full catalog
+  is **164/522 passed and 358 failed**. Dynamic arguments, broader array
+  literal syntax, and detailed diagnostic wording remain deferred.
 
 ## Remaining high-value clusters
 
