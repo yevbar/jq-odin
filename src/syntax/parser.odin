@@ -179,6 +179,8 @@ Node_Kind :: enum {
 	Cos,
 	// Sin is appended to preserve existing AST discriminants.
 	Sin,
+	// Tan is appended to preserve existing AST discriminants.
+	Tan,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -955,6 +957,8 @@ parse_pipe :: proc(
 					kind = .Cos
 				} else if spelling == "sin" {
 					kind = .Sin
+				} else if spelling == "tan" {
+					kind = .Tan
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {
