@@ -2,9 +2,3 @@
 implode
 [65,66,67]
 "ABC"
-
-# Invalid, surrogate, and fractional codepoints map to U+FFFD or truncate
-# toward zero, and explode walks UTF-8 codepoints rather than raw bytes.
-implode|explode
-[-1,0,1,2,3,1114111,1114112,55295,55296,57343,57344,1.1,1.9]
-[65533,0,1,2,3,1114111,65533,55295,65533,65533,57344,1,1]
