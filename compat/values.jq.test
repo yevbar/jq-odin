@@ -1,0 +1,8 @@
+# `values` suppresses null values.
+values
+null
+
+# Non-null values pass through unchanged.
+values
+42
+42

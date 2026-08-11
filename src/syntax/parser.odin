@@ -56,6 +56,8 @@ Node_Kind :: enum {
 	Not_Builtin,
 	// Empty is appended to preserve existing AST discriminants.
 	Empty,
+	// Values is appended to preserve existing AST discriminants.
+	Values,
 }
 
 Node_Id :: distinct int
@@ -701,6 +703,8 @@ parse_pipe :: proc(
 					kind = .Not_Builtin
 				} else if spelling == "empty" {
 					kind = .Empty
+				} else if spelling == "values" {
+					kind = .Values
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
