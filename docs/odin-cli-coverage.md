@@ -323,6 +323,11 @@ behavioral oracle.
   selected upstream format cases are grouped with deferred sibling formats and
   interpolation forms. Nested containers and exact diagnostic wording remain
   deferred.
+- Scalar-array `@tsv` (`6db69f9`, decision `0125`) now escapes backslashes,
+  tabs, newlines, and carriage returns while coercing null, booleans, numbers,
+  exponents, and UTF-8 fields. Its focused shard passes 3/3 and package/build
+  checks pass; the catalog remains **170/522 passed and 352 failed** because
+  format arguments, sibling formats, and nested containers remain deferred.
 
 ## Remaining high-value clusters
 
