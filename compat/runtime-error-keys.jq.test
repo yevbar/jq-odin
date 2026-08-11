@@ -6,3 +6,14 @@ try strftime("%Y-%m-%dT%H:%M:%SZ") catch .
 try trim catch .
 123
 "trim input must be a string"
+
+.[] | try toboolean catch .
+[null,0,"tru","truee","fals","falsee",[],{}]
+"null (null) cannot be parsed as a boolean"
+"number (0) cannot be parsed as a boolean"
+"string (\"tru\") cannot be parsed as a boolean"
+"string (\"truee\") cannot be parsed as a boolean"
+"string (\"fals\") cannot be parsed as a boolean"
+"string (\"falsee\") cannot be parsed as a boolean"
+"array ([]) cannot be parsed as a boolean"
+"object ({}) cannot be parsed as a boolean"

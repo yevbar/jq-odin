@@ -575,6 +575,10 @@ behavioral oracle.
   catch branch. Its focused shard passes 2/2, package/build checks and full
   tests pass, and the authoritative catalog is **187/522 passed and 335
   failed**.
+- `toboolean` runtime keys (`decision 0171`) now preserve jq's kind/value
+  diagnostics through catches for invalid scalar and container inputs. Its
+  focused shard passes 3/3, package/build checks and full tests pass, and the
+  authoritative catalog is **188/522 passed and 334 failed**.
 
 ## Remaining high-value clusters
 

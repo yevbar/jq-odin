@@ -2758,6 +2758,35 @@ text_coercion_text :: proc(input: ^value.Value, allocator: runtime.Allocator) ->
 }
 
 @(private)
+runtime_value_kind_name :: proc(kind: value.Kind) -> string {
+	#partial switch kind {
+	case .Null: return "null"
+	case .Boolean: return "boolean"
+	case .Number: return "number"
+	case .String: return "string"
+	case .Array: return "array"
+	case .Object: return "object"
+	}
+	return "invalid"
+}
+
+@(private)
+toboolean_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	kind := value.kind_of(input)
+	if strings.write_string(&builder, runtime_value_kind_name(kind)) != len(runtime_value_kind_name(kind)) ||
+	   strings.write_string(&builder, " (") != 2 ||
+	   !text_append_json_value(&builder, input) ||
+	   strings.write_string(&builder, ") cannot be parsed as a boolean") != len(") cannot be parsed as a boolean") {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
 csv_append_field :: proc(builder: ^strings.Builder, input: ^value.Value) -> bool {
 	switch value.kind_of(input) {
 	case .Null:
@@ -4756,7 +4785,18 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if (instruction.opcode == .Trim || instruction.opcode == .Ltrim || instruction.opcode == .Rtrim) && value.kind_of(&frame.input) != .String {
 						err.key = "trim input must be a string"
 					}
+					owned_key := ""
+					if instruction.opcode == .Toboolean {
+						key_error: runtime.Allocator_Error
+						owned_key, key_error = toboolean_runtime_key(&frame.input, storage.allocator)
+						if key_error != nil do return resource_step(key_error)
+						err.key = owned_key
+					}
 					result, ready := raise_runtime(storage, index, err)
+					if len(owned_key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)owned_key, storage.allocator)
+						if free_error != nil do return resource_step(free_error)
+					}
 					if ready do return result
 					continue
 				}
