@@ -536,6 +536,11 @@ behavioral oracle.
   authoritative catalog is **179/522 passed and 343 failed**. Numeric
   timestamps, other format directives, local-time variants, and very short
   arrays such as `[0]` remain deferred.
+- Arithmetic-produced positive number text (`edce216b` follow-up, decision
+  `0163`) now strips internal leading `+` signs from `tostring`/JSON text.
+  The focused shard passes 2/2, package/build checks pass, and the
+  authoritative catalog is **180/522 passed and 342 failed**. Input JSON
+  spelling and unary-negative canonicalization are unchanged.
 
 ## Remaining high-value clusters
 

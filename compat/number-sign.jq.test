@@ -1,0 +1,6 @@
+# Arithmetic-produced positive literals must not expose an internal '+' sign.
+9007199254740992 + 0 | tostring
+"9007199254740992"
+
+1 + 0 | tostring
+"1"

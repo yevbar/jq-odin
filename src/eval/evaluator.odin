@@ -2663,15 +2663,18 @@ text_append_json_escaped :: proc(builder: ^strings.Builder, text: string) -> boo
 
 @(private)
 text_append_json_number :: proc(builder: ^strings.Builder, text: string) -> bool {
+	// Arithmetic can retain a leading plus in the internal literal spelling;
+	// jq's textual JSON forms never expose that unary sign.
+	normalized_text := text[1:] if len(text) > 0 && text[0] == '+' else text
 	exponent_at := -1
-	for index := 0; index < len(text); index += 1 {
-		b := text[index]
+	for index := 0; index < len(normalized_text); index += 1 {
+		b := normalized_text[index]
 		if b == 'e' || b == 'E' { exponent_at = index; break }
 	}
-	if exponent_at < 0 do return strings.write_string(builder, text) == len(text)
-	if strings.write_string(builder, text[:exponent_at]) != exponent_at do return false
+	if exponent_at < 0 do return strings.write_string(builder, normalized_text) == len(normalized_text)
+	if strings.write_string(builder, normalized_text[:exponent_at]) != exponent_at do return false
 	if strings.write_byte(builder, 'E') != 1 do return false
-	exponent := text[exponent_at+1:]
+	exponent := normalized_text[exponent_at+1:]
 	if len(exponent) == 0 do return false
 	if exponent[0] != '+' && exponent[0] != '-' {
 		if strings.write_byte(builder, '+') != 1 do return false
@@ -2698,7 +2701,8 @@ text_append_json_value :: proc(builder: ^strings.Builder, input: ^value.Value) -
 		if !ok do return false
 		buffer: [64]byte
 		formatted := strconv.write_float(buffer[:], number, 'f', -1, 64)
-		return strings.write_string(builder, formatted) == len(formatted)
+		normalized_formatted := formatted[1:] if len(formatted) > 0 && formatted[0] == '+' else formatted
+		return strings.write_string(builder, normalized_formatted) == len(normalized_formatted)
 	case .String:
 		text, ok := value.string_borrowed(input)
 		if !ok do return false
