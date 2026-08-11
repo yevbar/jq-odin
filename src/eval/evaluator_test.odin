@@ -1,6 +1,7 @@
 package eval
 
 import "base:runtime"
+import "core:math"
 import "core:testing"
 import program "jq:program"
 import value "jq:value"
@@ -113,6 +114,31 @@ ceil_builtin_rounds_toward_positive_infinity :: proc(t: ^testing.T) {
 		output := step_take(t, &evaluator)
 		expect_number(t, &output, test_case.expected)
 		testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
+isfinite_builtin_accepts_finite_numbers_only :: proc(t: ^testing.T) {
+	cases := [?]struct { input: value.Value, expected: bool }{
+		{value.number_value(1), true},
+		{value.number_value(math.inf_f64(1)), false},
+		{value.number_value(math.nan_f64()), false},
+		{value.null_value(), false},
+	}
+	for test_case in cases {
+		instructions := [?]program.Instruction{{opcode = .Isfinite, span = {start = 0, end = 8}}}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], nil, "", 0)
+		input := test_case.input
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		actual, ok := value.boolean_value_get(&output)
+		testing.expect(t, ok && actual == test_case.expected)
+		_ = value.destroy_value(&output)
 		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
 		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
 		destroy_program_test(t, &compiled)

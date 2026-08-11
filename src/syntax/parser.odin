@@ -92,6 +92,8 @@ Node_Kind :: enum {
 	Any,
 	// All is appended to preserve existing AST discriminants.
 	All,
+	// Isfinite is appended to preserve existing AST discriminants.
+	Isfinite,
 }
 
 Node_Id :: distinct int
@@ -773,6 +775,8 @@ parse_pipe :: proc(
 					kind = .Any
 				} else if spelling == "all" {
 					kind = .All
+				} else if spelling == "isfinite" {
+					kind = .Isfinite
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

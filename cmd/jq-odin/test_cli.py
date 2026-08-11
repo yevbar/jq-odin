@@ -1756,6 +1756,7 @@ def main() -> int:
         ("rtrim whitespace", ["rtrim"], b' "  hello  "\n', 0, b'"  hello"\n', b""),
         ("ASCII case builtins", ["-c", "ascii_downcase, ascii_upcase"], '"AbCé-123"'.encode(), 0, '"abcé-123"\n"ABCé-123"\n'.encode(), b""),
         ("not follows jq truthiness", ["-c", "not"], b"null false true 0 1", 0, b"true\ntrue\nfalse\nfalse\nfalse\n", b""),
+        ("isfinite numeric predicate", ["-c", "isfinite"], b"1", 0, b"true\n", b""),
         ("flatten nested arrays", ["-c", "flatten"], b"[1,[2,[3]],4]", 0, b"[1,2,3,4]\n", b""),
         ("ceil numeric rounding", ["-c", "ceil"], b"1.2 -1.2 2", 0, b"2\n-1\n2\n", b""),
         ("bundled short options", ["-nc", "."], b"", 0, b"null\n", b""),

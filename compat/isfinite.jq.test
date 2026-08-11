@@ -1,0 +1,4 @@
+# jq isfinite: finite numbers are true; non-finite/non-number values are false.
+isfinite
+1
+true
