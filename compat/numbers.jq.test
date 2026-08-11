@@ -1,0 +1,17 @@
+# `numbers` yields only numeric inputs.
+numbers
+42
+42
+
+numbers
+"42"
+
+numbers
+true
+
+numbers
+null
+
+numbers
+1.5
+1.5
