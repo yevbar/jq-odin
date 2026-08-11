@@ -2,11 +2,12 @@
 
 This shard covers `join("literal")` with the input array supplied by the
 surrounding filter. It verifies empty arrays/members and jq's null-as-empty
-behavior. The cases are derived from `upstream/jq/tests/jq.test:444-452` and
-`upstream/jq/tests/jq.test:1980-1989`.
+behavior and comma-separated literal separators lowered to an output sequence.
+The cases are derived from `upstream/jq/tests/jq.test:444-452`,
+`upstream/jq/tests/jq.test:445`, and `upstream/jq/tests/jq.test:1980-1989`.
 
-The parser/compiler contract intentionally accepts only a single literal
-string separator. Dynamic separators, multiple separator outputs, numeric or
+The parser/compiler contract accepts literal string separators. Dynamic,
+numeric or
 boolean coercion, and object/array diagnostics remain deferred until a
 parameterized-call and tostring contract is available.
 

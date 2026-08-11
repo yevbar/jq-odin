@@ -1074,7 +1074,7 @@ parse_pipe :: proc(
 					}
 				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strptime") && token_is(parser, .Open_Paren) {
 					advance(parser)
-					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch")
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
 						fail_from_lookahead(parser, .Close_Paren)
 						return {}, false
@@ -1083,13 +1083,16 @@ parse_pipe :: proc(
 					advance(parser)
 					argument_node := parser.nodes.storage[int(argument)]
 					bsearch_comma := spelling == "bsearch" && argument_node.kind == .Comma
+					join_comma := spelling == "join" && argument_node.kind == .Comma
+					flatten_comma := spelling == "flatten" && argument_node.kind == .Comma
+					literal_sequence := bsearch_comma || join_comma || flatten_comma
 					index_family := spelling == "index" || spelling == "rindex" || spelling == "indices"
 					array_literal := argument_node.kind == .Identity && argument_node.container_kind == .Array && argument_node.has_value
 					contains_object_literal := spelling == "contains" && argument_node.kind == .Identity && argument_node.container_kind == .Object
 					contains_array_literal := spelling == "contains" && array_literal
 					isempty_literal := spelling == "isempty" && (argument_node.kind == .Empty || argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number || argument_node.kind == .String)
-					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || isempty_literal || (index_family && array_literal) || contains_object_literal || contains_array_literal || bsearch_comma || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null)) || (spelling == "bsearch" && argument_node.kind == .Identity && argument_node.container_kind == .Object && argument_node.has_value)
-					if !argument_is_literal || (spelling == "error" && argument_node.kind != .String) || (spelling != "bsearch" && spelling != "error" && spelling != "isempty" && argument_node.has_child) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_child) || (spelling != "bsearch" && spelling != "error" && !index_family && !contains_object_literal && !contains_array_literal && argument_node.has_value) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_value) || (spelling == "flatten" && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "bsearch" && spelling != "has" && spelling != "error" && spelling != "isempty" && !index_family && !contains_object_literal && !contains_array_literal) && argument_node.kind != .String) || (index_family && argument_node.kind != .String && argument_node.kind != .Number && !array_literal) || (contains_object_literal && argument_node.container_kind != .Object) || (contains_array_literal && argument_node.container_kind != .Array) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && !bsearch_comma && argument_node.kind != .Number && !(argument_node.kind == .Identity && argument_node.container_kind == .Object)) {
+					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || isempty_literal || (index_family && array_literal) || contains_object_literal || contains_array_literal || literal_sequence || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null)) || (spelling == "bsearch" && argument_node.kind == .Identity && argument_node.container_kind == .Object && argument_node.has_value)
+					if !argument_is_literal || (spelling == "error" && argument_node.kind != .String) || (spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "error" && spelling != "isempty" && argument_node.has_child) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_child) || (spelling == "join" && !join_comma && argument_node.has_child) || (spelling == "flatten" && !flatten_comma && argument_node.has_child) || (spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "error" && !index_family && !contains_object_literal && !contains_array_literal && argument_node.has_value) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_value) || (spelling == "join" && !join_comma && argument_node.has_value) || (spelling == "flatten" && !flatten_comma && argument_node.has_value) || (spelling == "flatten" && !flatten_comma && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "bsearch" && spelling != "join" && spelling != "has" && spelling != "error" && spelling != "isempty" && !index_family && !contains_object_literal && !contains_array_literal) && argument_node.kind != .String) || (index_family && argument_node.kind != .String && argument_node.kind != .Number && !array_literal) || (contains_object_literal && argument_node.container_kind != .Object) || (contains_array_literal && argument_node.container_kind != .Array) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && !bsearch_comma && argument_node.kind != .Number && !(argument_node.kind == .Identity && argument_node.container_kind == .Object)) || (spelling == "join" && !join_comma && argument_node.kind != .String) || (spelling == "flatten" && flatten_comma && argument_node.kind != .Comma) {
 						// The closing paren has already been consumed, so lookahead may
 						// be End_Of_Input. Route through the boundary-aware helper to
 						// report a parse error instead of asserting on a non-token.
@@ -1116,8 +1119,9 @@ parse_pipe :: proc(
 					if spelling == "isempty" do call_kind = .IsEmpty
 					if spelling == "strftime" do call_kind = .Strftime
 					if spelling == "strptime" do call_kind = .Strptime
-					if bsearch_comma {
-						new_term, sequence_ok := bsearch_literal_sequence(parser, argument)
+					if literal_sequence {
+						sequence_kind := call_kind
+						new_term, sequence_ok := literal_call_sequence(parser, argument, sequence_kind)
 						if !sequence_ok { fail_from_lookahead(parser, .Expression); return {}, false }
 						term = new_term
 					} else {
@@ -2671,21 +2675,24 @@ append_node :: proc(parser: ^Parser, node: Node) -> (Node_Id, bool) {
 	return Node_Id(parser.nodes.count-1), true
 }
 
-// bsearch_literal_sequence lowers a comma-separated list of numeric literal
-// needles into a normal comma sequence of single-needle Bsearch nodes. This
-// preserves the existing evaluator contract while covering jq's variadic
-// literal form; dynamic and object variadic forms remain deferred.
-bsearch_literal_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
+// literal_call_sequence lowers comma-separated literal arguments into a
+// normal comma sequence of single-argument builtin nodes. This preserves each
+// evaluator's existing ownership contract while covering bounded variadic
+// literal forms; dynamic arguments remain deferred.
+literal_call_sequence :: proc(parser: ^Parser, node_id: Node_Id, call_kind: Node_Kind) -> (Node_Id, bool) {
 	node := parser.nodes.storage[int(node_id)]
 	if node.kind == .Comma && !node.has_child {
-		left, left_ok := bsearch_literal_sequence(parser, node.left)
-		right, right_ok := bsearch_literal_sequence(parser, node.right)
+		left, left_ok := literal_call_sequence(parser, node.left, call_kind)
+		right, right_ok := literal_call_sequence(parser, node.right, call_kind)
 		if !left_ok || !right_ok { return {}, false }
 		combined, combined_ok := append_node(parser, Node{kind=.Comma, span=node.span, left=left, right=right})
 		return combined, combined_ok
 	}
-	if node.kind != .Number || node.has_child || node.has_value { return {}, false }
-	needle, needle_ok := append_node(parser, Node{kind=.Bsearch, span=node.span, child=node_id, has_child=true})
+	if node.has_child || node.has_value { return {}, false }
+	if call_kind == .Bsearch && node.kind != .Number { return {}, false }
+	if call_kind == .Join && node.kind != .String { return {}, false }
+	if call_kind == .Flatten && node.kind != .Number { return {}, false }
+	needle, needle_ok := append_node(parser, Node{kind=call_kind, span=node.span, child=node_id, has_child=true})
 	return needle, needle_ok
 }
 
