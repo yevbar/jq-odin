@@ -230,6 +230,34 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "\"\n") && ok
 		return ok
 	}
+	if err.kind == .Runtime && err.runtime_input_kind != .Number && len(err.runtime_key) > 0 {
+		// String-key access on containers and strings retains jq's specific
+		// container wording. Numeric-looking keys are reserved for the bounded
+		// numeric-index path above and continue through the generic formatter.
+		numeric_key := true
+		for ch in err.runtime_key {
+			if ch < '0' || ch > '9' {
+				numeric_key = false
+				break
+			}
+		}
+		if !numeric_key {
+			path := err.runtime_input_path
+			if len(path) == 0 || path == "-" do path = "<stdin>"
+			line := err.runtime_input_line
+			if line <= 0 do line = 1
+			ok := write_all(os.stderr, "jq: error (at ")
+			ok = write_all(os.stderr, path) && ok
+			ok = write_all(os.stderr, ":") && ok
+			ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+			ok = write_all(os.stderr, "): Cannot index ")
+			ok = write_all(os.stderr, json_kind_name(err.runtime_input_kind)) && ok
+			ok = write_all(os.stderr, " with string \"") && ok
+			ok = write_all(os.stderr, err.runtime_key) && ok
+			ok = write_all(os.stderr, "\"\n") && ok
+			return ok
+		}
+	}
 	ok := true
 	if err.kind == .Module && (err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error) {
 		column := 1
