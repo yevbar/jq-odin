@@ -1,0 +1,8 @@
+# `round` rounds finite numbers to the nearest integer.
+round
+1.1
+1
+
+round
+-1.9
+-2
