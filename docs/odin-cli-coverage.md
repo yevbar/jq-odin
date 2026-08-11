@@ -406,14 +406,14 @@ behavioral oracle.
   passes 7/7 against the pinned oracle and package/build checks pass; the
   catalog remains **172/522 passed and 350 failed** because the builtin has no
   standalone selected jq.test case.
-- The zero-argument `log` builtin (`c964b84`, decision `0139`) now computes the
-  natural logarithm for numeric inputs using the existing numeric evaluator
-  path. Its focused shard passes 4/4 against the pinned oracle and package/build
-  checks pass; the catalog remains **172/522 passed and 350 failed** because
-  selected log cases are grouped with unsupported expressions. Generated
-  floating-point values still have known last-digit serializer mismatches for
-  some inputs (for example `log(2)`/`log(10)`); a dedicated JSON shortest-float
-  follow-up is required for strict text parity.
+- The zero-argument `log` builtin (`c964b84`, corrected by `92c8887`, decisions
+  `0139`/`0140`) now computes the natural logarithm for numeric inputs and
+  serializes generated finite values with jq-compatible shortest text. Its
+  focused shard passes 6/6 against the pinned oracle and package/build checks
+  pass; the catalog remains **172/522 passed and 350 failed** because selected
+  log cases are grouped with unsupported expressions. Generator and non-number
+  diagnostic forms remain deferred; a few arbitrary-input libm results can
+  still differ in their final decimal digit even after serializer normalization.
 - The zero-argument `log` builtin (`c964b84`, decision `0139`) now computes the
   natural logarithm for numeric inputs using the existing numeric evaluator
   path. Its focused shard passes 4/4 against the pinned oracle and package/build
