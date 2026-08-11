@@ -34,6 +34,8 @@ Node_Kind :: enum {
 	// ASCII case filters are appended to preserve existing AST discriminants.
 	Ascii_Downcase,
 	Ascii_Upcase,
+	// Reverse is appended to preserve existing AST discriminants.
+	Reverse,
 }
 
 Node_Id :: distinct int
@@ -657,6 +659,8 @@ parse_pipe :: proc(
 					kind = .Ascii_Downcase
 				} else if spelling == "ascii_upcase" {
 					kind = .Ascii_Upcase
+				} else if spelling == "reverse" {
+					kind = .Reverse
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
