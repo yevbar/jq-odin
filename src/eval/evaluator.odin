@@ -3138,6 +3138,11 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if value.kind_of(input) != .String do return {}, .Cannot_Number, nil
 		text, text_ok := value.string_borrowed(input)
 		if !text_ok do return {}, .Cannot_Number, nil
+		start := 0
+		end := len(text)
+		for start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\n' || text[start] == '\r') do start += 1
+		for end > start && (text[end-1] == ' ' || text[end-1] == '\t' || text[end-1] == '\n' || text[end-1] == '\r') do end -= 1
+		text = text[start:end]
 		if text == "null" do return value.null_value(), .None, nil
 		if text == "true" do return value.boolean_value(true), .None, nil
 		if text == "false" do return value.boolean_value(false), .None, nil

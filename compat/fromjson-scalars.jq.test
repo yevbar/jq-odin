@@ -19,3 +19,11 @@ fromjson
 fromjson
 "1e20"
 1E+20
+
+fromjson
+" true "
+true
+
+fromjson
+"\t1.5\n"
+1.5
