@@ -452,6 +452,12 @@ behavioral oracle.
   remains **172/522 passed and 350 failed** after narrowing the native-number
   formatter to avoid regressions in existing numeric-boundary cases; overflow,
   non-number diagnostics, and platform-sensitive final digits remain deferred.
+- The zero-argument `exp2` builtin (`5d2392c4`, decision `0148`) now computes
+  two-to-the-power-of-n for numeric inputs. Its focused shard passes 4/4
+  against the pinned oracle, package/build checks and full tests pass, and the
+  full catalog remains **172/522 passed and 350 failed** because selected exp2
+  cases are embedded in unsupported compositions. Non-number diagnostics,
+  overflow/underflow, and platform-sensitive fractional values remain deferred.
 
 ## Remaining high-value clusters
 
