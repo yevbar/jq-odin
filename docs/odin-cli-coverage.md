@@ -55,6 +55,10 @@ behavioral oracle.
   suite; the full catalog is now 97/522 (425 remaining). Valid string values
   are covered, while typed non-string diagnostics and malformed UTF-8 remain
   deferred to a follow-up parity lane.
+- Bounded zero-output `empty` (`1bf7a1b`) passes its generator/exhaustion shard
+  and package suite; the full catalog is now 98/522 (424 remaining). Its
+  zero-argument form is covered; argument-bearing and richer control-flow
+  combinations remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
