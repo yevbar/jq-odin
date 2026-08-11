@@ -30,6 +30,9 @@ behavioral oracle.
   full package suite. Its Unicode cases remain deferred, so the catalog is
   still 94/522; the implementation is intentionally not represented as full
   jq `explode` compatibility.
+- `keys_unsorted` is now integrated at `1755567` with insertion-order object
+  and array shards passing. The catalog remains 94/522 because its broader
+  upstream cases still include unsupported surrounding filter forms.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
