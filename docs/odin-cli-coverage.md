@@ -507,6 +507,11 @@ behavioral oracle.
   pass. Dynamic/non-string error arguments, broader `try` forms, `halt`, and
   `debug` remain deferred; the catalog baseline is unchanged at **172/522
   passed and 350 failed**.
+- Literal-child `isempty` (`1aea36bf`, decision `0157`) now distinguishes
+  `empty` (true) from scalar and null literals (false). Its focused shard
+  passes 3/3 against the pinned oracle, package/build checks and full tests
+  pass. Array/dynamic/generator children remain deferred; the catalog remains
+  **172/522 passed and 350 failed**.
 
 ## Remaining high-value clusters
 
