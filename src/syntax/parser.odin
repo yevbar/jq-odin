@@ -70,6 +70,8 @@ Node_Kind :: enum {
 	Booleans,
 	// Nulls is appended to preserve existing AST discriminants.
 	Nulls,
+	// Floor is appended to preserve existing AST discriminants.
+	Floor,
 }
 
 Node_Id :: distinct int
@@ -729,6 +731,8 @@ parse_pipe :: proc(
 					kind = .Booleans
 				} else if spelling == "nulls" {
 					kind = .Nulls
+				} else if spelling == "floor" {
+					kind = .Floor
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

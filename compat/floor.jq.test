@@ -1,0 +1,8 @@
+# `floor` rounds finite numbers toward negative infinity.
+floor
+1.7
+1
+
+floor
+-1.2
+-2
