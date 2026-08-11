@@ -15,6 +15,9 @@ behavioral oracle.
 - Bounded `atan`: `7a8135a`; its focused shard passes 1/1. The full catalog
   remains at 93/522 because jq’s unrounded floating-point text for the
   standalone `atan` case still differs from the candidate serializer.
+- A sin/cos implementation was exercised and reverted (`294d9a6` / `9c9b873`)
+  after its nonzero oracle shard exposed the same serializer mismatch
+  (`cos(1)`); it remains a queued lane until native-number formatting is fixed.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
