@@ -2008,7 +2008,62 @@ split_result :: proc(input: ^value.Value, separator: string, allocator: runtime.
 
 @(private)
 search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcode, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
-	if value.kind_of(input) != .String || len(needle) == 0 do return {}, .Cannot_Iterate, nil
+	kind := value.kind_of(input)
+	// jq's search builtins preserve null as null.  Arrays search exact string
+	// elements (rather than serializing the array); non-string elements simply
+	// cannot match a literal string needle.
+	if kind == .Null do return value.null_value(), .None, nil
+	if kind == .Array {
+		length, length_ok := value.array_length(input)
+		if !length_ok do return {}, .Cannot_Iterate, nil
+		if opcode == .Indices_Builtin {
+			result, array_error := value.array_value(allocator)
+			if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+			for index in 0..<length {
+				item, item_ok := value.array_element_copy(input, index)
+				if !item_ok {
+					_ = value.destroy_value(&result)
+					return {}, .Cannot_Iterate, nil
+				}
+				item_kind := value.kind_of(&item)
+				matches := false
+				if item_kind == .String {
+					item_text, text_ok := value.string_borrowed(&item)
+					matches = text_ok && item_text == needle
+				}
+				_ = value.destroy_value(&item)
+				if matches {
+					position := value.number_value(f64(index))
+					_, append_error := value.array_append_take(&result, &position)
+					if value.array_error_kind(&append_error) != .None {
+						_ = value.destroy_value(&position)
+						_ = value.destroy_value(&result)
+						return {}, .None, .Out_Of_Memory
+					}
+				}
+			}
+			return result, .None, nil
+		}
+		last_index := -1
+		for index in 0..<length {
+			item, item_ok := value.array_element_copy(input, index)
+			if !item_ok do return {}, .Cannot_Iterate, nil
+			item_kind := value.kind_of(&item)
+			matches := false
+			if item_kind == .String {
+				item_text, text_ok := value.string_borrowed(&item)
+				matches = text_ok && item_text == needle
+			}
+			_ = value.destroy_value(&item)
+			if matches {
+				if opcode == .Index_Builtin do return value.number_value(f64(index)), .None, nil
+				last_index = index
+			}
+		}
+		if last_index < 0 do return value.null_value(), .None, nil
+		return value.number_value(f64(last_index)), .None, nil
+	}
+	if kind != .String || len(needle) == 0 do return {}, .Cannot_Iterate, nil
 	text, text_ok := value.string_borrowed(input)
 	if !text_ok do return {}, .Cannot_Iterate, nil
 	if opcode == .Index_Builtin {
