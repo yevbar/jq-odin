@@ -440,6 +440,13 @@ behavioral oracle.
   **172/522 passed and 350 failed** because selected log10 cases are grouped
   with unsupported expressions; `log10(0.1)` retains a documented native-libm
   final-digit precision caveat.
+- The zero-argument `log2` builtin (`7253b0f6`, corrected by `f517f296`,
+  decision `0145`) now computes base-2 logarithms for numeric inputs. Its
+  focused shard passes 2/2 against the pinned oracle, and the full package
+  suite passes after the compiler-shape fixture correction. The catalog remains
+  **172/522 passed and 350 failed** because selected log2 cases are grouped
+  with unsupported expressions; `log2(10)` retains a documented one-ULP
+  native-libm precision caveat.
 
 ## Remaining high-value clusters
 
