@@ -477,6 +477,12 @@ behavioral oracle.
   full tests pass, and the catalog remains **172/522 passed and 350 failed**.
   Non-number diagnostics and a one-ULP native-libm difference at `acos(0.5)`
   remain deferred.
+- The zero-argument `cos` builtin (`1b2214cb`, decision `0152`) now computes
+  cosine for numeric inputs using Odin's math implementation. Its focused
+  shard passes 3/3 against the pinned oracle, package/build checks and full
+  tests pass, and the catalog remains **172/522 passed and 350 failed**.
+  Non-number diagnostics and one-ULP native-libm differences at `cos(1)` and
+  `cos(0.5)` remain deferred.
 
 ## Remaining high-value clusters
 
