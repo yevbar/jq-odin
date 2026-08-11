@@ -528,7 +528,7 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 			child := nodes[int(node.child)]
-			if child.kind == .Nan && !child.has_child && !child.has_value {
+			if (child.kind == .Nan || child.kind == .Infinite) && !child.has_child && !child.has_value {
 				// NaN is signless for jq's observable arithmetic/serialization;
 				// lower unary -nan to the existing NaN literal opcode.
 			} else if child.kind == .Number && !child.has_child && !child.has_value {
@@ -983,8 +983,8 @@ lower_filter :: proc(
 			}
 		case .Negate:
 			child := nodes[int(node.child)]
-			if child.kind == .Nan && !child.has_child && !child.has_value {
-				instruction.opcode = .Nan
+			if (child.kind == .Nan || child.kind == .Infinite) && !child.has_child && !child.has_value {
+				instruction.opcode = .Nan if child.kind == .Nan else .Infinite
 			} else if child.kind != .Number || child.has_child || child.has_value {
 				cleanup_error := program.destroy_program(output)
 				if cleanup_error != nil { return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error} }

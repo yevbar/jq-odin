@@ -13,3 +13,7 @@ nan | isnan
 null
 true
 
+# Unary negative infinity preserves infinity classification.
+-infinite | isinfinite
+null
+true

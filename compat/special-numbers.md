@@ -5,10 +5,8 @@ constants. It checks NaN arithmetic/predicate behavior and jq's serializer
 clamping of positive infinity. Evidence comes from
 `upstream/jq/tests/jq.test:689-693` and `upstream/jq/tests/jq.test:2271-2278`.
 
-Unary `-infinite` is intentionally deferred: the current program contract has
-no general Negate opcode, and adding one would broaden this lane into a shared
-compiler/evaluator control contract. JSON parsing of NaN payload strings and
-diagnostic parity are likewise deferred.
+Unary `-infinite` is covered only for the existing `isinfinite` predicate;
+general unary negation and JSON parsing of NaN payload strings remain deferred.
 
 Run with:
 
