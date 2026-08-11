@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:math"
 import "core:sync"
 import "core:strings"
+import "core:strconv"
 import program "jq:program"
 import value "jq:value"
 
@@ -1934,11 +1935,52 @@ flatten_append :: proc(input: ^value.Value, output: ^value.Value) -> (Runtime_Er
 }
 
 @(private)
-flatten_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+flatten_append_depth :: proc(input: ^value.Value, output: ^value.Value, depth: int) -> (Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) == .Array && depth != 0 {
+		length, ok := value.array_length(input)
+		if !ok do return .Cannot_Iterate, nil
+		for i in 0..<length {
+			item, item_ok := value.array_element_copy(input, i)
+			if !item_ok do return .Cannot_Iterate, nil
+			next_depth := depth
+			if next_depth > 0 do next_depth -= 1
+			runtime_kind, allocator_error := flatten_append_depth(&item, output, next_depth)
+			_ = value.destroy_value(&item)
+			if runtime_kind != .None || allocator_error != nil do return runtime_kind, allocator_error
+		}
+		return .None, nil
+	}
+	item := value.clone_value(input)
+	if value.kind_of(&item) == .Invalid do return .None, .Out_Of_Memory
+	_, append_error := value.array_append_take(output, &item)
+	if value.array_error_kind(&append_error) != .None {
+		_ = value.destroy_value(&item)
+		_ = value.destroy_array_error(&append_error)
+		return .None, .Out_Of_Memory
+	}
+	return .None, nil
+}
+
+@(private)
+flatten_result :: proc(input: ^value.Value, allocator: runtime.Allocator, depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
 	result, array_error := value.array_value(allocator)
 	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
-	runtime_kind, allocator_error := flatten_append(input, &result)
+	runtime_kind: Runtime_Error_Kind
+	allocator_error: runtime.Allocator_Error
+	if depth < 0 {
+		runtime_kind, allocator_error = flatten_append(input, &result)
+	} else {
+		length, length_ok := value.array_length(input)
+		if !length_ok { _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+		for i in 0..<length {
+			item, item_ok := value.array_element_copy(input, i)
+			if !item_ok { _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+			runtime_kind, allocator_error = flatten_append_depth(&item, &result, depth)
+			_ = value.destroy_value(&item)
+			if runtime_kind != .None || allocator_error != nil { break }
+		}
+	}
 	if runtime_kind != .None || allocator_error != nil { _ = value.destroy_value(&result); return {}, runtime_kind, allocator_error }
 	return result, .None, nil
 }
@@ -2114,7 +2156,7 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 }
 
 @(private)
-builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Type {
 		name := "invalid"
@@ -2189,7 +2231,7 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return value.number_value(math.ceil(n)), .None, nil
 	}
 	if opcode == .Flatten {
-		return flatten_result(input, allocator)
+		return flatten_result(input, allocator, flatten_depth)
 	}
 	if opcode == .Nan {
 		return value.number_value(math.nan_f64()), .None, nil
@@ -3079,7 +3121,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
-				output, runtime_kind, resource_error := builtin_result(instruction.opcode, &frame.input, storage.allocator)
+				flatten_depth := -1
+				if instruction.opcode == .Flatten && instruction.operands_count == 1 {
+					child, child_ok := child_instruction(storage, instruction, 0)
+					depth_instruction, depth_instruction_ok := program.program_instruction(storage.compiled, child)
+					depth_operand, operand_ok := program.program_operand(storage.compiled, depth_instruction.operands_start)
+					depth_text, text_ok := program.operand_text(storage.compiled, depth_operand)
+					parsed_depth, parsed_ok := strconv.parse_i64(depth_text)
+					if !child_ok || !depth_instruction_ok || !operand_ok || !text_ok || depth_operand.kind != .Text || !depth_instruction.has_literal || depth_instruction.literal_kind != .Number || !parsed_ok {
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					flatten_depth = int(parsed_depth)
+				}
+				output, runtime_kind, resource_error := builtin_result(instruction.opcode, &frame.input, storage.allocator, flatten_depth)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
