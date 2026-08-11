@@ -2631,6 +2631,56 @@ append_postfix :: proc(
 			index_node, index_ok := append_number_node(parser, index_span)
 			if !index_ok do return {}, false
 			advance(parser)
+			// Reuse the allocated number node as the index node. Its owned
+			// spelling remains valid for the parser lifetime and is copied by
+			// the compiler into Program text storage.
+			stored := &parser.nodes.storage[int(index_node)]
+			stored.kind = .Index
+			stored.span = index_span
+			stored.child = node
+			stored.has_child = true
+			sequence := index_node
+			for token_is(parser, .Comma) {
+				advance(parser)
+				next_negative := false
+				next_negative_span := diagnostic.Span{}
+				if token_is(parser, .Minus) {
+					next_negative_span = parser.lookahead.token.span
+					advance(parser)
+					next_negative = true
+				}
+				if !token_is(parser, .Number) {
+					fail_from_lookahead(parser, .Close_Bracket)
+					return {}, false
+				}
+				next_number_span := parser.lookahead.token.span
+				next_index_span := next_number_span
+				if next_negative {
+					next_index_span, _ = spanning(parser, next_negative_span, next_number_span)
+				}
+				next_index, next_ok := append_number_node(parser, next_index_span)
+				if !next_ok do return {}, false
+				advance(parser)
+				next_stored := &parser.nodes.storage[int(next_index)]
+				next_stored.kind = .Index
+				next_stored.span = next_index_span
+				next_stored.child = node
+				next_stored.has_child = true
+				sequence_span, sequence_span_ok := spanning(parser,
+					parser.nodes.storage[int(sequence)].span,
+					next_index_span,
+				)
+				assert(sequence_span_ok)
+				sequence_ok: bool
+				sequence, sequence_ok = append_node(parser, Node{
+					kind = .Comma,
+					span = sequence_span,
+					left = sequence,
+					right = next_index,
+					has_child = false,
+				})
+				if !sequence_ok do return {}, false
+			}
 			if !token_is(parser, .Close_Bracket) {
 				fail_from_lookahead(parser, .Close_Bracket)
 				return {}, false
@@ -2639,15 +2689,8 @@ append_postfix :: proc(
 			advance(parser)
 			span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
 			assert(span_ok)
-			// Reuse the allocated number node as the index node. Its owned
-			// spelling remains valid for the parser lifetime and is copied by
-			// the compiler into Program text storage.
-			stored := &parser.nodes.storage[int(index_node)]
-			stored.kind = .Index
-			stored.span = span
-			stored.child = node
-			stored.has_child = true
-			node = index_node
+			parser.nodes.storage[int(sequence)].span = span
+			node = sequence
 			_ = open
 			continue
 		}
