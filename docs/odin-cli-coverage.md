@@ -302,6 +302,11 @@ behavioral oracle.
   checks pass; the catalog remains **170/522 passed and 352 failed** because
   jq's format-argument/interpolation form is deferred. Container coercion and
   malformed UTF-8 diagnostics remain deferred.
+- `@text` (`bf713fb`, container fix `eee3756`, decision `0122`) now coerces
+  scalars and compact-JSON stringifies arrays/objects, including nested values,
+  while preserving raw strings and UTF-8. The focused shard passes 5/5,
+  package/build checks pass, and the catalog remains **170/522 passed and 352
+  failed** because format-argument/interpolation cases are deferred.
 
 ## Remaining high-value clusters
 
