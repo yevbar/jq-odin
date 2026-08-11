@@ -1,0 +1,16 @@
+# `exp2` computes two raised to the input.
+exp2
+-2
+0.25
+
+exp2
+-1
+0.5
+
+exp2
+0
+1
+
+exp2
+3
+8
