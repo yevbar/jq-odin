@@ -181,6 +181,10 @@ behavioral oracle.
   adds a focused 2/2 shard covering non-ASCII whitespace and preserves the
   existing ASCII behavior. The exact catalog is now **143/522 passed and 379
   failed**.
+- Corrected native-number formatting (`f8db275`) fixes jq's short scientific
+  spelling for tiny finite values while preserving ordinary/large-number
+  thresholds and overflow behavior. Its focused shard passes 1/1 and the exact
+  catalog is now **144/522 passed and 378 failed**.
 
 ## Remaining high-value clusters
 
