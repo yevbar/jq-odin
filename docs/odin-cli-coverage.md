@@ -328,6 +328,12 @@ behavioral oracle.
   exponents, and UTF-8 fields. Its focused shard passes 3/3 and package/build
   checks pass; the catalog remains **170/522 passed and 352 failed** because
   format arguments, sibling formats, and nested containers remain deferred.
+- Scalar-array `@sh` (`2666e13`, decision `0126`) now emits POSIX
+  single-quoted fields with jq-compatible apostrophe escaping, scalar
+  coercion, UTF-8, exponents, and empty-array behavior. Its focused shard
+  passes 3/3 and package/build checks pass; the catalog remains **170/522
+  passed and 352 failed** because format arguments, sibling formats, and
+  nested containers remain deferred.
 
 ## Remaining high-value clusters
 
