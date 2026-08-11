@@ -1,0 +1,8 @@
+# Base64 formats operate on UTF-8 string bytes.
+@base64
+"foóbar\n"
+"Zm/Ds2Jhcgo="
+
+@base64d
+"Zm/Ds2Jhcgo="
+"foóbar\n"

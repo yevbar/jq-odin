@@ -127,6 +127,9 @@ Node_Kind :: enum {
 	Max,
 	// Toboolean is appended to preserve existing AST discriminants.
 	Toboolean,
+	// Base64 and Base64d are appended to preserve existing AST discriminants.
+	Base64,
+	Base64d,
 }
 
 Node_Id :: distinct int
@@ -681,6 +684,17 @@ parse_pipe :: proc(
 				if !string_ok {
 					return {}, false
 				}
+				term = new_term
+			case .Format:
+				format := token_spelling(parser, token)
+				if format != "@base64" && format != "@base64d" {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				kind := Node_Kind.Base64 if format == "@base64" else .Base64d
+				advance(parser)
+				new_term, format_ok := append_node(parser, Node{kind = kind, span = token.span})
+				if !format_ok do return {}, false
 				term = new_term
 			case .Minus:
 				minus_depth += 1
@@ -1660,7 +1674,7 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 	}
 	token := parser.lookahead.token
 	#partial switch token.kind {
-	case .Dot, .Field, .Number, .String_Start, .Minus, .Open_Paren,
+	case .Dot, .Field, .Number, .String_Start, .Format, .Minus, .Open_Paren,
 	     .Open_Bracket, .Open_Brace, .Binding:
 		return true
 	case .Identifier:
