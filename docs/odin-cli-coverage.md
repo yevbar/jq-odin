@@ -40,6 +40,9 @@ behavioral oracle.
   package tests, and CLI smoke test. Alternate entry-key spellings and
   malformed/non-array diagnostics remain deferred; catalog coverage is still
   94/522.
+- Canonical object `to_entries` (`80fe8a7`) passes its shard and package suite;
+  the full catalog moved to 95/522 (427 remaining). Array/non-object forms
+  remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
