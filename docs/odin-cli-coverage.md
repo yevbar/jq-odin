@@ -47,6 +47,10 @@ behavioral oracle.
   the full catalog remains 95/522 because this parser snapshot cannot yet
   construct jq's `nan` literal, so positive-NaN and non-number diagnostic
   cases remain deferred.
+- Bounded `not` (`a33cefa`) passes its truthiness shard and package suite;
+  the full catalog is now 96/522 (426 remaining). Its zero-argument truthiness
+  form is covered; generator and richer control-flow compositions remain
+  deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
