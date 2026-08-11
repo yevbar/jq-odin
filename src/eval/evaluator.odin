@@ -2787,6 +2787,24 @@ toboolean_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator)
 }
 
 @(private)
+utf8bytelength_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	kind_name := runtime_value_kind_name(value.kind_of(input))
+	suffix := " only strings have UTF-8 byte length"
+	if strings.write_string(&builder, kind_name) != len(kind_name) ||
+	   strings.write_string(&builder, " (") != 2 ||
+	   !text_append_json_value(&builder, input) ||
+	   strings.write_string(&builder, ")") != 1 ||
+	   strings.write_string(&builder, suffix) != len(suffix) {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
 csv_append_field :: proc(builder: ^strings.Builder, input: ^value.Value) -> bool {
 	switch value.kind_of(input) {
 	case .Null:
@@ -4789,6 +4807,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if instruction.opcode == .Toboolean {
 						key_error: runtime.Allocator_Error
 						owned_key, key_error = toboolean_runtime_key(&frame.input, storage.allocator)
+						if key_error != nil do return resource_step(key_error)
+						err.key = owned_key
+					}
+					if instruction.opcode == .Utf8bytelength {
+						key_error: runtime.Allocator_Error
+						owned_key, key_error = utf8bytelength_runtime_key(&frame.input, storage.allocator)
 						if key_error != nil do return resource_step(key_error)
 						err.key = owned_key
 					}

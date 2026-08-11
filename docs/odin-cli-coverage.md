@@ -579,6 +579,10 @@ behavioral oracle.
   diagnostics through catches for invalid scalar and container inputs. Its
   focused shard passes 3/3, package/build checks and full tests pass, and the
   authoritative catalog is **188/522 passed and 334 failed**.
+- `utf8bytelength` runtime keys (`decision 0172`) now preserve jq's kind/value
+  diagnostics through catches for invalid non-string inputs. Its combined
+  runtime-key shard passes 4/4, and the authoritative catalog is **189/522
+  passed and 333 failed**.
 
 ## Remaining high-value clusters
 
