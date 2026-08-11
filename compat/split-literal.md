@@ -2,7 +2,7 @@
 
 This shard covers `split("literal")` for string inputs and ordinary non-empty
 ASCII separators. It exercises repeated delimiters, leading/trailing empty
-segments, and separators that contain a space. The cases are derived from
+segments, empty input, and separators that contain a space. The cases are derived from
 `upstream/jq/tests/jq.test:1495-1499` and `1575-1579`.
 
 The parser/compiler contract intentionally accepts one literal string

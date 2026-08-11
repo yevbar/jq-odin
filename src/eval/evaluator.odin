@@ -1981,6 +1981,9 @@ split_result :: proc(input: ^value.Value, separator: string, allocator: runtime.
 	if !text_ok || len(separator) == 0 do return {}, .Cannot_Iterate, nil
 	result, array_error := value.array_value(allocator)
 	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+	// jq emits no segments when a non-empty separator is applied to an empty
+	// string. Empty-separator code-point splitting remains intentionally deferred.
+	if len(text) == 0 do return result, .None, nil
 	start := 0
 	for {
 		relative := strings.index(text[start:], separator)
