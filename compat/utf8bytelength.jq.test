@@ -1,0 +1,9 @@
+# UTF-8 byte length differs from codepoint length for multibyte text.
+utf8bytelength
+"é😀"
+6
+
+# ASCII text has one byte per codepoint.
+utf8bytelength
+"jq"
+2

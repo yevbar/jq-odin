@@ -50,6 +50,8 @@ Node_Kind :: enum {
 	To_Entries,
 	// Isnan is appended to preserve existing AST discriminants.
 	Isnan,
+	// Utf8bytelength is appended to preserve existing AST discriminants.
+	Utf8bytelength,
 	// Not_Builtin is appended to preserve existing AST discriminants.
 	Not_Builtin,
 }
@@ -691,6 +693,8 @@ parse_pipe :: proc(
 					kind = .To_Entries
 				} else if spelling == "isnan" {
 					kind = .Isnan
+				} else if spelling == "utf8bytelength" {
+					kind = .Utf8bytelength
 				} else if spelling == "not" {
 					kind = .Not_Builtin
 				} else if spelling != "null" {
