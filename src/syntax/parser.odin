@@ -197,6 +197,8 @@ Node_Kind :: enum {
 	Strftime,
 	// Strptime is appended to preserve existing AST discriminants.
 	Strptime,
+	// Mktime is appended to preserve existing AST discriminants.
+	Mktime,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -1013,6 +1015,8 @@ parse_pipe :: proc(
 					kind = .Strftime
 				} else if spelling == "strptime" {
 					kind = .Strptime
+				} else if spelling == "mktime" {
+					kind = .Mktime
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {

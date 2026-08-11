@@ -3250,6 +3250,26 @@ strptime_result :: proc(input: ^value.Value, format: string, allocator: runtime.
 	return result, .None, nil
 }
 
+@(private)
+mktime_result :: proc(input: ^value.Value) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+	length, length_ok := value.array_length(input)
+	if !length_ok || length < 3 do return {}, .Cannot_Iterate, nil
+	fields: [6]i64
+	for i in 0..<min(length, 6) {
+		item, item_ok := value.array_element_copy(input, i)
+		if !item_ok do return {}, .Cannot_Iterate, nil
+		number, number_ok := value.number_value_get(&item)
+		_ = value.destroy_value(&item)
+		if !number_ok do return {}, .Cannot_Number, nil
+		fields[i] = i64(number)
+	}
+	fields[1] += 1
+	moment, moment_ok := time.components_to_time(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5])
+	if !moment_ok do return {}, .Cannot_Iterate, nil
+	return value.number_value(f64(time.to_unix_seconds(moment))), .None, nil
+}
+
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Tonumber {
@@ -3276,6 +3296,9 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if text == "true" do return value.boolean_value(true), .None, nil
 		if text == "false" do return value.boolean_value(false), .None, nil
 		return {}, .Cannot_Number, nil
+	}
+	if opcode == .Mktime {
+		return mktime_result(input)
 	}
 	if opcode == .Base64 || opcode == .Base64d {
 		text: string
@@ -4976,7 +4999,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
@@ -4999,6 +5022,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
 					if (instruction.opcode == .Trim || instruction.opcode == .Ltrim || instruction.opcode == .Rtrim) && value.kind_of(&frame.input) != .String {
 						err.key = "trim input must be a string"
+					}
+					if instruction.opcode == .Mktime {
+						err.key = "mktime requires parsed datetime inputs"
 					}
 					owned_key := ""
 					if instruction.opcode == .Toboolean {
