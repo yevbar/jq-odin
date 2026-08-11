@@ -3134,6 +3134,20 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if constructor_error != nil || free_error != nil do return {}, .None, free_error if free_error != nil else .Out_Of_Memory
 		return result, .None, nil
 	}
+	if opcode == .Fromjson {
+		if value.kind_of(input) != .String do return {}, .Cannot_Number, nil
+		text, text_ok := value.string_borrowed(input)
+		if !text_ok do return {}, .Cannot_Number, nil
+		if text == "null" do return value.null_value(), .None, nil
+		if text == "true" do return value.boolean_value(true), .None, nil
+		if text == "false" do return value.boolean_value(false), .None, nil
+		result, constructor_error := value.literal_number_value(text, allocator)
+		if value.constructor_error_kind(&constructor_error) != .None {
+			_ = value.destroy_constructor_error(&constructor_error)
+			return {}, .Cannot_Number, nil
+		}
+		return result, .None, nil
+	}
 	if opcode == .Csv {
 		text, text_ok, text_error := csv_format_text(input, allocator)
 		if text_error != nil do return {}, .None, text_error
@@ -4285,7 +4299,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

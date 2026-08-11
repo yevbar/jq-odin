@@ -1,0 +1,21 @@
+# Bounded scalar-only fromjson builtin.
+# Oracle source family: upstream/jq/tests/jq.test:106-108.
+fromjson
+"null"
+null
+
+fromjson
+"true"
+true
+
+fromjson
+"42"
+42
+
+fromjson
+"1.5"
+1.5
+
+fromjson
+"1e20"
+1E+20
