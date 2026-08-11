@@ -1,0 +1,20 @@
+# Literal object-key and array-index presence checks.
+has("foo")
+{"foo":42}
+true
+
+has("foo")
+{}
+false
+
+has(2)
+[0,1,2]
+true
+
+has(2)
+[0,1]
+false
+
+has(nan)
+[0,1,2]
+false

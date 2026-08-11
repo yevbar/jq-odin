@@ -2117,6 +2117,29 @@ contains_result :: proc(input: ^value.Value, needle: string) -> (value.Value, Ru
 }
 
 @(private)
+has_result :: proc(input, argument: ^value.Value) -> (value.Value, Runtime_Error_Kind) {
+	input_kind := value.kind_of(input)
+	argument_kind := value.kind_of(argument)
+	if input_kind == .Object && argument_kind == .String {
+		key, key_ok := value.string_borrowed(argument)
+		if !key_ok do return {}, .Cannot_Iterate
+		member, found := value.object_get_copy(input, key)
+		_ = value.destroy_value(&member)
+		return value.boolean_value(found), .None
+	}
+	if input_kind == .Array && argument_kind == .Number {
+		index, index_ok := value.number_value_get(argument)
+		if !index_ok || math.is_nan(index) || math.is_inf(index) || index < 0 || math.trunc(index) != index {
+			return value.boolean_value(false), .None
+		}
+		length, length_ok := value.array_length(input)
+		if !length_ok do return {}, .Cannot_Iterate
+		return value.boolean_value(index < f64(length)), .None
+	}
+	return value.boolean_value(false), .None
+}
+
+@(private)
 prefix_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcode) -> (value.Value, Runtime_Error_Kind) {
 	if value.kind_of(input) != .String do return {}, .Cannot_Iterate
 	haystack, ok := value.string_borrowed(input)
@@ -3173,6 +3196,35 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				output, runtime_kind := contains_result(&frame.input, needle)
+				if runtime_kind != .None {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Has:
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				child, child_ok := child_instruction(storage, instruction, 0)
+				argument_instruction, argument_ok := program.program_instruction(storage.compiled, child)
+				argument: value.Value
+				argument_error: value.Error
+				argument_cleanup: runtime.Allocator_Error
+				if argument_instruction.opcode == .Nan {
+					argument = value.number_value(math.nan_f64())
+				} else {
+					argument, argument_error, argument_cleanup = literal_value(storage, argument_instruction)
+				}
+				if argument_cleanup != nil do return resource_step(argument_cleanup)
+				if argument_error != .None || !child_ok || !argument_ok {
+					if value.kind_of(&argument) != .Invalid do _ = value.destroy_value(&argument)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output, runtime_kind := has_result(&frame.input, &argument)
+				_ = value.destroy_value(&argument)
 				if runtime_kind != .None {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result
