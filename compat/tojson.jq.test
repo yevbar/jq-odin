@@ -1,0 +1,17 @@
+# Bounded zero-argument tojson builtin.
+# Oracle source family: upstream/jq/tests/jq.test:106-108 and 2158-2190.
+tojson
+"μ"
+"\"μ\""
+
+tojson
+[1,{"a":true}]
+"[1,{\"a\":true}]"
+
+tojson
+{"a":[1,null]}
+"{\"a\":[1,null]}"
+
+tojson
+1e20
+"1E+20"

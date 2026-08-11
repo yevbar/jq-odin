@@ -145,6 +145,8 @@ Node_Kind :: enum {
 	Tsv,
 	// Sh is appended to preserve existing AST discriminants.
 	Sh,
+	// Tojson is appended to preserve existing AST discriminants.
+	Tojson,
 }
 
 Node_Id :: distinct int
@@ -883,6 +885,8 @@ parse_pipe :: proc(
 					kind = .Max
 				} else if spelling == "toboolean" {
 					kind = .Toboolean
+				} else if spelling == "tojson" {
+					kind = .Tojson
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
