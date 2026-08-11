@@ -662,7 +662,7 @@ append_native_number :: proc(serializer: ^Compact_Serializer, number: f64) -> Co
 	// the exact max-f64 spelling used for infinities.
 	// The compatibility gap is the tiny-exponent noise case; retain jq's
 	// existing full-precision path for ordinary and large magnitudes.
-	precision := 15 if !infinite && math.abs(n) < 1e-10 else -1
+	precision := 15 if !infinite else -1
 	scientific := strconv.write_float(buffer[:], n, 'e', precision, 64)
 	at := 0
 	if scientific[at] == '+' do at += 1
