@@ -33,6 +33,9 @@ behavioral oracle.
 - `keys_unsorted` is now integrated at `1755567` with insertion-order object
   and array shards passing. The catalog remains 94/522 because its broader
   upstream cases still include unsupported surrounding filter forms.
+- String-only `tostring` (`6ef3c6c`) passes its shard and all package tests;
+  numeric, array, and object conversion remains deferred, so the catalog is
+  still 94/522.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
