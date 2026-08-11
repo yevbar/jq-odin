@@ -88,6 +88,10 @@ Node_Kind :: enum {
 	Nan,
 	// Infinite is appended to preserve existing AST discriminants.
 	Infinite,
+	// Any is appended to preserve existing AST discriminants.
+	Any,
+	// All is appended to preserve existing AST discriminants.
+	All,
 }
 
 Node_Id :: distinct int
@@ -765,6 +769,10 @@ parse_pipe :: proc(
 					kind = .Nan
 				} else if spelling == "infinite" {
 					kind = .Infinite
+				} else if spelling == "any" {
+					kind = .Any
+				} else if spelling == "all" {
+					kind = .All
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

@@ -1,0 +1,21 @@
+# Zero-argument any/all inspect the input array's truthiness.
+[any,all]
+[]
+[false,true]
+
+[any,all]
+[true]
+[true,true]
+
+[any,all]
+[false]
+[false,false]
+
+[any,all]
+[true,false]
+[true,false]
+
+[any,all]
+[null,null,true]
+[true,false]
+
