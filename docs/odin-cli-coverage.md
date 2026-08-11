@@ -142,15 +142,17 @@ behavioral oracle.
   arguments into controlled parse errors instead of parser assertions; the
   accepted string-literal behavior and the 128/522 catalog result are
   unchanged.
-- Bounded literal-separator `split` (`69417dd`) passes three jq oracle cases
-  at `upstream/jq/tests/jq.test:1495,1575,1579`; the empty-separator Unicode
-  case at line 1499 remains explicitly skipped. The exact full catalog now
-  measures **131/522 passed and 391 failed**, a three-case increase.
+- Bounded literal-separator `split` (`e7c22aa`, including the empty-input fix)
+  passes four jq oracle cases at `upstream/jq/tests/jq.test:1495,1575,1579`
+  plus the empty-input regression; the empty-separator Unicode case at line
+  1499 remains explicitly skipped. The exact full catalog remains
+  **131/522 passed and 391 failed** because the added regression exercises an
+  already-selected semantic path.
 - The exact catalog measurement was produced with
   `tools/compat/jq_compat.py` against jq 1.8.1 (oracle SHA
   `30df4803a4ebbfd2741b2477d06488ce5973e3517cb1121d56be4b1fad9efa8d`) and
   summarized with `tools/compat/catalog_report.py` at integration head
-  `69417dd`.
+  `e7c22aa`.
 - The jq catalog moved from 90/522 passing filters at the baseline to 93/522
   after static indexing; 429 catalog cases still fail. The catalog report is
   generated with `tools/compat/catalog_report.py` and is intentionally kept as
