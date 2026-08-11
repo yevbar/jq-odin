@@ -122,6 +122,9 @@ behavioral oracle.
 - Bounded zero-argument `isfinite` (`5532f38`) passes its numeric finite/NaN/
   infinity predicate shard and package suite. The full catalog remains 119/522
   because the selected case overlaps existing numeric coverage.
+- Bounded literal-separator `join` (`c5dbcd9`) passes its 3/3 oracle shard and
+  package suite. The full catalog is now 122/522 (400 remaining); dynamic
+  separators and jq's broader member coercions remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 315 subprocess checks and 41
   differential checks.
