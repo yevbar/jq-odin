@@ -1,0 +1,12 @@
+# `cos` computes the cosine in radians.
+cos
+0
+1
+
+cos
+3.141592653589793
+-1
+
+cos
+-3.141592653589793
+-1

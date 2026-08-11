@@ -156,6 +156,7 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 		{"exp10", .Exp10},
 		{"asin", .Asin},
 		{"acos", .Acos},
+		{"cos", .Cos},
 		{"isinfinite", .Isinfinite},
 		{"log", .Log},
 		{"min", .Min},
@@ -386,7 +387,7 @@ scalar_keyword_call_parse_failure_never_reaches_compiler_allocation :: proc(t: ^
 @(test)
 every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.T) {
 	parser: syntax.Parser
-	source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-.,(.)?,.a|.,.[1],1 as $x | $x,reduce . as $r (0; .),length,keys,keys_unsorted,tostring,tonumber,toboolean,@base64,@base64d,@uri,@urid,@html,@text,@json,@csv,@tsv,@sh,tojson,fromjson,log,log10,log2,exp,exp2,exp10,asin,acos,last,first,isinfinite,min,max,from_entries,to_entries,isnan,utf8bytelength,not,empty,values,arrays,objects,iterables,scalars,booleans,nulls,numbers,strings,finites,normals,floor,round,transpose,unique,sort,ceil,flatten,nan,infinite,any,all,isfinite,isnormal,join("a"),contains("a"),split(", "),index("a"),rindex("a"),indices("a"),startswith("a"),endswith("a"),ltrimstr("a"),rtrimstr("a"),trimstr("a"),has("a"),bsearch(1),type,abs,sqrt,fabs,add,trim,ltrim,rtrim,atan,ascii_downcase,ascii_upcase,reverse,implode,explode`)
+	source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-.,(.)?,.a|.,.[1],1 as $x | $x,reduce . as $r (0; .),length,keys,keys_unsorted,tostring,tonumber,toboolean,@base64,@base64d,@uri,@urid,@html,@text,@json,@csv,@tsv,@sh,tojson,fromjson,log,log10,log2,exp,exp2,exp10,asin,acos,cos,last,first,isinfinite,min,max,from_entries,to_entries,isnan,utf8bytelength,not,empty,values,arrays,objects,iterables,scalars,booleans,nulls,numbers,strings,finites,normals,floor,round,transpose,unique,sort,ceil,flatten,nan,infinite,any,all,isfinite,isnormal,join("a"),contains("a"),split(", "),index("a"),rindex("a"),indices("a"),startswith("a"),endswith("a"),ltrimstr("a"),rtrimstr("a"),trimstr("a"),has("a"),bsearch(1),type,abs,sqrt,fabs,add,trim,ltrim,rtrim,atan,ascii_downcase,ascii_upcase,reverse,implode,explode`)
 	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
 	parsed := syntax.parse_filter(&parser)
 	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)

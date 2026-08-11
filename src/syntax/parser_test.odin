@@ -85,6 +85,19 @@ test_acos_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_cos_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<cos>", "cos")
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Cos)
+	testing.expect(t, !root.has_child && !root.has_value)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_log10_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<log10>", "log10")
