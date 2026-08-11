@@ -2213,11 +2213,23 @@ prefix_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 split_result :: proc(input: ^value.Value, separator: string, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) != .String do return {}, .Cannot_Iterate, nil
 	text, text_ok := value.string_borrowed(input)
-	if !text_ok || len(separator) == 0 do return {}, .Cannot_Iterate, nil
+	if !text_ok do return {}, .Cannot_Iterate, nil
 	result, array_error := value.array_value(allocator)
 	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+	if len(separator) == 0 {
+		at := 0
+		for at < len(text) {
+			next, _ := utf8_trim_next(text, at)
+			part, string_error := value.string_value(text[at:next], allocator)
+			if value.constructor_error_kind(&string_error) != .None { _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+			_, append_error := value.array_append_take(&result, &part)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&part); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+			at = next
+		}
+		return result, .None, nil
+	}
 	// jq emits no segments when a non-empty separator is applied to an empty
-	// string. Empty-separator code-point splitting remains intentionally deferred.
+	// string.
 	if len(text) == 0 do return result, .None, nil
 	start := 0
 	for {

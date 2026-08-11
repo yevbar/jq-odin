@@ -2,12 +2,13 @@
 
 This shard covers `split("literal")` for string inputs and ordinary non-empty
 ASCII separators. It exercises repeated delimiters, leading/trailing empty
-segments, empty input, and separators that contain a space. The cases are derived from
+segments, empty input, separators that contain a space, and Unicode codepoint
+splitting for an empty separator. The cases are derived from
 `upstream/jq/tests/jq.test:1495-1499` and `1575-1579`.
 
 The parser/compiler contract intentionally accepts one literal string
-separator. Empty-separator Unicode code-point behavior, dynamic separators,
-array separators, and non-string diagnostics remain deferred.
+separator. Dynamic separators, array separators, malformed UTF-8, and
+non-string diagnostics remain deferred.
 
 Run with:
 
