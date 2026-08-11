@@ -354,6 +354,12 @@ behavioral oracle.
   string identity, and existing error classes. Its focused shard passes 4/4;
   package/build checks pass and the catalog remains **172/522 passed and 350
   failed** because the grouped upstream gap adds no independent selected case.
+- Numeric `length` semantics (`53589b1`, decision `0130`) now return the
+  absolute value for positive, negative, fractional, and zero numbers while
+  preserving string/array/object/null behavior. Its focused shard passes 5/5;
+  package/build checks pass and the catalog remains **172/522 passed and 350
+  failed** because selected numeric-length cases are grouped with unsupported
+  expressions.
 
 ## Remaining high-value clusters
 
