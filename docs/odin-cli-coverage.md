@@ -36,6 +36,10 @@ behavioral oracle.
 - String-only `tostring` (`6ef3c6c`) passes its shard and all package tests;
   numeric, array, and object conversion remains deferred, so the catalog is
   still 94/522.
+- Canonical `{key,value}` `from_entries` (`b6ff227`) passes its focused shard,
+  package tests, and CLI smoke test. Alternate entry-key spellings and
+  malformed/non-array diagnostics remain deferred; catalog coverage is still
+  94/522.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
