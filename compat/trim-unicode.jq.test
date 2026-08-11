@@ -1,0 +1,8 @@
+# jq trims Unicode White_Space code points, not only ASCII bytes.
+trim
+"\u0085\u00A0\u1680\u2000abc\u2000\u3000"
+"abc"
+
+[trim, ltrim, rtrim]
+"\u2028\u2029abc\u202F\u205F"
+["abc", "abc\u202F\u205F", "\u2028\u2029abc"]

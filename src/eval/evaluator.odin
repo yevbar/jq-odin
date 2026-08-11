@@ -1823,6 +1823,32 @@ utf8_codepoint_offset :: proc(text: string, byte_offset: int) -> int {
 }
 
 @(private)
+utf8_trim_next :: proc(text: string, at: int) -> (next: int, codepoint: u32) {
+	first := u8(text[at])
+	width := 1
+	codepoint = u32(first)
+	if first&0xe0 == 0xc0 { width, codepoint = 2, u32(first&0x1f) }
+	else if first&0xf0 == 0xe0 { width, codepoint = 3, u32(first&0x0f) }
+	else if first&0xf8 == 0xf0 { width, codepoint = 4, u32(first&0x07) }
+	if at+width > len(text) do return at+1, u32(first)
+	for offset in 1..<width {
+		continuation := u8(text[at+offset])
+		if continuation&0xc0 != 0x80 do return at+1, u32(first)
+		codepoint = codepoint<<6 | u32(continuation&0x3f)
+	}
+	return at+width, codepoint
+}
+
+@(private)
+unicode_whitespace :: proc(codepoint: u32) -> bool {
+	return (codepoint >= 0x0009 && codepoint <= 0x000d) || codepoint == 0x0020 ||
+		codepoint == 0x0085 || codepoint == 0x00a0 || codepoint == 0x1680 ||
+		(codepoint >= 0x2000 && codepoint <= 0x200a) || codepoint == 0x2028 ||
+		codepoint == 0x2029 || codepoint == 0x202f || codepoint == 0x205f ||
+		codepoint == 0x3000
+}
+
+@(private)
 unique_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
 	length, ok := value.array_length(input)
@@ -2320,9 +2346,22 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if kind != .String do return {}, .Cannot_Trim, nil
 		text, ok := value.string_borrowed(input); if !ok do return {}, .Cannot_Trim, nil
 		start, end := 0, len(text)
-		is_ws :: proc(c: u8) -> bool { return c == ' ' || (c >= 9 && c <= 13) }
-		if opcode != .Rtrim { for start < end && is_ws(text[start]) do start += 1 }
-		if opcode != .Ltrim { for end > start && is_ws(text[end-1]) do end -= 1 }
+		if opcode != .Rtrim {
+			for start < end {
+				next, codepoint := utf8_trim_next(text, start)
+				if !unicode_whitespace(codepoint) do break
+				start = next
+			}
+		}
+		if opcode != .Ltrim {
+			for end > start {
+				codepoint_start := end - 1
+				for codepoint_start > start && (u8(text[codepoint_start])&0xc0) == 0x80 do codepoint_start -= 1
+				_, codepoint := utf8_trim_next(text, codepoint_start)
+				if !unicode_whitespace(codepoint) do break
+				end = codepoint_start
+			}
+		}
 		result, err := value.string_value(text[start:end], allocator)
 		if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
 		return result, .None, nil
