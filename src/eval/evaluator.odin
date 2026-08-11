@@ -2160,6 +2160,45 @@ bsearch_result :: proc(input, needle: ^value.Value) -> (value.Value, Runtime_Err
 }
 
 @(private)
+literal_object_value :: proc(
+	storage: ^evaluator_storage,
+	instruction: program.Instruction,
+) -> (value.Value, value.Error, runtime.Allocator_Error) {
+	result, object_error := value.object_value(storage.allocator)
+	if value.object_error_kind(&object_error) != .None do return {}, .Out_Of_Memory, nil
+	for offset := 0; offset < int(instruction.operands_count); offset += 2 {
+		key_operand, key_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start) + u32(offset)))
+		value_operand, value_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start) + u32(offset + 1)))
+		if !key_ok || !value_ok || key_operand.kind != .Text || value_operand.kind != .Instruction {
+			_ = value.destroy_value(&result)
+			return {}, .Invalid_Number_Literal, nil
+		}
+		key_text, key_text_ok := program.operand_text(storage.compiled, key_operand)
+		value_instruction, value_instruction_ok := program.program_instruction(storage.compiled, value_operand.instruction)
+		if !key_text_ok || !value_instruction_ok {
+			_ = value.destroy_value(&result)
+			return {}, .Invalid_Number_Literal, nil
+		}
+		key, key_error := value.string_value(key_text, storage.allocator)
+		if value.constructor_error_kind(&key_error) != .None {
+			_ = value.destroy_value(&result)
+			return {}, .Out_Of_Memory, nil
+		}
+		member, member_error, member_cleanup := literal_value(storage, value_instruction)
+		if member_cleanup != nil || member_error != .None {
+			_ = value.destroy_value(&key); _ = value.destroy_value(&result)
+			return {}, member_error, member_cleanup
+		}
+		_, _, set_error := value.object_set_take(&result, &key, &member)
+		if value.object_error_kind(&set_error) != .None {
+			_ = value.destroy_value(&key); _ = value.destroy_value(&member); _ = value.destroy_value(&result)
+			return {}, .Invalid_Number_Literal, nil
+		}
+	}
+	return result, .None, nil
+}
+
+@(private)
 prefix_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcode) -> (value.Value, Runtime_Error_Kind) {
 	if value.kind_of(input) != .String do return {}, .Cannot_Iterate
 	haystack, ok := value.string_borrowed(input)
@@ -3259,7 +3298,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				child, child_ok := child_instruction(storage, instruction, 0)
 				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
-				needle, needle_error, needle_cleanup := literal_value(storage, needle_instruction)
+				needle: value.Value
+				needle_error: value.Error
+				needle_cleanup: runtime.Allocator_Error
+				if needle_instruction.opcode == .Object {
+					needle, needle_error, needle_cleanup = literal_object_value(storage, needle_instruction)
+				} else {
+					needle, needle_error, needle_cleanup = literal_value(storage, needle_instruction)
+				}
 				if needle_cleanup != nil do return resource_step(needle_cleanup)
 				if needle_error != .None || !child_ok || !needle_ok {
 					if value.kind_of(&needle) != .Invalid do _ = value.destroy_value(&needle)

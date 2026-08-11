@@ -836,8 +836,8 @@ parse_pipe :: proc(
 					close := parser.lookahead.token
 					advance(parser)
 					argument_node := parser.nodes.storage[int(argument)]
-					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null))
-					if !argument_is_literal || argument_node.has_child || argument_node.has_value || (spelling == "flatten" && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "has" && spelling != "bsearch") && argument_node.kind != .String) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && argument_node.kind != .Number) {
+					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null)) || (spelling == "bsearch" && argument_node.kind == .Identity && argument_node.container_kind == .Object && argument_node.has_value)
+					if !argument_is_literal || (spelling != "bsearch" && argument_node.has_child) || (spelling == "bsearch" && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_child) || (spelling != "bsearch" && argument_node.has_value) || (spelling == "bsearch" && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_value) || (spelling == "flatten" && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "has" && spelling != "bsearch") && argument_node.kind != .String) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && argument_node.kind != .Number && !(argument_node.kind == .Identity && argument_node.container_kind == .Object)) {
 						// The closing paren has already been consumed, so lookahead may
 						// be End_Of_Input. Route through the boundary-aware helper to
 						// report a parse error instead of asserting on a non-token.
