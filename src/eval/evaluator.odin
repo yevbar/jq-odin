@@ -1840,6 +1840,13 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if opcode == .Sqrt do n = math.sqrt(n)
 		return value.number_value(n), .None, nil
 	}
+	if opcode == .Sin || opcode == .Cos {
+		if kind != .Number do return {}, .Cannot_Number, nil
+		n, ok := value.number_value_get(input)
+		if !ok do return {}, .Cannot_Number, nil
+		result := math.sin(n) if opcode == .Sin else math.cos(n)
+		return value.number_value(result), .None, nil
+	}
 	if opcode == .Length {
 		if kind == .Null do return value.number_value(0), .None, nil
 		if kind == .Array { n, ok := value.array_length(input); if ok do return value.number_value(f64(n)), .None, nil }
@@ -2285,7 +2292,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Sin, .Cos:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

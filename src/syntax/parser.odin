@@ -28,6 +28,9 @@ Node_Kind :: enum {
 	Trim,
 	Ltrim,
 	Rtrim,
+	// Scalar trigonometric builtins are appended to preserve AST discriminants.
+	Sin,
+	Cos,
 	Index,
 	// Atan is appended to preserve existing AST discriminants.
 	Atan,
@@ -650,6 +653,10 @@ parse_pipe :: proc(
 					kind = .Rtrim
 				} else if spelling == "atan" {
 					kind = .Atan
+				} else if spelling == "sin" {
+					kind = .Sin
+				} else if spelling == "cos" {
+					kind = .Cos
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
