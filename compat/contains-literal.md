@@ -9,6 +9,12 @@ only. Array/object recursive containment, dynamic arguments, and general
 function-call syntax remain deferred. Non-string inputs therefore retain the
 candidate's existing runtime error behavior rather than claiming jq parity.
 
+The parser rejects unsupported non-string literal arguments such as
+`contains([2])` and `contains({"a":1})` with a controlled filter parse error
+(`rc=3`) after consuming the closing parenthesis. This avoids the previous
+assertion crash while preserving the accepted string-literal path. Regression
+coverage lives in `src/syntax/parser_test.odin`.
+
 Run with:
 
 ```sh

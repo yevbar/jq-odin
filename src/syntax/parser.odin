@@ -805,7 +805,10 @@ parse_pipe :: proc(
 					advance(parser)
 					argument_node := parser.nodes.storage[int(argument)]
 					if argument_node.kind != .String || argument_node.has_child || argument_node.has_value {
-						fail_at_current(parser, .Unexpected_Token, .Expression)
+						// The closing paren has already been consumed, so lookahead may
+						// be End_Of_Input. Route through the boundary-aware helper to
+						// report a parse error instead of asserting on a non-token.
+						fail_from_lookahead(parser, .Expression)
 						return {}, false
 					}
 					span, span_ok := spanning(parser, token.span, close.span)

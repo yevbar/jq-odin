@@ -3335,3 +3335,17 @@ test_contains_literal_parses_as_bounded_call :: proc(t: ^testing.T) {
 	testing.expect_value(t, argument.kind, Node_Kind.String)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
+
+@(test)
+test_contains_non_string_literals_fail_without_assertion :: proc(t: ^testing.T) {
+	cases := [?]string{`contains([2])`, `contains({"a":1})`}
+	for source_text in cases {
+		parser: Parser
+		source := diagnostic.borrow_source("<contains-invalid>", source_text)
+		testing.expect(t, init_parser(&parser, source, context.allocator))
+		outcome := parse_filter(&parser)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_End)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
