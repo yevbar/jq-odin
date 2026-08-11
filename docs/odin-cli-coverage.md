@@ -172,6 +172,11 @@ behavioral oracle.
   cases from `upstream/jq/tests/jq.test:1487-1491`. Its focused shard and full
   Odin package/CLI suites pass; the exact catalog is now **139/522 passed and
   383 failed**. Dynamic arguments and non-string diagnostics remain deferred.
+- Literal `flatten(depth)` (`aee2c3a`, with the negative-depth guard `3101ffd`)
+  adds three depth-controlled cases from `upstream/jq/tests/jq.test:1761-1773`.
+  Its focused shard and full Odin package/CLI suites pass; the exact catalog is
+  now **142/522 passed and 380 failed**. Dynamic depth and full jq diagnostics
+  remain deferred.
 
 ## Remaining high-value clusters
 
