@@ -1,0 +1,24 @@
+# `isnormal` is true only for finite, non-zero, normal binary64 values.
+isnormal
+1
+true
+0
+false
+1e-320
+false
+-1e-320
+false
+
+nan | isnormal
+false
+
+infinite | isnormal
+false
+
+isnormal
+"x"
+false
+null
+false
+
+{}

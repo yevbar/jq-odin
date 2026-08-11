@@ -146,6 +146,34 @@ isfinite_builtin_accepts_finite_numbers_only :: proc(t: ^testing.T) {
 }
 
 @(test)
+isnormal_builtin_accepts_normal_finite_numbers_only :: proc(t: ^testing.T) {
+	cases := [?]struct { input: value.Value, expected: bool }{
+		{value.number_value(1), true},
+		{value.number_value(-1), true},
+		{value.number_value(0), false},
+		{value.number_value(1e-320), false},
+		{value.number_value(math.inf_f64(1)), false},
+		{value.number_value(math.nan_f64()), false},
+		{value.null_value(), false},
+	}
+	for test_case in cases {
+		instructions := [?]program.Instruction{{opcode = .Isnormal, span = {start = 0, end = 8}}}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], nil, "", 0)
+		input := test_case.input
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		actual, ok := value.boolean_value_get(&output)
+		testing.expect(t, ok && actual == test_case.expected)
+		_ = value.destroy_value(&output)
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
 flatten_builtin_recursively_concatenates_nested_arrays :: proc(t: ^testing.T) {
 	input, input_error := value.array_value(context.allocator)
 	testing.expect_value(t, value.array_error_kind(&input_error), value.Array_Error.None)

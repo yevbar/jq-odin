@@ -96,6 +96,8 @@ Node_Kind :: enum {
 	Isfinite,
 	// Join is appended to preserve existing AST discriminants.
 	Join,
+	// Isnormal is appended to preserve existing AST discriminants.
+	Isnormal,
 }
 
 Node_Id :: distinct int
@@ -781,6 +783,8 @@ parse_pipe :: proc(
 					kind = .Isfinite
 				} else if spelling == "join" {
 					kind = .Join
+				} else if spelling == "isnormal" {
+					kind = .Isnormal
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
