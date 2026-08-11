@@ -1,0 +1,11 @@
+# `iterables` yields arrays and objects.
+iterables
+[1,2]
+[1,2]
+
+iterables
+{"a":1}
+{"a":1}
+
+iterables
+42
