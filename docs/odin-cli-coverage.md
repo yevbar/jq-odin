@@ -43,6 +43,10 @@ behavioral oracle.
 - Canonical object `to_entries` (`80fe8a7`) passes its shard and package suite;
   the full catalog moved to 95/522 (427 remaining). Array/non-object forms
   remain deferred.
+- Bounded `isnan` (`cb844b0`) passes its finite-number shard and package suite;
+  the full catalog remains 95/522 because this parser snapshot cannot yet
+  construct jq's `nan` literal, so positive-NaN and non-number diagnostic
+  cases remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
