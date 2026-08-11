@@ -2170,7 +2170,7 @@ join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.A
 		}
 		_ = value.destroy_value(&item)
 	}
-	result, constructor_error := value.string_value("2015-03-05T23:51:47Z", allocator)
+	result, constructor_error := value.string_value(strings.to_string(builder), allocator)
 	strings.builder_destroy(&builder)
 	if value.constructor_error_kind(&constructor_error) != .None do return {}, .None, .Out_Of_Memory
 	return result, .None, nil

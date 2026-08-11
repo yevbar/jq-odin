@@ -1,4 +1,4 @@
-# Decision 0161: bounded UTC `strftime` arrays
+# Decision 0162: bounded UTC `strftime` arrays
 
 ## Scope
 
