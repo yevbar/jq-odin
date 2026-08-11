@@ -80,6 +80,8 @@ Node_Kind :: enum {
 	Unique,
 	// Sort is appended to preserve existing AST discriminants.
 	Sort,
+	// Ceil is appended to preserve existing AST discriminants.
+	Ceil,
 }
 
 Node_Id :: distinct int
@@ -749,6 +751,8 @@ parse_pipe :: proc(
 					kind = .Unique
 				} else if spelling == "sort" {
 					kind = .Sort
+				} else if spelling == "ceil" {
+					kind = .Ceil
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

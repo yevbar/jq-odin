@@ -1,0 +1,6 @@
+# jq ceil: round numeric values toward positive infinity.
+ceil
+1.2 -1.2 2
+2
+-1
+2

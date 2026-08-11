@@ -102,7 +102,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
-	case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+	case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
@@ -250,7 +250,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 				current = entry.next
 			}
 		}
-	case .Null, .Boolean, .Number, .String, .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+	case .Null, .Boolean, .Number, .String, .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil:
 		return true
 	}
 	return true
@@ -425,7 +425,7 @@ lower_filter :: proc(
 			   !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
-		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil:
 			// Builtin filters are operand-free instructions.
 		case:
 			return Lower_Outcome{kind = .Invalid_AST}
@@ -669,6 +669,7 @@ lower_filter :: proc(
 			case .Round: instruction.opcode = .Round
 			case .Transpose: instruction.opcode = .Transpose
 			case .Unique: instruction.opcode = .Unique
+			case .Ceil: instruction.opcode = .Ceil
 			case .Sort: instruction.opcode = .Sort
 			case .Type: instruction.opcode = .Type
 			case .Abs: instruction.opcode = .Abs

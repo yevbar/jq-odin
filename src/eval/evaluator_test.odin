@@ -97,6 +97,29 @@ not_builtin_uses_jq_truthiness :: proc(t: ^testing.T) {
 }
 
 @(test)
+ceil_builtin_rounds_toward_positive_infinity :: proc(t: ^testing.T) {
+	cases := [?]struct { input: f64, expected: f64 }{
+		{1.2, 2},
+		{-1.2, -1},
+		{2, 2},
+	}
+	for test_case in cases {
+		instructions := [?]program.Instruction{{opcode = .Ceil, span = {start = 0, end = 4}}}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], nil, "", 0)
+		input := value.number_value(test_case.input)
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		expect_number(t, &output, test_case.expected)
+		testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
 binary_arithmetic_invalid_operands_are_runtime_errors :: proc(t: ^testing.T) {
 	// jq builtin.c:342-377 distinguishes type errors from the divisor-zero
 	// error; both are evaluator runtime terminals and replay identically.
