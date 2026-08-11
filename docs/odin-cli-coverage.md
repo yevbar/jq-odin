@@ -594,6 +594,10 @@ behavioral oracle.
   and number×string repetition, including truncation, null/empty behavior,
   and overflow diagnostics. Its focused shard passes 3/3, and the
   authoritative catalog is **199/522 passed and 323 failed**.
+- Unary NaN lowering (`decision 0176`) now allows `-nan` to reuse the existing
+  NaN opcode, covering its observable arithmetic behavior. The combined string
+  arithmetic shard passes 4/4, and the authoritative catalog is **200/522
+  passed and 322 failed**.
 
 ## Remaining high-value clusters
 

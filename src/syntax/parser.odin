@@ -1898,7 +1898,7 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 		return true
 	case .Identifier:
 		spelling := token_spelling(parser, token)
-		return spelling == "false" || spelling == "true" || spelling == "null"
+		return spelling == "false" || spelling == "true" || spelling == "null" || spelling == "nan" || spelling == "infinite"
 	case:
 		return false
 	}

@@ -8,3 +8,7 @@
 try ("abc" * 1000000000) catch .
 "null"
 "Repeat string result too long"
+
+[. * (nan,-nan)]
+"abc"
+[null, null]
