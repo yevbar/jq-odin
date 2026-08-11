@@ -623,6 +623,7 @@ parse_pipe :: proc(
 	closing := Token_Kind.Invalid,
 	stop_at_comma := false,
 	stop_at_catch := false,
+	stop_at_binary := false,
 ) -> (Node_Id, bool) {
 	invalid_id := Node_Id(-1)
 	current, pipe_root, pipe_tail := invalid_id, invalid_id, invalid_id
@@ -783,7 +784,7 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				advance(parser)
-				catch_filter, catch_ok := parse_pipe(parser, closing, stop_at_comma)
+				catch_filter, catch_ok := parse_pipe(parser, closing, stop_at_comma, false, true)
 				if !catch_ok do return {}, false
 				span, span_ok := spanning(parser, parser.nodes.storage[int(expression)].span, parser.nodes.storage[int(catch_filter)].span)
 				assert(span_ok)
@@ -1195,6 +1196,10 @@ parse_pipe :: proc(
 			expected := Parse_Expectation.Close_Paren if parser.frames.count > 0 else .End_Of_Input
 			fail_at_current(parser, .Unexpected_Token, expected)
 			return {}, false
+		}
+		if stop_at_binary && has_binary_operator {
+			result := current if current != invalid_id else term
+			return result, result != invalid_id
 		}
 		if has_binary_operator {
 			if parser_stack_budget_exhausted(parser,

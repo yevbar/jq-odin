@@ -556,6 +556,11 @@ behavioral oracle.
   update. Its focused shard passes 1/1, package/build checks and full tests
   pass, and the authoritative catalog is **183/522 passed and 339 failed**.
   General generator-valued reducers and `foreach` remain deferred.
+- `try`/`catch` binary precedence (`decision 0167`) now leaves surrounding
+  operators outside an unparenthesized catch filter, matching jq's additive
+  and multiplicative cases. Its focused shard passes 3/3, package/build checks
+  and full tests pass, and the authoritative catalog is **184/522 passed and
+  338 failed**.
 
 ## Remaining high-value clusters
 

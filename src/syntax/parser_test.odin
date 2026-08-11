@@ -3787,3 +3787,19 @@ pipe_binds_only_the_right_hand_filter :: proc(t: ^testing.T) {
 	testing.expect_value(t, right.kind, Node_Kind.Binding)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
+
+@(test)
+try_catch_stops_before_surrounding_binary :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<try-precedence>", `1 + try 2 catch 3 + 4`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.form, Node_Form.Binary)
+	left := parser.nodes.storage[int(root.left)]
+	testing.expect_value(t, left.form, Node_Form.Binary)
+	try_node := parser.nodes.storage[int(left.right)]
+	testing.expect_value(t, try_node.kind, Node_Kind.Try)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}

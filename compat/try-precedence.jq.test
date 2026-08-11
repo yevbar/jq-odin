@@ -1,0 +1,12 @@
+# Catch filters end before the surrounding binary operator.
+1 + try 2 catch 3 + 4
+null
+7
+
+1 + try 2 catch 3 * 4
+null
+9
+
+try (1 / 0) catch 3 + 4
+null
+7
