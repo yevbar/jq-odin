@@ -1,0 +1,7 @@
+# `arrays` yields only array inputs.
+arrays
+[1,2]
+[1,2]
+
+arrays
+42

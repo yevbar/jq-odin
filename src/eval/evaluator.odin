@@ -2458,6 +2458,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Arrays:
+				// `arrays` yields only array inputs; all other kinds are
+				// suppressed through the ordinary exhaustion continuation.
+				if value.kind_of(&frame.input) != .Array {
+					frame.phase = .Complete
+					continue
+				}
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				output := value.clone_value(&frame.input)
+				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)

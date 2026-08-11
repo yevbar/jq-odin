@@ -58,6 +58,8 @@ Node_Kind :: enum {
 	Empty,
 	// Values is appended to preserve existing AST discriminants.
 	Values,
+	// Arrays is appended to preserve existing AST discriminants.
+	Arrays,
 }
 
 Node_Id :: distinct int
@@ -705,6 +707,8 @@ parse_pipe :: proc(
 					kind = .Empty
 				} else if spelling == "values" {
 					kind = .Values
+				} else if spelling == "arrays" {
+					kind = .Arrays
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
