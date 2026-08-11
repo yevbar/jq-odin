@@ -52,9 +52,6 @@ Opcode :: enum u8 {
 	Trim,
 	Ltrim,
 	Rtrim,
-	// Scalar trigonometric builtins are appended to preserve serialized opcodes.
-	Sin,
-	Cos,
 	Index,
 	// Atan is appended to preserve existing serialized opcodes.
 	Atan,
@@ -315,7 +312,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		return true
 	case .Identity, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
-	     .Array, .Object, .Variable, .Binding, .Reduce, .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Sin, .Cos:
+	     .Array, .Object, .Variable, .Binding, .Reduce, .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan:
 		return false
 	}
 	return false
@@ -373,7 +370,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		 expected_count = 3
 	case .Reduce:
 		if count != 4 { return false }; expected_count = 4
-	case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Sin, .Cos:
+	case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan:
 		expected_count = 0
 	case .Sequence, .Fork,
 	     .Add, .Subtract, .Multiply, .Divide, .Modulo,
@@ -451,7 +448,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 @(private="package")
 instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> Count {
 	switch instruction.opcode {
-	case .Identity, .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Sin, .Cos:
+	case .Identity, .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan:
 		return 0
 	case .Field:
 		return 1 if instruction.operands_count == 2 else 0

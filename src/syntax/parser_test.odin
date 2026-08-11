@@ -68,20 +68,6 @@ test_parser_lexical_as_binding_and_variable_reference :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parser_trig_builtins_are_zero_argument_nodes :: proc(t: ^testing.T) {
-	Case :: struct { text: string, expected: Node_Kind }
-	for test_case in [?]Case{{"sin", .Sin}, {"cos", .Cos}} {
-		parser: Parser
-		_, outcome := parse_test_filter(t, &parser, test_case.text)
-		expect_parse_success(t, &parser, outcome)
-		root := parser.nodes.storage[int(outcome.root)]
-		testing.expect_value(t, root.kind, test_case.expected)
-		testing.expect(t, !root.has_child && !root.has_value)
-		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
-	}
-}
-
-@(test)
 test_parser_container_literals_preserve_source_structure :: proc(t: ^testing.T) {
 	Case :: struct { text: string, kind: Container_Kind }
 	cases := [?]Case{{"[]", .Array}, {"{}", .Object}}
