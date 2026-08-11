@@ -2381,6 +2381,28 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		}
 		return result, .None, nil
 	}
+	if opcode == .Min || opcode == .Max {
+		if kind != .Array do return {}, .Cannot_Iterate, nil
+		length, length_ok := value.array_length(input)
+		if !length_ok do return {}, .Cannot_Iterate, nil
+		if length == 0 do return value.null_value(), .None, nil
+		best, best_ok := value.array_element_copy(input, 0)
+		if !best_ok do return {}, .Cannot_Iterate, nil
+		for index in 1..<length {
+			candidate, candidate_ok := value.array_element_copy(input, index)
+			if !candidate_ok { _ = value.destroy_value(&best); return {}, .Cannot_Iterate, nil }
+			comparison, comparable := compare_values(&candidate, &best)
+			if !comparable { _ = value.destroy_value(&candidate); _ = value.destroy_value(&best); return {}, .Cannot_Iterate, nil }
+			choose_candidate := comparison < 0 if opcode == .Min else comparison > 0
+			if choose_candidate {
+				_ = value.destroy_value(&best)
+				best = candidate
+			} else {
+				_ = value.destroy_value(&candidate)
+			}
+		}
+		return best, .None, nil
+	}
 	if opcode == .Type {
 		name := "invalid"
 		switch kind {
@@ -3455,7 +3477,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

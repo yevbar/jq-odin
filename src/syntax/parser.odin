@@ -122,6 +122,9 @@ Node_Kind :: enum {
 	Trimstr,
 	// Tonumber is appended to preserve existing AST discriminants.
 	Tonumber,
+	// Min and Max are appended to preserve existing AST discriminants.
+	Min,
+	Max,
 }
 
 Node_Id :: distinct int
@@ -835,6 +838,10 @@ parse_pipe :: proc(
 					kind = .Trimstr
 				} else if spelling == "tonumber" {
 					kind = .Tonumber
+				} else if spelling == "min" {
+					kind = .Min
+				} else if spelling == "max" {
+					kind = .Max
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
