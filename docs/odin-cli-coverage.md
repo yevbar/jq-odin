@@ -382,6 +382,11 @@ behavioral oracle.
   the owned text serializer. Its focused shard passes 6/6 and package/build
   checks pass; the catalog remains **172/522 passed and 350 failed** because
   the selected tostring cases are grouped with unsupported expressions.
+- The `numbers` type filter (`c88daf4`, decision `0135`) now emits number inputs
+  unchanged and suppresses all other JSON kinds, reusing the selector path.
+  Its focused shard passes 5/5 and package/build checks pass; the catalog
+  remains **172/522 passed and 350 failed** because the builtin has no
+  standalone selected jq.test case.
 
 ## Remaining high-value clusters
 
