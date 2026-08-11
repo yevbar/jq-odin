@@ -59,6 +59,10 @@ behavioral oracle.
   and package suite; the full catalog is now 98/522 (424 remaining). Its
   zero-argument form is covered; argument-bearing and richer control-flow
   combinations remain deferred.
+- Bounded `values` (`d3ec1bd`) passes null suppression and scalar passthrough
+  shards with the full package suite; the full catalog is now 99/522 (423
+  remaining). Object/array stream compositions and richer argument forms are
+  still deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
