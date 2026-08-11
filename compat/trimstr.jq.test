@@ -10,3 +10,15 @@
 [.[]|trimstr("foo")]
 ["fo", "foo", "barfoo", "foobarfoo", "foob"]
 ["fo","","bar","bar","b"]
+
+trimstr("")
+"abc"
+""
+
+rtrimstr("")
+"abc"
+""
+
+ltrimstr("")
+"abc"
+"abc"

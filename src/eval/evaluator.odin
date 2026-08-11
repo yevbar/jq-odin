@@ -2219,7 +2219,11 @@ trimstr_result :: proc(input: ^value.Value, needle: string, opcode: program.Opco
 		if strings.has_prefix(haystack, needle) do start = len(needle)
 	}
 	if opcode == .Rtrimstr || opcode == .Trimstr {
-		if end >= start && strings.has_suffix(haystack[start:end], needle) do end -= len(needle)
+		if len(needle) == 0 {
+			// jq's right-trimming family treats an empty suffix as matching the
+			// whole input; ltrimstr(""), by contrast, is an identity filter.
+			end = start
+		} else if end >= start && strings.has_suffix(haystack[start:end], needle) do end -= len(needle)
 	}
 	result, err := value.string_value(haystack[start:end], allocator)
 	if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
