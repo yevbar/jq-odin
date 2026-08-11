@@ -1,0 +1,39 @@
+# Odin CLI coverage snapshot
+
+This is a coordinator snapshot for the accepted Odin CLI lineage, not a claim
+of upstream jq compatibility. The immutable `upstream/jq` tree remains the
+behavioral oracle.
+
+## Current evidence
+
+- Baseline integration head: `1a98ae1`.
+- Static postfix indexing: `2e15478` (`.[N]` and `.field[N]`, literal
+  non-negative integer bounds only).
+- Package validation and the full Odin package test suite pass on the
+  integration worktree. The CLI harness reports 311 subprocess checks and 40
+  differential checks.
+- The jq catalog moved from 90/522 passing filters at the baseline to 93/522
+  after static indexing; 429 catalog cases still fail. The catalog report is
+  generated with `tools/compat/catalog_report.py` and is intentionally kept as
+  an external artifact rather than committed output.
+- The focused postfix-index shard passes 5/5 against the pinned jq oracle;
+  see `compat/postfix-index.md` and decision `0066`.
+
+## Remaining high-value clusters
+
+The largest remaining groups are not all independent builtins. They include
+dynamic indexes and slices, path mutation/assignment, richer binding and
+module forms, generator/control-flow combinations, and process/codec APIs.
+These need separate AST/program/evaluator contracts rather than parser-only
+patches. In particular, dynamic indexes and assignment must establish value
+path ownership before they are parallelized; otherwise lanes can appear to
+pass isolated syntax tests while corrupting evaluator state.
+
+## Repeating the measurement
+
+Build the candidate with the pinned Odin toolchain, run the package checks and
+CLI harness, then run the full catalog. Every new lane should add a focused
+`compat/*.jq.test`, an explicit skip manifest for unsupported cases, and a
+decision/evidence note with `path:line` citations. Review lanes should compare
+only the merge-base-to-head diff and attempt to falsify the focused shard
+before integration.
