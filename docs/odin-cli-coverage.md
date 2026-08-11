@@ -400,6 +400,12 @@ behavioral oracle.
   builtin has no standalone selected jq.test case. The local jq 1.7 oracle
   lacks this jq 1.8 builtin; special-value coverage is pinned-oracle
   dependent.
+- The `normals` type filter (`a1b7f94`, decision `0138`) now emits finite,
+  non-zero numbers at or above the binary64 normal threshold and suppresses
+  zero, subnormal, NaN, infinity, and non-number values. Its focused shard
+  passes 7/7 against the pinned oracle and package/build checks pass; the
+  catalog remains **172/522 passed and 350 failed** because the builtin has no
+  standalone selected jq.test case.
 
 ## Remaining high-value clusters
 
