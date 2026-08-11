@@ -113,6 +113,9 @@ behavioral oracle.
 - Bounded zero-argument `flatten` (`1af2c9b`) recursively flattens nested
   arrays with ownership-safe output construction. Its focused shard and full
   package/CLI suites pass; the full catalog is now 113/522 (409 remaining).
+- Bounded zero-argument `nan` and positive `infinite` (`5d64e4a`) pass their
+  focused 3/3 oracle shard and package checks. The full catalog is now 114/522
+  (408 remaining); unary `-infinite` remains a separate Negate contract gap.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 315 subprocess checks and 41
   differential checks.

@@ -18,3 +18,5 @@ python3 tools/compat/jq_compat.py \
   --oracle /private/tmp/jq-merge-next/.tools/jq-oracle-1.8.1 \
   --candidate /tmp/jq-nan-inf-odin --show-passes
 ```
+
+Oracle source: `upstream/jq/tests/jq.test:689-693,2271-2278`.

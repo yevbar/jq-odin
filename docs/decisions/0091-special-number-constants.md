@@ -1,4 +1,4 @@
-# 0089: Add bounded `nan` and `infinite` constants
+# 0091: Add bounded `nan` and `infinite` constants
 
 - Status: accepted
 - Workstream: evaluator
