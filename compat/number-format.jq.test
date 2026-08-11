@@ -1,0 +1,4 @@
+# Native arithmetic numbers use jq-compatible shortest decimal text.
+1e-19 + 1e-20 - 5e-21
+null
+1.05e-19
