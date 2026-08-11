@@ -116,6 +116,9 @@ behavioral oracle.
 - Bounded zero-argument `nan` and positive `infinite` (`5d64e4a`) pass their
   focused 3/3 oracle shard and package checks. The full catalog is now 114/522
   (408 remaining); unary `-infinite` remains a separate Negate contract gap.
+- Bounded zero-argument `any`/`all` (`f620eb8`) pass five array truthiness and
+  empty-identity oracle cases. The full catalog is now 119/522 (403 remaining);
+  generator and condition overloads remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 315 subprocess checks and 41
   differential checks.
