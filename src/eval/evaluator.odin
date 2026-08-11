@@ -2445,8 +2445,25 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 			if !item_ok { strings.builder_destroy(&builder); return {}, .Cannot_Iterate, nil }
 			number, number_ok := value.number_value_get(&item)
 			_ = value.destroy_value(&item)
-			if !number_ok || number < 0 || number > 127 || math.trunc(number) != number { strings.builder_destroy(&builder); return {}, .Cannot_Number, nil }
-			if strings.write_byte(&builder, u8(number)) != 1 { strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory }
+			if !number_ok { strings.builder_destroy(&builder); return {}, .Cannot_Number, nil }
+			// jq rounds positive fractional codepoints toward zero and emits the
+			// replacement character for out-of-range values and UTF-16 surrogates.
+			codepoint := u32(math.floor(number)) if number >= 0 else u32(0)
+			if number < 0 || number > 0x10ffff || codepoint >= 0xd800 && codepoint <= 0xdfff {
+				codepoint = 0xfffd
+			}
+			if codepoint <= 0x7f {
+				if strings.write_byte(&builder, u8(codepoint)) != 1 { strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory }
+			} else if codepoint <= 0x7ff {
+				bytes := [2]byte{u8(0xc0 | codepoint >> 6), u8(0x80 | codepoint & 0x3f)}
+				if strings.write_string(&builder, transmute(string)bytes[:]) != 2 { strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory }
+			} else if codepoint <= 0xffff {
+				bytes := [3]byte{u8(0xe0 | codepoint >> 12), u8(0x80 | codepoint >> 6 & 0x3f), u8(0x80 | codepoint & 0x3f)}
+				if strings.write_string(&builder, transmute(string)bytes[:]) != 3 { strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory }
+			} else {
+				bytes := [4]byte{u8(0xf0 | codepoint >> 18), u8(0x80 | codepoint >> 12 & 0x3f), u8(0x80 | codepoint >> 6 & 0x3f), u8(0x80 | codepoint & 0x3f)}
+				if strings.write_string(&builder, transmute(string)bytes[:]) != 4 { strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory }
+			}
 		}
 		result, constructor_error := value.string_value(strings.to_string(builder), allocator)
 		strings.builder_destroy(&builder)
@@ -2459,8 +2476,10 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if !text_ok do return {}, .Cannot_Iterate, nil
 		result, array_error := value.array_value(allocator)
 		if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
-		for byte in text {
-			item := value.number_value(f64(byte))
+		for at := 0; at < len(text); {
+			next, codepoint := utf8_trim_next(text, at)
+			at = next
+			item := value.number_value(f64(codepoint))
 			_, append_error := value.array_append_take(&result, &item)
 			if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
 		}
