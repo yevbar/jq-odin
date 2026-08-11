@@ -3916,6 +3916,30 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		}
 		return value.boolean_value(true), .None, nil
 	}
+	if opcode == .Any_Not || opcode == .All_Not {
+		if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+		length, ok := value.array_length(input)
+		if !ok do return {}, .Cannot_Iterate, nil
+		// any(not) is the negation of all(input); all(not) is the
+		// negation of any(input), with jq's empty-array identities preserved.
+		any_truthy := false
+		all_truthy := true
+		for i in 0..<length {
+			item, item_ok := value.array_element_copy(input, i)
+			if !item_ok do return {}, .Cannot_Iterate, nil
+			item_kind := value.kind_of(&item)
+			falsey := item_kind == .Null
+			if item_kind == .Boolean {
+				boolean, boolean_ok := value.boolean_value_get(&item)
+				if !boolean_ok { _ = value.destroy_value(&item); return {}, .Cannot_Iterate, nil }
+				falsey = !boolean
+			}
+			_ = value.destroy_value(&item)
+			if !falsey { any_truthy = true } else { all_truthy = false }
+		}
+		if opcode == .Any_Not do return value.boolean_value(!all_truthy), .None, nil
+		return value.boolean_value(!any_truthy), .None, nil
+	}
 	if opcode == .Abs || opcode == .Sqrt || opcode == .Fabs {
 		if (kind == .String || kind == .Array || kind == .Object) && opcode == .Abs {
 			copy := value.clone_value(input)
@@ -5279,7 +5303,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

@@ -122,7 +122,10 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 			       !node.boolean_value && no_number && !node.has_string_text &&
-			       string_header_absent(node.string_text)
+		       string_header_absent(node.string_text)
+	case .Any_Not, .All_Not:
+		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Flatten:
 		return node.container_kind == .None && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text) &&
@@ -266,6 +269,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	}
 	switch node.kind {
 	case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+		return true
+	case .Any_Not, .All_Not:
 		return true
 	case .Variable:
 		for index := depth-1; index >= 0; index -= 1 {
@@ -550,8 +555,10 @@ lower_filter :: proc(
 			   !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
-	case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+		case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 			// Last is an operand-free builtin.
+		case .Any_Not, .All_Not:
+			// Negated any/all are operand-free predicates.
 	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
 			// Builtin filters are operand-free instructions.
 		case:
@@ -876,7 +883,7 @@ lower_filter :: proc(
 			instruction.opcode = .Sinh
 		case .Isinfinite:
 			instruction.opcode = .Isinfinite
-	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Sin, .Tan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Sin, .Tan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 			#partial switch node.kind {
 			case .Length: instruction.opcode = .Length
 			case .Keys: instruction.opcode = .Keys
@@ -926,6 +933,8 @@ lower_filter :: proc(
 			case .Infinite: instruction.opcode = .Infinite
 			case .Any: instruction.opcode = .Any
 			case .All: instruction.opcode = .All
+			case .Any_Not: instruction.opcode = .Any_Not
+			case .All_Not: instruction.opcode = .All_Not
 			case .Isfinite: instruction.opcode = .Isfinite
 			case .Isnormal: instruction.opcode = .Isnormal
 			case .Sort: instruction.opcode = .Sort

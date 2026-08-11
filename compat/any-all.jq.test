@@ -19,3 +19,18 @@
 [null,null,true]
 [true,false]
 
+any(not)
+[]
+false
+
+all(not)
+[]
+true
+
+any(not)
+[false]
+true
+
+all(not)
+[false]
+true

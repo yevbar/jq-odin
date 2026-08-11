@@ -5,7 +5,8 @@ empty arrays use the usual identity values (`false` and `true`), and null or
 false elements are falsey while all other values are truthy. The five cases
 come from `upstream/jq/tests/jq.test:1077-1095`.
 
-Parameterized generators and conditions (`any(generator; condition)`,
+The literal `any(not)` and `all(not)` forms are also covered by dedicated
+negated-truthiness predicates. Parameterized generators and conditions (`any(generator; condition)`,
 `all(generator; condition)`, and `any(generator)`) remain deferred because
 they require a continuation/control-flow contract beyond this zero-argument
 slice. Non-array diagnostics are also deferred.

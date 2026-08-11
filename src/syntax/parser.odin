@@ -102,6 +102,10 @@ Node_Kind :: enum {
 	Any,
 	// All is appended to preserve existing AST discriminants.
 	All,
+	// Any_Not is appended to preserve existing AST discriminants.
+	Any_Not,
+	// All_Not is appended to preserve existing AST discriminants.
+	All_Not,
 	// Isfinite is appended to preserve existing AST discriminants.
 	Isfinite,
 	// Join is appended to preserve existing AST discriminants.
@@ -1072,7 +1076,7 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third}); if !ok { return {}, false }; term = new_term
 					}
-				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strptime") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strptime" || spelling == "any" || spelling == "all") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -1086,13 +1090,14 @@ parse_pipe :: proc(
 					join_comma := spelling == "join" && argument_node.kind == .Comma
 					flatten_comma := spelling == "flatten" && argument_node.kind == .Comma
 					literal_sequence := bsearch_comma || join_comma || flatten_comma
+					any_not_literal := (spelling == "any" || spelling == "all") && argument_node.kind == .Not_Builtin && !argument_node.has_child && !argument_node.has_value
 					index_family := spelling == "index" || spelling == "rindex" || spelling == "indices"
 					array_literal := argument_node.kind == .Identity && argument_node.container_kind == .Array && argument_node.has_value
 					contains_object_literal := spelling == "contains" && argument_node.kind == .Identity && argument_node.container_kind == .Object
 					contains_array_literal := spelling == "contains" && array_literal
 					isempty_literal := spelling == "isempty" && (argument_node.kind == .Empty || argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number || argument_node.kind == .String)
-					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || isempty_literal || (index_family && array_literal) || contains_object_literal || contains_array_literal || literal_sequence || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null)) || (spelling == "bsearch" && argument_node.kind == .Identity && argument_node.container_kind == .Object && argument_node.has_value)
-					if !argument_is_literal || (spelling == "error" && argument_node.kind != .String) || (spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "error" && spelling != "isempty" && argument_node.has_child) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_child) || (spelling == "join" && !join_comma && argument_node.has_child) || (spelling == "flatten" && !flatten_comma && argument_node.has_child) || (spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "error" && !index_family && !contains_object_literal && !contains_array_literal && argument_node.has_value) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_value) || (spelling == "join" && !join_comma && argument_node.has_value) || (spelling == "flatten" && !flatten_comma && argument_node.has_value) || (spelling == "flatten" && !flatten_comma && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "bsearch" && spelling != "join" && spelling != "has" && spelling != "error" && spelling != "isempty" && !index_family && !contains_object_literal && !contains_array_literal) && argument_node.kind != .String) || (index_family && argument_node.kind != .String && argument_node.kind != .Number && !array_literal) || (contains_object_literal && argument_node.container_kind != .Object) || (contains_array_literal && argument_node.container_kind != .Array) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && !bsearch_comma && argument_node.kind != .Number && !(argument_node.kind == .Identity && argument_node.container_kind == .Object)) || (spelling == "join" && !join_comma && argument_node.kind != .String) || (spelling == "flatten" && flatten_comma && argument_node.kind != .Comma) {
+					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || isempty_literal || (index_family && array_literal) || contains_object_literal || contains_array_literal || literal_sequence || any_not_literal || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null)) || (spelling == "bsearch" && argument_node.kind == .Identity && argument_node.container_kind == .Object && argument_node.has_value)
+					if !argument_is_literal || (spelling == "error" && argument_node.kind != .String) || (spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "error" && spelling != "isempty" && spelling != "any" && spelling != "all" && argument_node.has_child) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_child) || (spelling == "join" && !join_comma && argument_node.has_child) || (spelling == "flatten" && !flatten_comma && argument_node.has_child) || (spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "error" && !index_family && !contains_object_literal && !contains_array_literal && argument_node.has_value) || (spelling == "bsearch" && !bsearch_comma && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_value) || (spelling == "join" && !join_comma && argument_node.has_value) || (spelling == "flatten" && !flatten_comma && argument_node.has_value) || (spelling == "flatten" && !flatten_comma && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "bsearch" && spelling != "join" && spelling != "has" && spelling != "error" && spelling != "isempty" && spelling != "any" && spelling != "all" && !index_family && !contains_object_literal && !contains_array_literal) && argument_node.kind != .String) || (index_family && argument_node.kind != .String && argument_node.kind != .Number && !array_literal) || (contains_object_literal && argument_node.container_kind != .Object) || (contains_array_literal && argument_node.container_kind != .Array) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && !bsearch_comma && argument_node.kind != .Number && !(argument_node.kind == .Identity && argument_node.container_kind == .Object)) || (spelling == "join" && !join_comma && argument_node.kind != .String) || (spelling == "flatten" && flatten_comma && argument_node.kind != .Comma) || ((spelling == "any" || spelling == "all") && !any_not_literal) {
 						// The closing paren has already been consumed, so lookahead may
 						// be End_Of_Input. Route through the boundary-aware helper to
 						// report a parse error instead of asserting on a non-token.
@@ -1119,7 +1124,13 @@ parse_pipe :: proc(
 					if spelling == "isempty" do call_kind = .IsEmpty
 					if spelling == "strftime" do call_kind = .Strftime
 					if spelling == "strptime" do call_kind = .Strptime
-					if literal_sequence {
+					if spelling == "any" && any_not_literal do call_kind = .Any_Not
+					if spelling == "all" && any_not_literal do call_kind = .All_Not
+					if any_not_literal {
+						new_term, marker_ok := append_node(parser, Node{kind=call_kind, span=span})
+						if !marker_ok { return {}, false }
+						term = new_term
+					} else if literal_sequence {
 						sequence_kind := call_kind
 						new_term, sequence_ok := literal_call_sequence(parser, argument, sequence_kind)
 						if !sequence_ok { fail_from_lookahead(parser, .Expression); return {}, false }
