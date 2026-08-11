@@ -1012,7 +1012,8 @@ parse_pipe :: proc(
 					if token_is(parser, .Close_Paren) {
 						close := parser.lookahead.token; advance(parser)
 						first_node := parser.nodes.storage[int(first)]
-						if first_node.kind != .Number || first_node.has_child || first_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+						first_identity := first_node.kind == .Identity && !first_node.has_child && !first_node.has_value && first_node.container_kind == .None
+						if (first_node.kind != .Number && !first_identity) || first_node.has_child || first_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
 						span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 						new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=Node_Id(-1)}); if !ok { return {}, false }; term = new_term
 						// `range(n)` is the shorthand for `range(0;n)`.

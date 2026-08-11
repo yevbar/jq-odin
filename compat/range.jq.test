@@ -38,3 +38,19 @@ null
 
 range(5;1;0)
 null
+
+range(.)
+3
+0
+1
+2
+
+try range(.) catch .
+"x"
+"Range bounds must be numeric"
+
+try range(.) catch .
+3
+0
+1
+2

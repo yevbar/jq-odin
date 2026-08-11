@@ -1720,8 +1720,9 @@ propagate_output :: proc(
 		case .Unary_Active, .Try_Catch_Active, .Fork_Left_Active, .Fork_Right_Active:
 			current = parent
 		case .Try_Expression_Active:
-			frame.phase = .Complete
-			return propagate_output(storage, parent, owned)
+			// A try expression may be a generator. Preserve the active phase for
+			// subsequent outputs; notify_exhausted transitions it to Complete.
+			current = parent
 		case .Sequence_Left_Active:
 			child, ok := child_instruction(storage, instruction, 1)
 			if !ok || !push_frame(storage, child, parent, owned) {
@@ -4623,9 +4624,25 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				start: f64
 				end: f64
 				step: f64 = 1
+				identity_argument := false
+				runtime_continuation := false
 				for offset in 0..<int(instruction.operands_count) {
 					child, child_ok := child_instruction(storage, instruction, u32(offset)); child_instruction_value, range_instruction_ok := program.program_instruction(storage.compiled, child)
 					if !child_ok || !range_instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					if instruction.operands_count == 1 && child_instruction_value.opcode == .Identity && !child_instruction_value.has_literal {
+						end_value, end_ok := value.number_value_get(&frame.input)
+						if !end_ok {
+							result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Number, input_kind=value.kind_of(&frame.input), span=instruction.span, key="Range bounds must be numeric"})
+							if ready do return result
+							runtime_continuation = true
+							break
+						}
+						end = end_value
+						start = 0
+						step = 1
+						identity_argument = true
+						continue
+					}
 					literal, literal_error, literal_cleanup := literal_value(storage, child_instruction_value)
 					if literal_cleanup != nil || literal_error != .None { if value.kind_of(&literal) != .Invalid { _ = value.destroy_value(&literal) }; return begin_terminal_misuse(storage, .Malformed_Program) }
 					number, number_ok := value.number_value_get(&literal); _ = value.destroy_value(&literal)
@@ -4638,7 +4655,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						step = number
 					}
 				}
-				if instruction.operands_count == 1 { end = start; start = 0 }
+				if runtime_continuation do continue
+				if instruction.operands_count == 1 && !identity_argument { end = start; start = 0 }
 				result, array_error := value.array_value(storage.allocator); if value.array_error_kind(&array_error) != .None do return resource_step(.Out_Of_Memory)
 				current := start
 				if (step > 0 && start < end) || (step < 0 && start > end) {
