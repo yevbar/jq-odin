@@ -530,11 +530,12 @@ behavioral oracle.
   catalog remains **177/522 passed and 345 failed** because the selected
   identity cases are grouped with broader unsupported range consumers.
 - Bounded UTC `strftime` formatting for parsed datetime arrays (`f446795e`,
-  decision `0162`) now matches the selected `%Y-%m-%dT%H:%M:%SZ` cases,
-  including omitted trailing time fields. Its focused shard passes 2/2,
-  package/build checks and full tests pass. Numeric timestamps, other format
-  directives, local-time variants, and very short arrays such as `[0]` remain
-  deferred.
+  corrected by `edce216b`, decision `0162`) now matches the selected
+  `%Y-%m-%dT%H:%M:%SZ` cases, including omitted trailing time fields. Its
+  focused shard passes 2/2, package/build checks and full tests pass, and the
+  authoritative catalog is **179/522 passed and 343 failed**. Numeric
+  timestamps, other format directives, local-time variants, and very short
+  arrays such as `[0]` remain deferred.
 
 ## Remaining high-value clusters
 
