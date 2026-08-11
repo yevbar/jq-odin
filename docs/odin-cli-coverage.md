@@ -500,6 +500,13 @@ behavioral oracle.
   full tests pass, and the catalog remains **172/522 passed and 350 failed**.
   Non-number diagnostics, dynamic forms, near-overflow behavior, and
   platform-sensitive precision remain deferred.
+- Static `error("literal")` and literal `try error(...) catch ...` forms
+  (`eb3e6f5f`, `c82bf039`, decision `0156`) now preserve the owned runtime
+  message through evaluator replay and driver formatting. The focused shard
+  passes 3/3 against the pinned oracle, package/build checks and full tests
+  pass. Dynamic/non-string error arguments, broader `try` forms, `halt`, and
+  `debug` remain deferred; the catalog baseline is unchanged at **172/522
+  passed and 350 failed**.
 
 ## Remaining high-value clusters
 
