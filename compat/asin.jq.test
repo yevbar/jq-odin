@@ -1,0 +1,12 @@
+# `asin` computes the inverse sine in radians.
+asin
+-1
+-1.5707963267948966
+
+asin
+0
+0
+
+asin
+1
+1.5707963267948966
