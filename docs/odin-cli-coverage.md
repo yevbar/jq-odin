@@ -22,6 +22,10 @@ behavioral oracle.
   integration repairs in `43d1d46`) now pass their focused shards. The full
   catalog moved to 94/522 passing filters (428 remaining); the CLI harness
   reports 312 subprocess and 41 differential checks.
+- Bounded ASCII `implode` (`932b819`) passes its focused shard and all package
+  tests. It does not change the catalog total yet because the remaining core
+  `implode` cases require Unicode code-point handling; that limitation is
+  recorded in `compat/implode.md`.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
