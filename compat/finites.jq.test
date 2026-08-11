@@ -1,0 +1,23 @@
+# `finites` yields finite numeric inputs only.
+finites
+42
+42
+
+finites
+1.5
+1.5
+
+finites
+"42"
+
+finites
+true
+
+finites
+null
+
+nan | finites
+null
+
+infinite | finites
+null
