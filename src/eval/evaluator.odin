@@ -2625,6 +2625,10 @@ uri_decode_text :: proc(text: string, allocator: runtime.Allocator) -> (string, 
 	_, init_error := strings.builder_init(&builder, allocator)
 	if init_error != nil do return "", false, init_error
 	for index := 0; index < len(text); index += 1 {
+		if text[index] >= 0x80 {
+			if strings.write_string(&builder, "�") != len("�") { strings.builder_destroy(&builder); return "", false, .Out_Of_Memory }
+			continue
+		}
 		if text[index] != '%' {
 			if strings.write_byte(&builder, text[index]) != 1 { strings.builder_destroy(&builder); return "", false, .Out_Of_Memory }
 			continue
