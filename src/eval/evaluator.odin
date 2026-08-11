@@ -1246,6 +1246,21 @@ index_result :: proc(
 	index_number, number_ok := value.number_value_get(&index_value)
 	_ = value.destroy_value(&index_value)
 	if !number_ok || index_number < 0 || index_number != f64(int(index_number)) {
+		// jq rejects fractional numeric indices for strings with a typed
+		// runtime error.  Arrays retain their historical null result for an
+		// out-of-range/non-integral index in this bounded indexing contract.
+		if value.kind_of(&frame.input) == .String {
+			return {}, Runtime_Error{
+				// Preserve the jq message as the catch value as well as the
+				// terminal diagnostic. User_Error is the existing owned-message
+				// transport used by literal error(), and avoids the generic
+				// string-key formatter interpreting the numeric spelling as a key.
+				kind = .User_Error,
+				input_kind = .String,
+				span = instruction.span,
+				key = "Cannot index string with number",
+			}, true
+		}
 		return value.null_value(), {}, true
 	}
 	index := int(index_number)

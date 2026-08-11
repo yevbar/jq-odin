@@ -1,0 +1,4 @@
+# jq.test:2445 — fractional numeric indexing of a string is an error.
+try (.[1.5]) catch .
+"foobar"
+"Cannot index string with number"
