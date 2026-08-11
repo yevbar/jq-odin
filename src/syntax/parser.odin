@@ -139,6 +139,8 @@ Node_Kind :: enum {
 	Text,
 	// Json is appended to preserve existing AST discriminants.
 	Json,
+	// Csv is appended to preserve existing AST discriminants.
+	Csv,
 }
 
 Node_Id :: distinct int
@@ -696,7 +698,7 @@ parse_pipe :: proc(
 				term = new_term
 			case .Format:
 				format := token_spelling(parser, token)
-				if format != "@base64" && format != "@base64d" && format != "@uri" && format != "@urid" && format != "@html" && format != "@text" && format != "@json" {
+				if format != "@base64" && format != "@base64d" && format != "@uri" && format != "@urid" && format != "@html" && format != "@text" && format != "@json" && format != "@csv" {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
@@ -706,6 +708,7 @@ parse_pipe :: proc(
 				if format == "@html" do kind = .Html
 				if format == "@text" do kind = .Text
 				if format == "@json" do kind = .Json
+				if format == "@csv" do kind = .Csv
 				advance(parser)
 				new_term, format_ok := append_node(parser, Node{kind = kind, span = token.span})
 				if !format_ok do return {}, false
