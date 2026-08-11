@@ -1044,15 +1044,21 @@ parse_pipe :: proc(
 				advance(parser)
 				if spelling == "range" && token_is(parser, .Open_Paren) {
 					advance(parser)
-					first, first_ok := parse_pipe(parser, .Close_Paren, true)
+					first, first_ok := parse_pipe(parser, .Close_Paren, false)
 					if !first_ok { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					if token_is(parser, .Close_Paren) {
 						close := parser.lookahead.token; advance(parser)
 						first_node := parser.nodes.storage[int(first)]
-						first_identity := first_node.kind == .Identity && !first_node.has_child && !first_node.has_value && first_node.container_kind == .None
-						if (first_node.kind != .Number && !first_identity) || first_node.has_child || first_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
-						span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
-						new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=Node_Id(-1)}); if !ok { return {}, false }; term = new_term
+						if first_node.kind == .Comma && !first_node.has_child {
+							new_term, sequence_ok := literal_call_sequence(parser, first, .Range)
+							if !sequence_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+							term = new_term
+						} else {
+							first_identity := first_node.kind == .Identity && !first_node.has_child && !first_node.has_value && first_node.container_kind == .None
+							if (first_node.kind != .Number && !first_identity) || first_node.has_child || first_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+							span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+							new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=Node_Id(-1)}); if !ok { return {}, false }; term = new_term
+						}
 						// `range(n)` is the shorthand for `range(0;n)`.
 					} else {
 						if !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; advance(parser)
@@ -2702,7 +2708,11 @@ literal_call_sequence :: proc(parser: ^Parser, node_id: Node_Id, call_kind: Node
 	if node.has_child || node.has_value { return {}, false }
 	if call_kind == .Bsearch && node.kind != .Number { return {}, false }
 	if call_kind == .Join && node.kind != .String { return {}, false }
-	if call_kind == .Flatten && node.kind != .Number { return {}, false }
+	if (call_kind == .Flatten || call_kind == .Range) && node.kind != .Number { return {}, false }
+	if call_kind == .Range {
+		needle, needle_ok := append_node(parser, Node{kind=call_kind, span=node.span, left=node_id, right=Node_Id(-1)})
+		return needle, needle_ok
+	}
 	needle, needle_ok := append_node(parser, Node{kind=call_kind, span=node.span, child=node_id, has_child=true})
 	return needle, needle_ok
 }
