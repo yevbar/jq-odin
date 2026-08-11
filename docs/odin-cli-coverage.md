@@ -371,6 +371,12 @@ behavioral oracle.
   5/5 and package/build checks pass; the catalog remains **172/522 passed and
   350 failed** because the selected object cases are grouped with unsupported
   expressions.
+- Empty-value `reverse` semantics (`c227a07`, decision `0133`) now return an
+  empty array for null, zero, empty strings, and empty objects, while retaining
+  array reversal and errors for non-empty unsupported scalar/object inputs. Its
+  focused shard passes 5/5 and package/build checks pass; the catalog remains
+  **172/522 passed and 350 failed** because these cases are grouped with
+  unsupported expressions.
 
 ## Remaining high-value clusters
 
