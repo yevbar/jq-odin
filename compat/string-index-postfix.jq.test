@@ -1,0 +1,12 @@
+# Literal string keys are accepted inside bracket postfixes and can chain.
+.["foo"].bar
+{"foo":{"bar":20}}
+20
+
+.["foo"]["bar"]
+{"foo":{"bar":20}}
+20
+
+.["missing"]
+{}
+null

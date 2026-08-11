@@ -2269,6 +2269,33 @@ append_postfix :: proc(
 		if token_is(parser, .Open_Bracket) {
 			open := parser.lookahead.token
 			advance(parser)
+			if token_is(parser, .String_Start) {
+				quoted, quoted_ok := append_string_node(parser, parser.lookahead.token.span, live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead, has_postfix^)
+				if !quoted_ok do return {}, false
+				quoted_node := parser.nodes.storage[int(quoted)]
+				if quoted_node.kind != .String || !quoted_node.has_string_text do return {}, false
+				if !token_is(parser, .Close_Bracket) {
+					fail_from_lookahead(parser, .Close_Bracket)
+					return {}, false
+				}
+				close := parser.lookahead.token
+				advance(parser)
+				span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+				assert(span_ok)
+				node, ok = append_node(parser, Node{
+					kind = .Field,
+					span = span,
+					child = node,
+					has_child = true,
+					name_span = quoted_node.span,
+					has_name_span = true,
+					string_text = quoted_node.string_text,
+					has_string_text = true,
+					string_shorthand = true,
+				})
+				if !ok do return {}, false
+				continue
+			}
 			if token_is(parser, .Close_Bracket) {
 				close := parser.lookahead.token
 				advance(parser)
