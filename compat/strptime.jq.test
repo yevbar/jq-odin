@@ -1,0 +1,8 @@
+# Literal ISO-8601 strptime formats supported by the bounded lane.
+strptime("%Y-%m-%dT%H:%M:%SZ")
+"2015-03-05T23:51:47Z"
+[2015,2,5,23,51,47,4,63]
+
+strptime("%FT%T")
+"2025-06-07T08:09:10"
+[2025,5,7,8,9,10,6,157]

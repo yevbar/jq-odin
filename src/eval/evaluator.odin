@@ -5,6 +5,8 @@ import "core:math"
 import "core:sync"
 import "core:strings"
 import "core:strconv"
+import "core:time"
+import datetime "core:time/datetime"
 import encoding_base64 "core:encoding/base64"
 import "core:unicode/utf8"
 import program "jq:program"
@@ -3204,6 +3206,50 @@ strftime_array_result :: proc(input: ^value.Value, format: string, allocator: ru
 	return result, .None, nil
 }
 
+@(private)
+strptime_result :: proc(input: ^value.Value, format: string, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) != .String do return {}, .Cannot_Iterate, nil
+	if format != "%Y-%m-%dT%H:%M:%SZ" && format != "%FT%T" do return {}, .Cannot_Iterate, nil
+	text, text_ok := value.string_borrowed(input)
+	if !text_ok do return {}, .Cannot_Iterate, nil
+	parse_text := text
+	owned_parse_text := ""
+	if format == "%FT%T" {
+		builder: strings.Builder
+		_, builder_error := strings.builder_init(&builder, allocator)
+		if builder_error != nil do return {}, .None, builder_error
+		if strings.write_string(&builder, text) != len(text) || strings.write_byte(&builder, 'Z') != 1 {
+			strings.builder_destroy(&builder)
+			return {}, .None, .Out_Of_Memory
+		}
+		owned_parse_text = strings.to_string(builder)
+		parse_text = owned_parse_text
+	}
+	moment, _, _, consumed := time.iso8601_to_components(parse_text)
+	if len(owned_parse_text) > 0 {
+		free_error := runtime.mem_free_bytes(transmute([]byte)owned_parse_text, allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented do return {}, .None, free_error
+	}
+	if consumed <= 0 || consumed != len(parse_text) do return {}, .Cannot_Iterate, nil
+	ordinal := datetime.unsafe_date_to_ordinal(moment.date)
+	weekday := datetime.day_of_week(ordinal)
+	day_number, day_error := datetime.day_number(moment.date)
+	if day_error != .None do return {}, .Cannot_Iterate, nil
+	result, array_error := value.array_value(allocator)
+	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+	fields := [8]f64{f64(moment.year), f64(moment.month-1), f64(moment.day), f64(moment.hour), f64(moment.minute), f64(moment.second), f64(weekday), f64(day_number-1)}
+	for number in fields {
+		item := value.number_value(number)
+		_, append_error := value.array_append_take(&result, &item)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_value(&item)
+			_ = value.destroy_value(&result)
+			return {}, .None, .Out_Of_Memory
+		}
+	}
+	return result, .None, nil
+}
+
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Tonumber {
@@ -4896,6 +4942,28 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if runtime_kind != .None {
 					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
 					err.key = "strftime/1 requires parsed datetime inputs"
+					result, ready := raise_runtime(storage, index, err)
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Strptime:
+				format_child, child_ok := child_instruction(storage, instruction, 0)
+				format_instruction, format_ok := program.program_instruction(storage.compiled, format_child)
+				format_value, format_error, format_cleanup := literal_value(storage, format_instruction)
+				format, format_text_ok := value.string_borrowed(&format_value)
+				if !child_ok || !format_ok || !format_text_ok || format_error != .None || format_cleanup != nil {
+					if value.kind_of(&format_value) != .Invalid { _ = value.destroy_value(&format_value) }
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output, runtime_kind, resource_error := strptime_result(&frame.input, format, storage.allocator)
+				_ = value.destroy_value(&format_value)
+				if resource_error != nil do return resource_step(resource_error)
+				if runtime_kind != .None {
+					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					err.key = "strptime/1 requires a string date input"
 					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue
