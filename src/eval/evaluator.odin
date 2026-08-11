@@ -1964,6 +1964,9 @@ flatten_append_depth :: proc(input: ^value.Value, output: ^value.Value, depth: i
 @(private)
 flatten_result :: proc(input: ^value.Value, allocator: runtime.Allocator, depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+	// -1 is the internal sentinel for zero-argument flatten. Literal negative
+	// depths are rejected until jq's dedicated diagnostic contract is added.
+	if depth < -1 do return {}, .Cannot_Iterate, nil
 	result, array_error := value.array_value(allocator)
 	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
 	runtime_kind: Runtime_Error_Kind
@@ -3132,6 +3135,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						return begin_terminal_misuse(storage, .Malformed_Program)
 					}
 					flatten_depth = int(parsed_depth)
+					if flatten_depth < 0 do flatten_depth = -2
 				}
 				output, runtime_kind, resource_error := builtin_result(instruction.opcode, &frame.input, storage.allocator, flatten_depth)
 				if resource_error != nil do return resource_step(resource_error)
