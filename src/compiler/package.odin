@@ -28,6 +28,19 @@ checked_count_add :: proc(total: ^u64, amount: u64) -> bool {
 }
 
 @(private="package")
+literal_number_is_zero :: proc(text: string) -> bool {
+	seen_digit := false
+	for c in text {
+		if c == 'e' || c == 'E' do break
+		if c >= '0' && c <= '9' {
+			seen_digit = true
+			if c != '0' do return false
+		}
+	}
+	return seen_digit
+}
+
+@(private="package")
 node_reference_valid :: proc(id: syntax.Node_Id, node_count: int) -> bool {
 	return int(id) >= 0 && int(id) < node_count
 }
@@ -462,7 +475,8 @@ lower_filter :: proc(
 			}
 			child := nodes[int(node.child)]
 			if child.kind == .Number && !child.has_child && !child.has_value {
-				if !checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(len(child.number_text) + 1)) do return Lower_Outcome{kind = .Size_Overflow}
+				prefix_bytes := 1 if !literal_number_is_zero(child.number_text) else 0
+				if !checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(len(child.number_text) + prefix_bytes)) do return Lower_Outcome{kind = .Size_Overflow}
 			} else {
 				has_unlowered_node = true
 			}
@@ -831,12 +845,13 @@ lower_filter :: proc(
 			instruction.opcode = .Identity
 			instruction.has_literal = true
 			instruction.literal_kind = .Number
-			assert(program.set_text(output, program.Byte_Offset(text_at), "-"))
-			assert(program.set_text(output, program.Byte_Offset(text_at + 1), child.number_text))
-			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(child.number_text)+1)}))
+			prefix_bytes := 1 if !literal_number_is_zero(child.number_text) else 0
+			if prefix_bytes == 1 do assert(program.set_text(output, program.Byte_Offset(text_at), "-"))
+			assert(program.set_text(output, program.Byte_Offset(text_at + u32(prefix_bytes)), child.number_text))
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(child.number_text)+prefix_bytes)}))
 			instruction.operands_count = 1
 			operand_at += 1
-			text_at += u32(len(child.number_text) + 1)
+			text_at += u32(len(child.number_text) + prefix_bytes)
 		case:
 			cleanup_error := program.destroy_program(output)
 			if cleanup_error != nil {
