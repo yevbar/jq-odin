@@ -1904,6 +1904,25 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if value.kind_of(&result) == .Invalid do return {}, .None, .Out_Of_Memory
 		return result, .None, nil
 	}
+	if opcode == .From_Entries {
+		if kind != .Array do return {}, .Cannot_Iterate, nil
+		length, length_ok := value.array_length(input)
+		if !length_ok do return {}, .Cannot_Iterate, nil
+		result, object_error := value.object_value(allocator)
+		if value.object_error_kind(&object_error) != .None do return {}, .None, .Out_Of_Memory
+		for i in 0..<length {
+			entry, entry_ok := value.array_element_copy(input, i)
+			if !entry_ok || value.kind_of(&entry) != .Object { _ = value.destroy_value(&entry); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+			key, key_ok := value.object_get_copy(&entry, "key")
+			item, item_ok := value.object_get_copy(&entry, "value")
+			_ = value.destroy_value(&entry)
+			if !key_ok || !item_ok || value.kind_of(&key) != .String { _ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+			_, displaced, set_error := value.object_set_take(&result, &key, &item)
+			_ = value.destroy_value(&displaced)
+			if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_object_error(&set_error); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+		}
+		return result, .None, nil
+	}
 	if opcode == .Ascii_Downcase || opcode == .Ascii_Upcase {
 		if kind != .String do return {}, .Cannot_Trim, nil
 		text, text_ok := value.string_borrowed(input)
@@ -2372,7 +2391,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
