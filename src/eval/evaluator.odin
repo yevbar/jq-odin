@@ -1134,7 +1134,9 @@ resumed_composite_instruction_valid :: proc(
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
 	case .Iterator_Active:
-		if frame.mode != .Normal || (instruction.opcode != .Field && instruction.opcode != .Range) do return false
+		if (frame.mode != .Normal && frame.mode != .Field_Only) || (instruction.opcode != .Field && instruction.opcode != .Range) {
+			return false
+		}
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
