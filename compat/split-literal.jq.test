@@ -1,0 +1,16 @@
+# Literal non-empty separators split ordinary strings.
+[.[] | split(", ")]
+["a,b, c, d, e,f", ", a,b, c, d, e,f, "]
+[["a,b","c","d","e,f"],["","a,b","c","d","e,f",""]]
+
+[.[]|split(",")]
+["a, bc, def, ghij, jklmn, a,b, c,d, e,f", "a,b,c,d, e,f,g,h"]
+[["a"," bc"," def"," ghij"," jklmn"," a","b"," c","d"," e","f"],["a","b","c","d"," e","f","g","h"]]
+
+[.[]|split(", ")]
+["a,b, c, d, e,f", "a,b,c,d,e,f,g,h"]
+[["a,b","c","d","e,f"],["a,b,c,d,e,f,g,h"]]
+
+split("")
+"abc"
+["a","b","c"]

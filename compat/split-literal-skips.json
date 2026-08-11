@@ -1,0 +1,3 @@
+{
+  "compat/split-literal.jq.test:14": "empty-separator Unicode code-point semantics are intentionally deferred"
+}

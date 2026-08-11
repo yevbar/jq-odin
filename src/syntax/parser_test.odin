@@ -3349,3 +3349,18 @@ test_contains_non_string_literals_fail_without_assertion :: proc(t: ^testing.T) 
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
 }
+
+@(test)
+test_split_literal_parses_as_bounded_call :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<split>", `split(", ")`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Split)
+	testing.expect(t, root.has_child)
+	argument := parser.nodes.storage[int(root.child)]
+	testing.expect_value(t, argument.kind, Node_Kind.String)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
