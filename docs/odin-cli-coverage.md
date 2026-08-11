@@ -583,6 +583,9 @@ behavioral oracle.
   diagnostics through catches for invalid non-string inputs. Its combined
   runtime-key shard passes 4/4, and the authoritative catalog is **189/522
   passed and 333 failed**.
+- `bsearch` runtime keys (`decision 0173`) now preserve the non-array input
+  diagnostic through catches. The combined runtime-key shard passes 5/5, and
+  the authoritative catalog is **190/522 passed and 332 failed**.
 
 ## Remaining high-value clusters
 

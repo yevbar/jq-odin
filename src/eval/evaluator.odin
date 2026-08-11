@@ -2805,6 +2805,24 @@ utf8bytelength_runtime_key :: proc(input: ^value.Value, allocator: runtime.Alloc
 }
 
 @(private)
+bsearch_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	kind_name := runtime_value_kind_name(value.kind_of(input))
+	suffix := " cannot be searched from"
+	if strings.write_string(&builder, kind_name) != len(kind_name) ||
+	   strings.write_string(&builder, " (") != 2 ||
+	   !text_append_json_value(&builder, input) ||
+	   strings.write_string(&builder, ")") != 1 ||
+	   strings.write_string(&builder, suffix) != len(suffix) {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
 csv_append_field :: proc(builder: ^strings.Builder, input: ^value.Value) -> bool {
 	switch value.kind_of(input) {
 	case .Null:
@@ -4582,7 +4600,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output, runtime_kind := bsearch_result(&frame.input, &needle)
 				_ = value.destroy_value(&needle)
 				if runtime_kind != .None {
-					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					owned_key, key_error := bsearch_runtime_key(&frame.input, storage.allocator)
+					if key_error != nil do return resource_step(key_error)
+					err.key = owned_key
+					result, ready := raise_runtime(storage, index, err)
+					if len(owned_key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)owned_key, storage.allocator)
+						if free_error != nil do return resource_step(free_error)
+					}
 					if ready do return result
 					continue
 				}
