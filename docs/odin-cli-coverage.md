@@ -488,6 +488,12 @@ behavioral oracle.
   passes 3/3 against the pinned oracle, package/build checks and full tests
   pass, and the catalog remains **172/522 passed and 350 failed**. Non-number
   diagnostics and platform-sensitive interior-value precision remain deferred.
+- The zero-argument `tan` builtin (`ddbc199e`, decision `0154`) now computes
+  tangent for numeric inputs using Odin's math implementation. Its focused
+  shard passes 3/3 against the pinned oracle, package/build checks and full
+  tests pass, and the catalog remains **172/522 passed and 350 failed**.
+  Non-number diagnostics and one-ULP native-libm differences at interior
+  values remain deferred.
 
 ## Remaining high-value clusters
 
