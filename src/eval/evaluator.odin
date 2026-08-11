@@ -1058,6 +1058,10 @@ capture_composite_instruction :: proc(
 		_, expression_ok := child_instruction(storage, instruction, 0)
 		_, catch_ok := child_instruction(storage, instruction, 1)
 		if !expression_ok || !catch_ok do return false
+	case .IsEmpty:
+		if instruction.operands_count != 1 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
 	case .Binding:
 		if instruction.operands_count != 3 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -4595,6 +4599,16 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				})
 				if ready do return result
 				continue
+			case .IsEmpty:
+				child, child_ok := child_instruction(storage, instruction, 0)
+				child_instruction_value, child_instruction_ok := program.program_instruction(storage.compiled, child)
+				if !child_ok || !child_instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				// This bounded form accepts literal child filters only. `empty`
+				// produces no value, while every scalar literal produces one value.
+				output := value.boolean_value(child_instruction_value.opcode == .Empty)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Try:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)

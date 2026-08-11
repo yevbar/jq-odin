@@ -187,6 +187,8 @@ Node_Kind :: enum {
 	Error,
 	// Try is appended to preserve existing AST discriminants.
 	Try,
+	// IsEmpty is appended to preserve existing AST discriminants.
+	IsEmpty,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -988,6 +990,8 @@ parse_pipe :: proc(
 					kind = .Sinh
 				} else if spelling == "error" {
 					kind = .Error
+				} else if spelling == "isempty" {
+					kind = .IsEmpty
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {
@@ -997,7 +1001,7 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				advance(parser)
-				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error") && token_is(parser, .Open_Paren) {
+				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -1011,8 +1015,9 @@ parse_pipe :: proc(
 					array_literal := argument_node.kind == .Identity && argument_node.container_kind == .Array && argument_node.has_value
 					contains_object_literal := spelling == "contains" && argument_node.kind == .Identity && argument_node.container_kind == .Object
 					contains_array_literal := spelling == "contains" && array_literal
-					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || (index_family && array_literal) || contains_object_literal || contains_array_literal || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null)) || (spelling == "bsearch" && argument_node.kind == .Identity && argument_node.container_kind == .Object && argument_node.has_value)
-					if !argument_is_literal || (spelling == "error" && argument_node.kind != .String) || (spelling != "bsearch" && spelling != "error" && argument_node.has_child) || (spelling == "bsearch" && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_child) || (spelling != "bsearch" && spelling != "error" && !index_family && !contains_object_literal && !contains_array_literal && argument_node.has_value) || (spelling == "bsearch" && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_value) || (spelling == "flatten" && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "has" && spelling != "bsearch" && spelling != "error" && !index_family && !contains_object_literal && !contains_array_literal) && argument_node.kind != .String) || (index_family && argument_node.kind != .String && argument_node.kind != .Number && !array_literal) || (contains_object_literal && argument_node.container_kind != .Object) || (contains_array_literal && argument_node.container_kind != .Array) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && argument_node.kind != .Number && !(argument_node.kind == .Identity && argument_node.container_kind == .Object)) {
+					isempty_literal := spelling == "isempty" && (argument_node.kind == .Empty || argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number || argument_node.kind == .String)
+					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || isempty_literal || (index_family && array_literal) || contains_object_literal || contains_array_literal || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null)) || (spelling == "bsearch" && argument_node.kind == .Identity && argument_node.container_kind == .Object && argument_node.has_value)
+					if !argument_is_literal || (spelling == "error" && argument_node.kind != .String) || (spelling != "bsearch" && spelling != "error" && spelling != "isempty" && argument_node.has_child) || (spelling == "bsearch" && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_child) || (spelling != "bsearch" && spelling != "error" && !index_family && !contains_object_literal && !contains_array_literal && argument_node.has_value) || (spelling == "bsearch" && !(argument_node.kind == .Identity && argument_node.container_kind == .Object) && argument_node.has_value) || (spelling == "flatten" && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "has" && spelling != "bsearch" && spelling != "error" && spelling != "isempty" && !index_family && !contains_object_literal && !contains_array_literal) && argument_node.kind != .String) || (index_family && argument_node.kind != .String && argument_node.kind != .Number && !array_literal) || (contains_object_literal && argument_node.container_kind != .Object) || (contains_array_literal && argument_node.container_kind != .Array) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && argument_node.kind != .Number && !(argument_node.kind == .Identity && argument_node.container_kind == .Object)) {
 						// The closing paren has already been consumed, so lookahead may
 						// be End_Of_Input. Route through the boundary-aware helper to
 						// report a parse error instead of asserting on a non-token.
@@ -1036,6 +1041,7 @@ parse_pipe :: proc(
 					if spelling == "rtrimstr" do call_kind = .Rtrimstr
 					if spelling == "trimstr" do call_kind = .Trimstr
 					if spelling == "error" do call_kind = .Error
+					if spelling == "isempty" do call_kind = .IsEmpty
 					new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
 					if !ok { return {}, false }
 					term = new_term

@@ -1,0 +1,12 @@
+# Literal child forms supported by this bounded lane.
+isempty(empty)
+null
+true
+
+isempty(1)
+null
+false
+
+isempty("value")
+null
+false

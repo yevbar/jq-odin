@@ -161,6 +161,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Error:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .IsEmpty:
+		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Try:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
@@ -288,6 +291,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Error:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .IsEmpty:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Try:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
@@ -458,6 +463,10 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Error:
+			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+		case .IsEmpty:
 			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
@@ -747,6 +756,12 @@ lower_filter :: proc(
 				kind = .Instruction,
 				instruction = program.Instruction_Index(node.child),
 			})
+			assert(child_ok)
+			operand_at += 1
+		case .IsEmpty:
+			instruction.opcode = .IsEmpty
+			instruction.operands_count = 1
+			child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind = .Instruction, instruction = program.Instruction_Index(node.child)})
 			assert(child_ok)
 			operand_at += 1
 		case .Try:
