@@ -148,11 +148,16 @@ behavioral oracle.
   1499 remains explicitly skipped. The exact full catalog remains
   **131/522 passed and 391 failed** because the added regression exercises an
   already-selected semantic path.
+- Bounded literal ASCII `index`/`rindex`/`indices` (`ebf5160`) passes its
+  3/3 oracle shard and adds three catalog cases at
+  `upstream/jq/tests/jq.test:1515-1521,1555-1557`. The exact catalog now
+  measures **134/522 passed and 388 failed**. Unicode, empty-needle,
+  array-needle, dynamic, and two-argument forms remain deferred.
 - The exact catalog measurement was produced with
   `tools/compat/jq_compat.py` against jq 1.8.1 (oracle SHA
   `30df4803a4ebbfd2741b2477d06488ce5973e3517cb1121d56be4b1fad9efa8d`) and
   summarized with `tools/compat/catalog_report.py` at integration head
-  `e7c22aa`.
+  `ebf5160`.
 - The jq catalog moved from 90/522 passing filters at the baseline to 93/522
   after static indexing; 429 catalog cases still fail. The catalog report is
   generated with `tools/compat/catalog_report.py` and is intentionally kept as
