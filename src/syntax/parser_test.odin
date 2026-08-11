@@ -2885,3 +2885,16 @@ test_bulk_lifetime_parser_destruction_retires_all_handles :: proc(t: ^testing.T)
 	testing.expect_value(t, allocator_data.calls_after_retirement, 0)
 	runtime.arena_destroy(&arena)
 }
+
+@(test)
+test_atan_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<atan>", "atan")
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Atan)
+	testing.expect(t, !root.has_child && !root.has_value)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}

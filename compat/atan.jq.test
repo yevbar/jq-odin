@@ -1,0 +1,5 @@
+# Scalar atan compatibility lane. Zero keeps the oracle result exact while the
+# older coordinator candidate does not yet provide floor/round helpers.
+atan
+0
+0

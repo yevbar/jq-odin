@@ -29,6 +29,8 @@ Node_Kind :: enum {
 	Ltrim,
 	Rtrim,
 	Index,
+	// Atan is appended to preserve existing AST discriminants.
+	Atan,
 }
 
 Node_Id :: distinct int
@@ -646,6 +648,8 @@ parse_pipe :: proc(
 					kind = .Ltrim
 				} else if spelling == "rtrim" {
 					kind = .Rtrim
+				} else if spelling == "atan" {
+					kind = .Atan
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

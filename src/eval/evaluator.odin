@@ -1858,6 +1858,12 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
 		return result, .None, nil
 	}
+	if opcode == .Atan {
+		if kind != .Number do return {}, .Cannot_Number, nil
+		n, ok := value.number_value_get(input)
+		if !ok do return {}, .Cannot_Number, nil
+		return value.number_value(math.atan(n)), .None, nil
+	}
 	if opcode == .Add_Builtin {
 		if kind != .Array do return {}, .Cannot_Add, nil
 		n, ok := value.array_length(input)
@@ -2279,7 +2285,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
