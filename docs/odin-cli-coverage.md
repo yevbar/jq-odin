@@ -512,6 +512,11 @@ behavioral oracle.
   passes 3/3 against the pinned oracle, package/build checks and full tests
   pass. Array/dynamic/generator children remain deferred; the catalog remains
   **172/522 passed and 350 failed**.
+- Literal numeric `range` streams (`8d4af304`, decision `0158`) now support
+  one-, two-, and three-argument positive/non-negative forms with jq's
+  half-open stream cardinality. Its focused shard passes 4/4 against the
+  pinned oracle, package/build checks and full tests pass. Negative-step,
+  dynamic/comma arguments, `foreach`, `limit`, and `range(.)` remain deferred.
 
 ## Remaining high-value clusters
 
