@@ -1,0 +1,17 @@
+# Bounded zero-argument @json format filter coverage.
+# Oracle source family: upstream/jq/tests/jq.test:72-82 and 106-108.
+@json
+"μ"
+"\"μ\""
+
+@json
+[1,{"a":true}]
+"[1,{\"a\":true}]"
+
+@json
+{"a":[1,null]}
+"{\"a\":[1,null]}"
+
+@json
+42
+"42"
