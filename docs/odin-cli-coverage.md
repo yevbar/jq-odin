@@ -225,6 +225,11 @@ behavioral oracle.
   spelling cases. Its focused shard passes 3/3 and the exact catalog is now
   **152/522 passed and 370 failed**. Dynamic `-.`, richer unary forms, and
   negative arguments to deferred parameterized builtins remain deferred.
+- Literal `ltrimstr`, `rtrimstr`, and `trimstr` (`6049280`, decision `0109`)
+  now cover prefix removal, suffix removal, composition, and jq's empty-string
+  behavior. The focused shard passes 6/6 and the exact catalog is now
+  **155/522 passed and 367 failed**. Dynamic arguments, non-string diagnostics,
+  and full Unicode edge behavior remain deferred.
 
 ## Remaining high-value clusters
 
