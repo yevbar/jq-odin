@@ -879,7 +879,7 @@ append_i64_decimal :: proc(buffer: []byte, at: ^int, value: i64) {
 decimal_to_binary64 :: proc(p: ^payload) -> f64 {
 	if p.infinite {
 		if p.negative {
-			return math.inf_f64(-1)
+			return -math.inf_f64(1)
 		}
 		return math.inf_f64(1)
 	}
@@ -893,7 +893,7 @@ decimal_to_binary64 :: proc(p: ^payload) -> f64 {
 	adjusted := p.exponent + i64(len(source)) - 1
 	if adjusted > 308 {
 		if p.negative {
-			return math.inf_f64(-1)
+			return -math.inf_f64(1)
 		}
 		return math.inf_f64(1)
 	}
@@ -1124,7 +1124,7 @@ canonical_literal_size :: proc(p: ^payload, negative: bool) -> (int, bool) {
 	if p == nil || p.kind != .Literal_Number {
 		return 0, false
 	}
-	sign_size := 1 if negative && !coefficient_is_zero(payload_coefficient(p)) else 0
+	sign_size := 1 if negative && (p.infinite || !coefficient_is_zero(payload_coefficient(p))) else 0
 	if p.infinite {
 		return sign_size + len("Infinity"), true
 	}
@@ -1169,7 +1169,7 @@ canonical_literal_size :: proc(p: ^payload, negative: bool) -> (int, bool) {
 write_canonical_literal :: proc(destination: []byte, p: ^payload, negative: bool) {
 	at := 0
 	coefficient := payload_coefficient(p)
-	if negative && !coefficient_is_zero(coefficient) {
+	if negative && (p.infinite || !coefficient_is_zero(coefficient)) {
 		destination[at] = '-'
 		at += 1
 	}
@@ -1452,6 +1452,14 @@ number_modulo :: proc(left, right: ^Value) -> (
 	}
 	if math.is_nan(a) || math.is_nan(b) {
 		return number_value(transmute(f64)u64(0x7ff8000000000000)), .Success
+	}
+	// jq's binary64-to-intmax conversion is observable for infinity pairs:
+	// the signed C conversion is followed by integer remainder, rather than
+	// IEEE fmod. Preserve those four combinations before any Odin conversion.
+	if math.is_inf(a) && math.is_inf(b) {
+		if a < 0 && b > 0 do return number_value(-1), .Success
+		if a > 0 && b < 0 do return number_value(f64(max(i64))), .Success
+		return number_value(0), .Success
 	}
 	divisor := jq_intmax_from_binary64(b)
 	if divisor == 0 {
