@@ -296,6 +296,12 @@ behavioral oracle.
   focused shard passes 5/5, package/build checks pass, and the full catalog is
   **170/522 passed and 352 failed**. Other format filters and detailed
   malformed-input diagnostics remain deferred.
+- Scalar `@html` (`17e138f`, decision `0121`) now performs jq-compatible HTML
+  escaping for `&`, `<`, `>`, apostrophe, and quote while coercing scalar input
+  to text and preserving UTF-8. Its focused shard passes 3/3 and package/build
+  checks pass; the catalog remains **170/522 passed and 352 failed** because
+  jq's format-argument/interpolation form is deferred. Container coercion and
+  malformed UTF-8 diagnostics remain deferred.
 
 ## Remaining high-value clusters
 
