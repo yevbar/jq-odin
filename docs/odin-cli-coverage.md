@@ -67,6 +67,10 @@ behavioral oracle.
   suppression shards with the full package suite; the full catalog is now
   100/522 (422 remaining). Object/type-predicate families and generator
   compositions remain deferred.
+- Bounded zero-argument `objects` (`c076cb8`) passes object selection and
+  scalar suppression shards with the full package suite; the full catalog is
+  now 101/522 (421 remaining). The remaining type-predicate families and
+  generator compositions are still deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
