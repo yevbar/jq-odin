@@ -1,0 +1,15 @@
+# unique sorts an array and removes duplicate values.
+unique
+[1,3,2,1,3,5]
+[1,2,3,5]
+
+# Duplicate preservation does not discard later values.
+unique
+[1,1,2]
+[1,2]
+
+# Empty arrays remain empty.
+unique
+[]
+[]
+

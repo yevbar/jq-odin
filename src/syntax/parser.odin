@@ -76,6 +76,8 @@ Node_Kind :: enum {
 	Round,
 	// Transpose is appended to preserve existing AST discriminants.
 	Transpose,
+	// Unique is appended to preserve existing AST discriminants.
+	Unique,
 }
 
 Node_Id :: distinct int
@@ -741,6 +743,8 @@ parse_pipe :: proc(
 					kind = .Round
 				} else if spelling == "transpose" {
 					kind = .Transpose
+				} else if spelling == "unique" {
+					kind = .Unique
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
