@@ -234,6 +234,12 @@ behavioral oracle.
   and literal numeric-string conversion. Its focused shard passes 3/3 and the
   exact catalog is now **156/522 passed and 366 failed**. Invalid strings,
   dynamic inputs, precision edges, and full diagnostic wording remain deferred.
+- Zero-argument array `min`/`max` (`567d8fc`, decision `0111`) now reduce using
+  jq's existing total value ordering and return `null` for empty arrays. Its
+  focused shard passes 2/2 and package/build checks pass; the catalog remains
+  **156/522 passed and 366 failed** because the upstream min/max fixtures are
+  grouped with unsupported `min_by`/`max_by`. Non-array diagnostics and those
+  parameterized reducers remain deferred.
 
 ## Remaining high-value clusters
 
