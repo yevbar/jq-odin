@@ -98,6 +98,10 @@ behavioral oracle.
 - Bounded zero-argument `transpose` (`20859a1`) passes ragged-array null-fill
   and empty-input shards with the full package suite; the full catalog is now
   109/522 (413 remaining). Non-array diagnostics remain deferred.
+- Bounded zero-argument `unique` (`795e408`) now performs ownership-safe
+  sorting and deduplication, including duplicate preservation regression cases;
+  its shard and package suite pass, and the full catalog is now 111/522 (411
+  remaining).
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
