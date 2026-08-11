@@ -4192,13 +4192,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
 			case .Finites:
-				// `finites` yields only finite numeric inputs; NaN and infinities are suppressed.
+				// jq's finites is `select(isfinite)`, where NaN is considered finite
+				// by jq and is serialized as null; only infinities are suppressed.
 				if value.kind_of(&frame.input) != .Number {
 					frame.phase = .Complete
 					continue
 				}
 				number, number_ok := value.number_value_get(&frame.input)
-				if !number_ok || math.is_nan(number) || math.is_inf(number) {
+				if !number_ok || math.is_inf(number) {
 					frame.phase = .Complete
 					continue
 				}
