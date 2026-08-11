@@ -79,6 +79,10 @@ behavioral oracle.
   array/object suppression shards with the full package suite; the full
   catalog is now 103/522 (419 remaining), completing the basic type-filter
   family while richer generator forms remain deferred.
+- Bounded zero-argument `booleans` (`83269c4`) passes boolean selection and
+  non-boolean suppression shards with the full package suite; the full catalog
+  is now 104/522 (418 remaining). Other scalar subtype predicates and richer
+  generator forms remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
