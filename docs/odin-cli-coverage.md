@@ -523,6 +523,12 @@ behavioral oracle.
   `0160`) now cover descending half-open streams and empty zero-step/direction
   cases. The focused shard passes 7/7, package/build checks and full tests
   pass, and the full catalog is now **177/522 passed and 345 failed**.
+- Identity-child `range(.)` (`ec3c1a0a`, decision `0161`) now supports numeric
+  input streams and preserves all outputs through literal `try`/`catch`, with
+  graceful caught errors for nonnumeric input. Its focused shard passes 10/10
+  against the pinned oracle; package/build checks and full tests pass. The
+  catalog remains **177/522 passed and 345 failed** because the selected
+  identity cases are grouped with broader unsupported range consumers.
 
 ## Remaining high-value clusters
 
