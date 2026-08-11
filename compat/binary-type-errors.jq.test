@@ -1,0 +1,12 @@
+# Binary type errors retain jq's message as the try/catch value.
+try (.-.) catch .
+"very-long-string"
+"string (\"very-long-...) and string (\"very-long-...) cannot be subtracted"
+
+try join(",") catch .
+["1","2",{"a":{"b":{"c":33}}}]
+"string (\"1,2,\") and object ({\"a\":{\"b\":{...) cannot be added"
+
+try join(",") catch .
+["1","2",[3,4,5]]
+"string (\"1,2,\") and array ([3,4,5]) cannot be added"

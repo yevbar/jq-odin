@@ -1820,6 +1820,18 @@ propagate_output :: proc(
 					}
 				}
 				err := Runtime_Error{kind = runtime_kind, input_kind = value.kind_of(&frame.binary_left), span = instruction.operator_span, key = owned_key}
+				if runtime_kind == .Cannot_Add || runtime_kind == .Cannot_Subtract {
+					key_error: runtime.Allocator_Error
+					operation := "added" if runtime_kind == .Cannot_Add else "subtracted"
+					owned_key, key_error = binary_type_error_runtime_key(&frame.binary_left, owned, operation, storage.allocator)
+					if key_error != nil {
+						assert(value.kind_of(&storage.pending_value) == .Invalid)
+						storage.pending_value = value.take_value(owned)
+						_ = value.destroy_value(&frame.binary_left)
+						return resource_step(key_error), true
+					}
+					err.key = owned_key
+				}
 				if runtime_kind == .Cannot_Multiply {
 					left_kind := value.kind_of(&frame.binary_left)
 					right_kind := value.kind_of(owned)
@@ -2233,6 +2245,62 @@ join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.A
 	strings.builder_destroy(&builder)
 	if value.constructor_error_kind(&constructor_error) != .None do return {}, .None, .Out_Of_Memory
 	return result, .None, nil
+}
+
+@(private)
+join_type_error_runtime_key :: proc(input: ^value.Value, separator: string, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Array do return "", nil
+	length, length_ok := value.array_length(input)
+	if !length_ok do return "", nil
+	builder: strings.Builder
+	_, builder_error := strings.builder_init(&builder, allocator)
+	if builder_error != nil do return "", builder_error
+	for i in 0..<length {
+		item, item_ok := value.array_element_copy(input, i)
+		if !item_ok { strings.builder_destroy(&builder); return "", nil }
+		if i > 0 && strings.write_string(&builder, separator) != len(separator) {
+			_ = value.destroy_value(&item); strings.builder_destroy(&builder); return "", nil
+		}
+		if value.kind_of(&item) == .Null {
+			_ = value.destroy_value(&item)
+			continue
+		}
+		item_kind := value.kind_of(&item)
+		if item_kind == .String {
+			text, text_ok := value.string_borrowed(&item)
+			if !text_ok || strings.write_string(&builder, text) != len(text) {
+				_ = value.destroy_value(&item); strings.builder_destroy(&builder); return "", nil
+			}
+			_ = value.destroy_value(&item)
+			continue
+		}
+		if item_kind == .Boolean || item_kind == .Number {
+			text, text_ok, text_error := text_coercion_text(&item, allocator)
+			if text_error != nil { _ = value.destroy_value(&item); strings.builder_destroy(&builder); return "", text_error }
+			if !text_ok || strings.write_string(&builder, text) != len(text) {
+				_ = runtime.mem_free_bytes(transmute([]byte)text, allocator)
+				_ = value.destroy_value(&item); strings.builder_destroy(&builder); return "", nil
+			}
+			free_error := runtime.mem_free_bytes(transmute([]byte)text, allocator)
+			_ = value.destroy_value(&item)
+			if free_error != nil && free_error != .Mode_Not_Implemented { strings.builder_destroy(&builder); return "", free_error }
+			continue
+		}
+		partial := strings.to_string(builder)
+		left, constructor_error := value.string_value(partial, allocator)
+		free_error := runtime.mem_free_bytes(transmute([]byte)partial, allocator)
+		if value.constructor_error_kind(&constructor_error) != .None || (free_error != nil && free_error != .Mode_Not_Implemented) {
+			if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
+			_ = value.destroy_value(&item)
+			return "", free_error if free_error != nil else nil
+		}
+		key, key_error := binary_type_error_runtime_key(&left, &item, "added", allocator)
+		_ = value.destroy_value(&left)
+		_ = value.destroy_value(&item)
+		return key, key_error
+	}
+	strings.builder_destroy(&builder)
+	return "", nil
 }
 
 @(private)
@@ -2949,6 +3017,64 @@ binary_zero_divisor_runtime_key :: proc(left, right: ^value.Value, remainder: bo
 	   !text_append_json_value(&builder, right) ||
 	   strings.write_string(&builder, ")") != 1 ||
 	   strings.write_string(&builder, suffix) != len(suffix) {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
+binary_append_error_operand :: proc(
+	builder: ^strings.Builder,
+	input: ^value.Value,
+	allocator: runtime.Allocator,
+) -> (bool, runtime.Allocator_Error) {
+	text, text_ok, text_error := text_coercion_text(input, allocator)
+	if text_error != nil do return false, text_error
+	if !text_ok do return false, nil
+	limit := min(len(text), 11)
+	ok := strings.write_string(builder, text[:limit]) == limit
+	if ok && len(text) > limit do ok = strings.write_string(builder, "...") == 3
+	free_error := runtime.mem_free_bytes(transmute([]byte)text, allocator)
+	if free_error != nil && free_error != .Mode_Not_Implemented do return false, free_error
+	return ok, nil
+}
+
+@(private)
+binary_type_error_runtime_key :: proc(
+	left, right: ^value.Value,
+	op: string,
+	allocator: runtime.Allocator,
+) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	left_kind := runtime_value_kind_name(value.kind_of(left))
+	right_kind := runtime_value_kind_name(value.kind_of(right))
+	left_ok := strings.write_string(&builder, left_kind) == len(left_kind)
+	if !left_ok || strings.write_string(&builder, " (") != 2 {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	left_error: runtime.Allocator_Error
+	left_ok, left_error = binary_append_error_operand(&builder, left, allocator)
+	if left_error != nil {
+		strings.builder_destroy(&builder)
+		return "", left_error
+	}
+	if !left_ok || strings.write_string(&builder, ") and ") != 6 ||
+	   strings.write_string(&builder, right_kind) != len(right_kind) ||
+	   strings.write_string(&builder, " (") != 2 {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	right_ok, right_error := binary_append_error_operand(&builder, right, allocator)
+	if right_error != nil {
+		strings.builder_destroy(&builder)
+		return "", right_error
+	}
+	if !right_ok || strings.write_string(&builder, ") cannot be ") != 12 ||
+	   strings.write_string(&builder, op) != len(op) {
 		strings.builder_destroy(&builder)
 		return "", nil
 	}
@@ -4805,7 +4931,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output, runtime_kind, resource_error := join_result(&frame.input, separator, storage.allocator)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
-					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					owned_key := ""
+					if runtime_kind == .Cannot_Iterate {
+						key_error: runtime.Allocator_Error
+						owned_key, key_error = join_type_error_runtime_key(&frame.input, separator, storage.allocator)
+						if key_error != nil do return resource_step(key_error)
+						if len(owned_key) > 0 {
+							err.key = owned_key
+						}
+					}
+					result, ready := raise_runtime(storage, index, err)
+					if len(owned_key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)owned_key, storage.allocator)
+						if free_error != nil do return resource_step(free_error)
+					}
 					if ready do return result
 					continue
 				}

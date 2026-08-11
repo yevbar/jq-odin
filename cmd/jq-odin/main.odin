@@ -183,6 +183,21 @@ json_kind_name :: proc(kind: value.Kind) -> string {
 }
 
 write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
+	if err.kind == .Runtime && len(err.runtime_key) > 0 &&
+	   (err.runtime_kind == .Cannot_Add || err.runtime_kind == .Cannot_Subtract) {
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): ") && ok
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\n") && ok
+		return ok
+	}
 	if err.kind == .Runtime && len(err.runtime_key) > len("__jq_odin_subtraction__") &&
 	   err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
 		path := err.runtime_input_path
