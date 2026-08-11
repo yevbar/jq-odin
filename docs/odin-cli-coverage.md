@@ -316,6 +316,13 @@ behavioral oracle.
   `E` notation with explicit positive signs (`1e20` → `1E+20`, `1e-7` →
   `1E-7`). The expanded JSON shard passes 5/5 and numeric serializer
   regressions remain green.
+- Scalar-array `@csv` (`47d5a19`, decision `0124`) now implements RFC4180
+  quoting, doubled quotes, null-as-empty fields, booleans, UTF-8, and jq-style
+  exponent formatting. Its focused shard passes 3/3 and package/build checks
+  pass; the catalog remains **170/522 passed and 352 failed** because the
+  selected upstream format cases are grouped with deferred sibling formats and
+  interpolation forms. Nested containers and exact diagnostic wording remain
+  deferred.
 
 ## Remaining high-value clusters
 
