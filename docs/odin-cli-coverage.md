@@ -283,6 +283,13 @@ behavioral oracle.
   missing-key null results. The focused shard passes 3/3, package/build checks
   pass, and the full catalog is **166/522 passed and 356 failed**. Dynamic or
   interpolated keys and assignment/update forms remain deferred.
+- `@base64`/`@base64d` (`f35a12f`, fixes `310cdad` and `6d3a703`, decision
+  `0119`) now encode scalar-coerced values, decode valid padded/unpadded input,
+  reject malformed string payloads, and preserve jq's replacement-byte results
+  for scalar non-string inputs. The focused shard passes 8/8; package/build
+  checks pass and the full catalog is **168/522 passed and 354 failed**. Other
+  format filters, array/object coercion, and exact diagnostic wording remain
+  deferred.
 
 ## Remaining high-value clusters
 
