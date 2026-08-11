@@ -251,6 +251,13 @@ behavioral oracle.
   the existing shard passes 10/10, and the exact catalog is now **160/522
   passed and 362 failed**. Empty-array needles, dynamic/two-argument forms,
   Unicode edges, and detailed diagnostics remain deferred.
+- Bounded `toboolean` (`aa2408d`, decision `0114`) now preserves boolean inputs
+  and converts the exact string literals `"true"` and `"false"`. Its focused
+  shard passes 4/4; package tests and the CLI harness pass (316 subprocess and
+  41 differential checks). The full catalog remains **160/522 passed and 362
+  failed** because its selected `toboolean` cases are embedded in unsupported
+  `map`/`try` compositions. Invalid strings, non-string diagnostics, and
+  dynamic/generator forms remain deferred.
 
 ## Remaining high-value clusters
 
