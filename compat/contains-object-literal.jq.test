@@ -9,3 +9,11 @@ true
 ({foo: 12, bar: 13} | contains({baz: 14}))
 {}
 false
+
+({a: [1,2]} | contains({a: [2]}))
+{}
+true
+
+([1,2] | contains([2]))
+{}
+true

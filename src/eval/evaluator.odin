@@ -2117,6 +2117,31 @@ contains_value :: proc(input, needle: ^value.Value) -> (bool, bool) {
 		needle_text, needle_ok := value.string_borrowed(needle)
 		return haystack_ok && needle_ok && strings.contains(haystack, needle_text), true
 	}
+	if input_kind == .Array && needle_kind == .Array {
+		input_length, input_ok := value.array_length(input)
+		needle_length, needle_ok := value.array_length(needle)
+		if !input_ok || !needle_ok do return false, false
+		for needle_index in 0..<needle_length {
+			wanted, wanted_ok := value.array_element_copy(needle, needle_index)
+			if !wanted_ok do return false, false
+			found := false
+			for input_index in 0..<input_length {
+				actual, actual_ok := value.array_element_copy(input, input_index)
+				if actual_ok {
+					matches, comparable := contains_value(&actual, &wanted)
+					_ = value.destroy_value(&actual)
+					if !comparable { _ = value.destroy_value(&wanted); return false, false }
+					if matches { found = true; break }
+				}
+			}
+			_ = value.destroy_value(&wanted)
+			if !found do return false, true
+		}
+		return true, true
+	}
+	if (input_kind == .Array || input_kind == .Object) && input_kind != needle_kind {
+		return false, false
+	}
 	if input_kind == .Object && needle_kind == .Object {
 		length, length_ok := value.object_length(needle)
 		if !length_ok do return false, false
@@ -2215,7 +2240,16 @@ literal_object_value :: proc(
 			_ = value.destroy_value(&result)
 			return {}, .Out_Of_Memory, nil
 		}
-		member, member_error, member_cleanup := literal_value(storage, value_instruction)
+		member: value.Value
+		member_error: value.Error
+		member_cleanup: runtime.Allocator_Error
+		if value_instruction.opcode == .Object {
+			member, member_error, member_cleanup = literal_object_value(storage, value_instruction)
+		} else if value_instruction.opcode == .Array {
+			member, member_error, member_cleanup = literal_array_value(storage, value_instruction)
+		} else {
+			member, member_error, member_cleanup = literal_value(storage, value_instruction)
+		}
 		if member_cleanup != nil || member_error != .None {
 			_ = value.destroy_value(&key); _ = value.destroy_value(&result)
 			return {}, member_error, member_cleanup
@@ -2249,14 +2283,39 @@ literal_array_value :: proc(
 		_ = value.destroy_value(&result)
 		return {}, .Invalid_Number_Literal, nil
 	}
-	dummy := value.null_value()
-	if !collect_constructor_key_stream(storage, child, 0, &dummy, &result) {
-		_ = value.destroy_value(&dummy)
+	if !literal_array_append_stream(storage, child, &result) {
 		_ = value.destroy_value(&result)
 		return {}, .Invalid_Number_Literal, nil
 	}
-	_ = value.destroy_value(&dummy)
 	return result, .None, nil
+}
+
+@(private)
+literal_array_append_stream :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, output: ^value.Value) -> bool {
+	instruction, instruction_ok := program.program_instruction(storage.compiled, index)
+	if !instruction_ok do return false
+	if instruction.opcode == .Fork {
+		left, left_ok := child_instruction(storage, instruction, 0)
+		right, right_ok := child_instruction(storage, instruction, 1)
+		return left_ok && right_ok && literal_array_append_stream(storage, left, output) && literal_array_append_stream(storage, right, output)
+	}
+	item: value.Value
+	item_error: value.Error
+	item_cleanup: runtime.Allocator_Error
+	if instruction.opcode == .Object {
+		item, item_error, item_cleanup = literal_object_value(storage, instruction)
+	} else if instruction.opcode == .Array {
+		item, item_error, item_cleanup = literal_array_value(storage, instruction)
+	} else {
+		item, item_error, item_cleanup = literal_value(storage, instruction)
+	}
+	if item_error != .None || item_cleanup != nil do return false
+	_, append_error := value.array_append_take(output, &item)
+	if value.array_error_kind(&append_error) != .None {
+		_ = value.destroy_value(&item)
+		return false
+	}
+	return true
 }
 
 @(private)
