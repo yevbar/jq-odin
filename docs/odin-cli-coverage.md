@@ -387,6 +387,11 @@ behavioral oracle.
   Its focused shard passes 5/5 and package/build checks pass; the catalog
   remains **172/522 passed and 350 failed** because the builtin has no
   standalone selected jq.test case.
+- The `strings` type filter (`236e0d4`, decision `0136`) now emits string inputs
+  unchanged and suppresses all other JSON kinds, mirroring the numbers filter.
+  Its focused shard passes 5/5 and package/build checks pass; the catalog
+  remains **172/522 passed and 350 failed** because the builtin has no
+  standalone selected jq.test case.
 
 ## Remaining high-value clusters
 
