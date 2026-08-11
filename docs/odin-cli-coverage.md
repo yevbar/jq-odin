@@ -420,6 +420,12 @@ behavioral oracle.
   shard passes 3/3 against the pinned oracle and package/build checks pass; the
   catalog remains **172/522 passed and 350 failed** because selected `last`
   cases are generator expressions.
+- The zero-argument `isinfinite` predicate (`9f02282`, decision `0143`) now
+  returns true only for infinite numeric inputs and false for finite, NaN, and
+  non-number values. Its focused shard passes 3/3 against the pinned oracle;
+  the full package suite also passes. The catalog remains **172/522 passed and
+  350 failed** because the selected predicate cases are grouped with broader
+  unsupported expressions.
 - The zero-argument `log` builtin (`c964b84`, decision `0139`) now computes the
   natural logarithm for numeric inputs using the existing numeric evaluator
   path. Its focused shard passes 4/4 against the pinned oracle and package/build
