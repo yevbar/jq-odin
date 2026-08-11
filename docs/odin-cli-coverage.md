@@ -338,6 +338,11 @@ behavioral oracle.
   of requiring an array, matching jq for scalar, null, and string inputs while
   preserving array behavior. The expanded shard passes 5/5 and the full
   catalog is now **171/522 passed and 351 failed**.
+- Zero-argument `tojson` (`111c5db`, decision `0127`) now serializes scalar,
+  string, null, boolean, exponent, and nested array/object values using the
+  reviewed compact JSON serializer. Its focused shard passes 4/4 and
+  package/build checks pass; the catalog remains **171/522 passed and 351
+  failed** because `fromjson` and complex expression forms remain deferred.
 
 ## Remaining high-value clusters
 
