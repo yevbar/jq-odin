@@ -208,6 +208,12 @@ behavioral oracle.
   catalog remains **147/522 passed and 375 failed** because its selected cases
   currently exercise deferred multi-needle/object forms. Dynamic needles,
   object ordering, and non-array diagnostics remain deferred.
+- Simple object-literal `bsearch(...)` needles (`8c1139d`, decisions `0106`
+  and the duplicate tie fix) now reuse the existing recursive ordering
+  comparator with owned reconstructed object values and return the rightmost
+  equal match like jq. Its focused shard passes 5/5 and the exact catalog is
+  **148/522 passed and 374 failed**. Multi-needle, nested-object, dynamic, and
+  non-array forms remain deferred.
 
 ## Remaining high-value clusters
 
