@@ -2596,6 +2596,24 @@ text_append_json_escaped :: proc(builder: ^strings.Builder, text: string) -> boo
 }
 
 @(private)
+text_append_json_number :: proc(builder: ^strings.Builder, text: string) -> bool {
+	exponent_at := -1
+	for index := 0; index < len(text); index += 1 {
+		b := text[index]
+		if b == 'e' || b == 'E' { exponent_at = index; break }
+	}
+	if exponent_at < 0 do return strings.write_string(builder, text) == len(text)
+	if strings.write_string(builder, text[:exponent_at]) != exponent_at do return false
+	if strings.write_byte(builder, 'E') != 1 do return false
+	exponent := text[exponent_at+1:]
+	if len(exponent) == 0 do return false
+	if exponent[0] != '+' && exponent[0] != '-' {
+		if strings.write_byte(builder, '+') != 1 do return false
+	}
+	return strings.write_string(builder, exponent) == len(exponent)
+}
+
+@(private)
 text_append_json_value :: proc(builder: ^strings.Builder, input: ^value.Value) -> bool {
 	kind := value.kind_of(input)
 	switch kind {
@@ -2609,7 +2627,7 @@ text_append_json_value :: proc(builder: ^strings.Builder, input: ^value.Value) -
 		return strings.write_string(builder, "true" if boolean else "false") == (4 if boolean else 5)
 	case .Number:
 		spelling, literal := value.literal_spelling_borrowed(input)
-		if literal do return strings.write_string(builder, spelling) == len(spelling)
+		if literal do return text_append_json_number(builder, spelling)
 		number, ok := value.number_value_get(input)
 		if !ok do return false
 		buffer: [64]byte
