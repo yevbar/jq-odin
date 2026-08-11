@@ -2679,6 +2679,11 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 			value_names := [?]string{"value", "Value"}
 			key, key_ok := from_entries_member_copy(&entry, key_names[:])
 			item, item_ok := from_entries_member_copy(&entry, value_names[:])
+			if !item_ok {
+				// jq defaults an omitted value field to null.
+				item = value.null_value()
+				item_ok = true
+			}
 			_ = value.destroy_value(&entry)
 			if !key_ok || !item_ok || value.kind_of(&key) != .String { _ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
 			_, displaced, set_error := value.object_set_take(&result, &key, &item)
