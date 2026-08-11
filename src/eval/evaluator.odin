@@ -2572,6 +2572,102 @@ base64_coercion_text :: proc(input: ^value.Value) -> (string, bool) {
 	return "", false
 }
 
+@(private)
+text_append_json_escaped :: proc(builder: ^strings.Builder, text: string) -> bool {
+	if strings.write_byte(builder, '"') != 1 do return false
+	hex := "0123456789abcdef"
+	for b in transmute([]byte)text {
+		switch b {
+		case '"': if strings.write_string(builder, "\\\"") != 2 do return false
+		case '\\': if strings.write_string(builder, "\\\\") != 2 do return false
+		case '\b': if strings.write_string(builder, "\\b") != 2 do return false
+		case '\f': if strings.write_string(builder, "\\f") != 2 do return false
+		case '\n': if strings.write_string(builder, "\\n") != 2 do return false
+		case '\r': if strings.write_string(builder, "\\r") != 2 do return false
+		case '\t': if strings.write_string(builder, "\\t") != 2 do return false
+		case:
+			if b < 0x20 {
+				encoded := [6]u8{'\\', 'u', '0', '0', hex[b >> 4], hex[b & 0xf]}
+				if strings.write_string(builder, transmute(string)encoded[:]) != 6 do return false
+			} else if strings.write_byte(builder, b) != 1 do return false
+		}
+	}
+	return strings.write_byte(builder, '"') == 1
+}
+
+@(private)
+text_append_json_value :: proc(builder: ^strings.Builder, input: ^value.Value) -> bool {
+	kind := value.kind_of(input)
+	switch kind {
+	case .Invalid:
+		return false
+	case .Null:
+		return strings.write_string(builder, "null") == 4
+	case .Boolean:
+		boolean, ok := value.boolean_value_get(input)
+		if !ok do return false
+		return strings.write_string(builder, "true" if boolean else "false") == (4 if boolean else 5)
+	case .Number:
+		spelling, literal := value.literal_spelling_borrowed(input)
+		if literal do return strings.write_string(builder, spelling) == len(spelling)
+		number, ok := value.number_value_get(input)
+		if !ok do return false
+		buffer: [64]byte
+		formatted := strconv.write_float(buffer[:], number, 'f', -1, 64)
+		return strings.write_string(builder, formatted) == len(formatted)
+	case .String:
+		text, ok := value.string_borrowed(input)
+		if !ok do return false
+		return text_append_json_escaped(builder, text)
+	case .Array:
+		length, ok := value.array_length(input)
+		if !ok || strings.write_byte(builder, '[') != 1 do return false
+		for index in 0..<length {
+			if index > 0 && strings.write_byte(builder, ',') != 1 do return false
+			item, item_ok := value.array_element_copy(input, index)
+			if !item_ok do return false
+			item_ok = text_append_json_value(builder, &item)
+			_ = value.destroy_value(&item)
+			if !item_ok do return false
+		}
+		return strings.write_byte(builder, ']') == 1
+	case .Object:
+		if strings.write_byte(builder, '{') != 1 do return false
+		iterator := value.object_iterator()
+		index := 0
+		for {
+			key, item, found := value.object_iter_next_copy(input, &iterator)
+			if !found do break
+			if index > 0 && strings.write_byte(builder, ',') != 1 {
+				_ = value.destroy_value(&key); _ = value.destroy_value(&item); return false
+			}
+			key_text, key_ok := value.string_borrowed(&key)
+			if !key_ok || !text_append_json_escaped(builder, key_text) || strings.write_byte(builder, ':') != 1 {
+				_ = value.destroy_value(&key); _ = value.destroy_value(&item); return false
+			}
+			_ = value.destroy_value(&key)
+			item_ok := text_append_json_value(builder, &item)
+			_ = value.destroy_value(&item)
+			if !item_ok do return false
+			index += 1
+		}
+		return strings.write_byte(builder, '}') == 1
+	}
+	return false
+}
+
+@(private)
+text_coercion_text :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, bool, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", false, init_error
+	if !text_append_json_value(&builder, input) {
+		strings.builder_destroy(&builder)
+		return "", false, nil
+	}
+	return strings.to_string(builder), true, nil
+}
+
 base64_text_is_valid :: proc(text: string) -> bool {
 	if len(text) == 0 do return true
 	if len(text) % 4 == 1 do return false
@@ -2799,11 +2895,20 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return result, .None, nil
 	}
 	if opcode == .Text {
-		text, text_ok := base64_coercion_text(input)
+		text: string
+		text_ok: bool
+		text_error: runtime.Allocator_Error
+		if value.kind_of(input) == .String {
+			text, text_ok = base64_coercion_text(input)
+		} else {
+			text, text_ok, text_error = text_coercion_text(input, allocator)
+		}
+		if text_error != nil do return {}, .None, text_error
 		if !text_ok do return {}, .Cannot_Trim, nil
 		result, constructor_error := value.string_value(text, allocator)
+		free_error := runtime.mem_free_bytes(transmute([]byte)text, allocator)
 		if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
-		if constructor_error != nil do return {}, .None, .Out_Of_Memory
+		if constructor_error != nil || free_error != nil do return {}, .None, free_error if free_error != nil else .Out_Of_Memory
 		return result, .None, nil
 	}
 	if opcode == .Min || opcode == .Max {
