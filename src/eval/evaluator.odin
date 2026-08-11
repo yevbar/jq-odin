@@ -3575,6 +3575,33 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return result, .None, nil
 	}
 	if opcode == .Add_Builtin {
+		if kind == .Object {
+			iterator := value.object_iterator()
+			acc := value.Value{}
+			have_acc := false
+			for {
+				key, item, found := value.object_iter_next_copy(input, &iterator)
+				if !found do break
+				_ = value.destroy_value(&key)
+				if !have_acc {
+					acc = item
+					have_acc = true
+					continue
+				}
+				result, add_error := value.value_add(&acc, &item, allocator)
+				kind_error := value.value_add_error_kind(&add_error)
+				_ = value.destroy_value(&acc)
+				_ = value.destroy_value(&item)
+				if kind_error != .None {
+					cleanup_error := value.destroy_value_add_error(&add_error)
+					if cleanup_error != nil do return {}, .None, cleanup_error
+					return {}, .Cannot_Add, nil
+				}
+				acc = result
+			}
+			if !have_acc do return value.null_value(), .None, nil
+			return acc, .None, nil
+		}
 		if kind != .Array do return {}, .Cannot_Add, nil
 		n, ok := value.array_length(input)
 		if !ok || n == 0 do return value.null_value(), .None, nil
