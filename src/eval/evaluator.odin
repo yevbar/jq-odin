@@ -2129,14 +2129,14 @@ has_result :: proc(input, argument: ^value.Value) -> (value.Value, Runtime_Error
 	}
 	if input_kind == .Array && argument_kind == .Number {
 		index, index_ok := value.number_value_get(argument)
-		if !index_ok || math.is_nan(index) || math.is_inf(index) || index < 0 || math.trunc(index) != index {
+		if !index_ok || math.is_nan(index) || math.is_inf(index) || index < 0 {
 			return value.boolean_value(false), .None
 		}
 		length, length_ok := value.array_length(input)
 		if !length_ok do return {}, .Cannot_Iterate
 		return value.boolean_value(index < f64(length)), .None
 	}
-	return value.boolean_value(false), .None
+	return {}, .Cannot_Iterate
 }
 
 @(private)

@@ -1,10 +1,12 @@
 # Bounded literal `has` compatibility shard
 
 This shard covers `has("key")` for object keys, `has(N)` for non-negative
-integer array indexes, and the `has(nan)` false result. The cases are derived
-from `upstream/jq/tests/jq.test:1687-1695`. Missing keys/indices return false;
-null inputs, dynamic arguments, negative indexes, and recursive generator
-forms remain deferred.
+integer array indexes, fractional-index truncation, and the `has(nan)` false
+result. Wrong container/key combinations and null arguments are validated as
+runtime-error boundaries with direct oracle probes. The cases are derived from
+`upstream/jq/tests/jq.test:1687-1695`. Missing keys/indices return false;
+dynamic arguments, negative indexes, and recursive generator forms remain
+deferred.
 
 Run with:
 

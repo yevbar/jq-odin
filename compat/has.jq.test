@@ -15,6 +15,11 @@ has(2)
 [0,1]
 false
 
+# jq truncates positive fractional array indexes.
+has(1.5)
+[10,20]
+true
+
 has(nan)
 [0,1,2]
 false
