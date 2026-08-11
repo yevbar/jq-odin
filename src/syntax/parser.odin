@@ -108,6 +108,10 @@ Node_Kind :: enum {
 	Rindex_Builtin,
 	// Indices_Builtin is appended to preserve existing AST discriminants.
 	Indices_Builtin,
+	// Startswith is appended to preserve existing AST discriminants.
+	Startswith,
+	// Endswith is appended to preserve existing AST discriminants.
+	Endswith,
 }
 
 Node_Id :: distinct int
@@ -805,12 +809,16 @@ parse_pipe :: proc(
 					kind = .Rindex_Builtin
 				} else if spelling == "indices" {
 					kind = .Indices_Builtin
+				} else if spelling == "startswith" {
+					kind = .Startswith
+				} else if spelling == "endswith" {
+					kind = .Endswith
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
 				advance(parser)
-				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices") && token_is(parser, .Open_Paren) {
+				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -835,6 +843,8 @@ parse_pipe :: proc(
 					if spelling == "index" do call_kind = .Index_Builtin
 					if spelling == "rindex" do call_kind = .Rindex_Builtin
 					if spelling == "indices" do call_kind = .Indices_Builtin
+					if spelling == "startswith" do call_kind = .Startswith
+					if spelling == "endswith" do call_kind = .Endswith
 					new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
 					if !ok { return {}, false }
 					term = new_term

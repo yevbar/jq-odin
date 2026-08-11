@@ -1,0 +1,25 @@
+# Literal string prefix and suffix predicates.
+startswith("foo")
+"foo"
+true
+"foobar"
+true
+"bar"
+false
+
+endswith("foo")
+"foo"
+true
+"foobar"
+false
+"bar"
+false
+
+startswith("")
+"anything"
+true
+
+endswith("")
+"anything"
+true
+{}

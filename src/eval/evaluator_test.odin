@@ -174,6 +174,46 @@ isnormal_builtin_accepts_normal_finite_numbers_only :: proc(t: ^testing.T) {
 }
 
 @(test)
+startswith_and_endswith_match_literal_string_boundaries :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		opcode: program.Opcode,
+		input: string,
+		needle: string,
+		expected: bool,
+	}{
+		{.Startswith, "foobar", "foo", true},
+		{.Startswith, "foobar", "bar", false},
+		{.Endswith, "foobar", "bar", true},
+		{.Endswith, "foobar", "foo", false},
+		{.Startswith, "foobar", "", true},
+		{.Endswith, "foobar", "", true},
+	}
+	for test_case in cases {
+		instructions := [?]program.Instruction{
+			{opcode = .Identity, has_literal = true, literal_kind = .String, operands_start = 0, operands_count = 1},
+			{opcode = test_case.opcode, operands_start = 1, operands_count = 1},
+		}
+		operands := [?]program.Operand{
+			text_operand(0, u32(len(test_case.needle))),
+			instruction_operand(0),
+		}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], operands[:], test_case.needle, 1)
+		input, input_error := value.string_value(test_case.input, context.allocator)
+		testing.expect_value(t, value.constructor_error_kind(&input_error), value.Error.None)
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		actual, ok := value.boolean_value_get(&output)
+		testing.expect(t, ok && actual == test_case.expected)
+		_ = value.destroy_value(&output)
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
 flatten_builtin_recursively_concatenates_nested_arrays :: proc(t: ^testing.T) {
 	input, input_error := value.array_value(context.allocator)
 	testing.expect_value(t, value.array_error_kind(&input_error), value.Array_Error.None)

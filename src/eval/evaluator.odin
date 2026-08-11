@@ -1985,6 +1985,15 @@ contains_result :: proc(input: ^value.Value, needle: string) -> (value.Value, Ru
 }
 
 @(private)
+prefix_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcode) -> (value.Value, Runtime_Error_Kind) {
+	if value.kind_of(input) != .String do return {}, .Cannot_Iterate
+	haystack, ok := value.string_borrowed(input)
+	if !ok do return {}, .Cannot_Iterate
+	matched := strings.has_prefix(haystack, needle) if opcode == .Startswith else strings.has_suffix(haystack, needle)
+	return value.boolean_value(matched), .None
+}
+
+@(private)
 split_result :: proc(input: ^value.Value, separator: string, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) != .String do return {}, .Cannot_Iterate, nil
 	text, text_ok := value.string_borrowed(input)
@@ -2996,6 +3005,26 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				output, runtime_kind := contains_result(&frame.input, needle)
+				if runtime_kind != .None {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Startswith, .Endswith:
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				child, child_ok := child_instruction(storage, instruction, 0)
+				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
+				needle_operand, operand_ok := program.program_operand(storage.compiled, needle_instruction.operands_start)
+				needle, needle_text_ok := program.operand_text(storage.compiled, needle_operand)
+				if !child_ok || !needle_ok || needle_operand.kind != .Text || !needle_instruction.has_literal || needle_instruction.literal_kind != .String || !operand_ok || !needle_text_ok {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output, runtime_kind := prefix_result(&frame.input, needle, instruction.opcode)
 				if runtime_kind != .None {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result
