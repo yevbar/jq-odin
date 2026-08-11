@@ -190,6 +190,12 @@ behavioral oracle.
   passes 3/3 and the exact catalog is now **145/522 passed and 377 failed**;
   arrays/objects, dynamic separators, and native arithmetic-number formatting
   remain deferred.
+- Unicode `implode`/`explode` (`a52494c`, decision `0101`) now encodes and
+  decodes Unicode code points, truncates positive fractional code points, and
+  applies jq's replacement-character/NaN behavior. Its focused shards pass
+  2/2 for `implode` and 1/1 for `explode`; package, full unit, build, and CLI
+  checks pass. The exact catalog is now **146/522 passed and 376 failed**;
+  malformed UTF-8 and broader diagnostic wording remain deferred.
 
 ## Remaining high-value clusters
 
