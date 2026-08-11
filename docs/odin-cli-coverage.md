@@ -565,6 +565,11 @@ behavioral oracle.
   outside a comma-separated catch stream, matching jq's two-output case. Its
   focused shard passes 1/1, package/build checks and full tests pass, and the
   authoritative catalog is **185/522 passed and 337 failed**.
+- Fixed builtin runtime keys (`decision 0169`) now preserve jq's diagnostic
+  messages for invalid `strftime` inputs and non-string trim-family inputs
+  through `try ... catch .`. Its focused shard passes 2/2, package/build
+  checks and full tests pass, and the authoritative catalog is **186/522
+  passed and 336 failed**.
 
 ## Remaining high-value clusters
 

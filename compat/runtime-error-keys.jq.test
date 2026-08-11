@@ -1,0 +1,8 @@
+# Fixed builtin diagnostics survive try/catch as owned runtime keys.
+try strftime("%Y-%m-%dT%H:%M:%SZ") catch .
+["a",1,2,3,4,5,6,7]
+"strftime/1 requires parsed datetime inputs"
+
+try trim catch .
+123
+"trim input must be a string"

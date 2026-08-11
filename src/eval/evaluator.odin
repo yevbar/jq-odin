@@ -4576,7 +4576,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output, runtime_kind, resource_error := trimstr_result(&frame.input, needle, instruction.opcode, storage.allocator)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
-					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue
 				}
@@ -4716,7 +4717,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output, runtime_kind, resource_error := strftime_array_result(&frame.input, format, storage.allocator)
 				_ = value.destroy_value(&format_value)
 				if resource_error != nil do return resource_step(resource_error)
-				if runtime_kind != .None { result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}); if ready do return result; continue }
+				if runtime_kind != .None {
+					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					err.key = "strftime/1 requires parsed datetime inputs"
+					result, ready := raise_runtime(storage, index, err)
+					if ready do return result
+					continue
+				}
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
@@ -4745,7 +4752,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output, runtime_kind, resource_error := builtin_result(instruction.opcode, &frame.input, storage.allocator, flatten_depth)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
-					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					if (instruction.opcode == .Trim || instruction.opcode == .Ltrim || instruction.opcode == .Rtrim) && value.kind_of(&frame.input) != .String {
+						err.key = "trim input must be a string"
+					}
+					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue
 				}
