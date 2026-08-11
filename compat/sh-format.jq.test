@@ -1,0 +1,13 @@
+# Bounded zero-argument @sh formatter for scalar array fields.
+# Oracle source family: upstream/jq/tests/jq.test:72-82.
+@sh
+["a","b"]
+"'a' 'b'"
+
+@sh
+["a b","a'b","$x",null,true,1,"μ"]
+"'a b' 'a'\\''b' '$x' null true 1 'μ'"
+
+@sh
+[1e20,1e-7]
+"1E+20 1E-7"
