@@ -3342,7 +3342,7 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return value.boolean_value(true), .None, nil
 	}
 	if opcode == .Abs || opcode == .Sqrt || opcode == .Fabs {
-		if kind == .String && opcode == .Abs {
+		if (kind == .String || kind == .Array || kind == .Object) && opcode == .Abs {
 			copy := value.clone_value(input)
 			if value.kind_of(&copy) != .Invalid do return copy, .None, nil
 		}
