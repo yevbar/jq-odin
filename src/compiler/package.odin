@@ -138,7 +138,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Index_Builtin, .Rindex_Builtin, .Indices_Builtin:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
-	case .Startswith, .Endswith, .Has:
+	case .Startswith, .Endswith, .Has, .Bsearch:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Variable:
@@ -260,7 +260,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Flatten:
 		if node.has_child do return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
-	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has:
+	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Identity:
 		if node.container_kind == .Array && node.has_value do return validate_binding_scopes(nodes, node.value, source, scopes, depth, next_budget)
@@ -424,7 +424,7 @@ lower_filter :: proc(
 			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
-		case .Startswith, .Endswith, .Has:
+		case .Startswith, .Endswith, .Has, .Bsearch:
 			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
@@ -674,7 +674,7 @@ lower_filter :: proc(
 				operand_at += 1
 				instruction.operands_count = 1
 			}
-		case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has:
+		case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch:
 			instruction.opcode = .Join
 			if node.kind == .Contains do instruction.opcode = .Contains
 			if node.kind == .Split do instruction.opcode = .Split
@@ -684,6 +684,7 @@ lower_filter :: proc(
 			if node.kind == .Startswith do instruction.opcode = .Startswith
 			if node.kind == .Endswith do instruction.opcode = .Endswith
 			if node.kind == .Has do instruction.opcode = .Has
+			if node.kind == .Bsearch do instruction.opcode = .Bsearch
 			instruction.operands_count = 1
 			child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
 				kind = .Instruction,

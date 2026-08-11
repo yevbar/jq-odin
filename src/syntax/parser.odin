@@ -114,6 +114,8 @@ Node_Kind :: enum {
 	Endswith,
 	// Has is appended to preserve existing AST discriminants.
 	Has,
+	// Bsearch is appended to preserve existing AST discriminants.
+	Bsearch,
 }
 
 Node_Id :: distinct int
@@ -817,12 +819,14 @@ parse_pipe :: proc(
 					kind = .Endswith
 				} else if spelling == "has" {
 					kind = .Has
+				} else if spelling == "bsearch" {
+					kind = .Bsearch
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
 				advance(parser)
-				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "flatten") && token_is(parser, .Open_Paren) {
+				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -833,7 +837,7 @@ parse_pipe :: proc(
 					advance(parser)
 					argument_node := parser.nodes.storage[int(argument)]
 					argument_is_literal := argument_node.kind == .String || argument_node.kind == .Number || (spelling == "has" && (argument_node.kind == .Nan || argument_node.kind == .Null))
-					if !argument_is_literal || argument_node.has_child || argument_node.has_value || (spelling == "flatten" && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "has") && argument_node.kind != .String) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) {
+					if !argument_is_literal || argument_node.has_child || argument_node.has_value || (spelling == "flatten" && argument_node.kind != .Number) || ((spelling != "flatten" && spelling != "has" && spelling != "bsearch") && argument_node.kind != .String) || (spelling == "has" && argument_node.kind != .String && argument_node.kind != .Number && argument_node.kind != .Nan && argument_node.kind != .Null) || (spelling == "bsearch" && argument_node.kind != .Number) {
 						// The closing paren has already been consumed, so lookahead may
 						// be End_Of_Input. Route through the boundary-aware helper to
 						// report a parse error instead of asserting on a non-token.
@@ -851,6 +855,7 @@ parse_pipe :: proc(
 					if spelling == "startswith" do call_kind = .Startswith
 					if spelling == "endswith" do call_kind = .Endswith
 					if spelling == "has" do call_kind = .Has
+					if spelling == "bsearch" do call_kind = .Bsearch
 					if spelling == "flatten" do call_kind = .Flatten
 					new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
 					if !ok { return {}, false }

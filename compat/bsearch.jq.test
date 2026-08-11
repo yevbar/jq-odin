@@ -1,0 +1,12 @@
+# Bounded single-literal numeric bsearch.
+bsearch(2)
+[1,2,3]
+1
+
+bsearch(0)
+[1,2,3]
+-1
+
+bsearch(3)
+[1,2,3]
+2

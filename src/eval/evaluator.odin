@@ -2141,6 +2141,25 @@ has_result :: proc(input, argument: ^value.Value) -> (value.Value, Runtime_Error
 }
 
 @(private)
+bsearch_result :: proc(input, needle: ^value.Value) -> (value.Value, Runtime_Error_Kind) {
+	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate
+	length, length_ok := value.array_length(input)
+	if !length_ok do return {}, .Cannot_Iterate
+	low, high := 0, length - 1
+	for low <= high {
+		middle := low + (high-low)/2
+		item, item_ok := value.array_element_copy(input, middle)
+		if !item_ok do return {}, .Cannot_Iterate
+		comparison, comparison_ok := compare_values(&item, needle)
+		_ = value.destroy_value(&item)
+		if !comparison_ok do return {}, .Cannot_Iterate
+		if comparison == 0 do return value.number_value(f64(middle)), .None
+		if comparison < 0 { low = middle + 1 } else { high = middle - 1 }
+	}
+	return value.number_value(f64(-(low + 1))), .None
+}
+
+@(private)
 prefix_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcode) -> (value.Value, Runtime_Error_Kind) {
 	if value.kind_of(input) != .String do return {}, .Cannot_Iterate
 	haystack, ok := value.string_borrowed(input)
@@ -3226,6 +3245,28 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				output, runtime_kind := has_result(&frame.input, &argument)
 				_ = value.destroy_value(&argument)
+				if runtime_kind != .None {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Bsearch:
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				child, child_ok := child_instruction(storage, instruction, 0)
+				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
+				needle, needle_error, needle_cleanup := literal_value(storage, needle_instruction)
+				if needle_cleanup != nil do return resource_step(needle_cleanup)
+				if needle_error != .None || !child_ok || !needle_ok {
+					if value.kind_of(&needle) != .Invalid do _ = value.destroy_value(&needle)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output, runtime_kind := bsearch_result(&frame.input, &needle)
+				_ = value.destroy_value(&needle)
 				if runtime_kind != .None {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result
