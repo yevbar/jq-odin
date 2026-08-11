@@ -518,7 +518,11 @@ behavioral oracle.
   pinned oracle, package/build checks and full tests pass. The resumed field
   iterator guard was corrected in decision `0159`; the full catalog is now
   **175/522 passed and 347 failed**. Negative-step, dynamic/comma arguments,
-  `foreach`, `limit`, and `range(.)` remain deferred.
+  `foreach`, `limit`, and `range(.)` remain deferred in that initial scope.
+- Unary-negative and zero-step literal `range` operands (`b24d9a76`, decision
+  `0160`) now cover descending half-open streams and empty zero-step/direction
+  cases. The focused shard passes 7/7, package/build checks and full tests
+  pass, and the full catalog is now **177/522 passed and 345 failed**.
 
 ## Remaining high-value clusters
 

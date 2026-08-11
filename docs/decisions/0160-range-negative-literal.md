@@ -1,4 +1,4 @@
-# Decision 0159: unary-negative literal `range` operands
+# Decision 0160: unary-negative literal `range` operands
 
 ## Scope
 
