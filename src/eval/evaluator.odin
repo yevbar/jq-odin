@@ -3513,7 +3513,7 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return result, .None, nil
 	}
 	if opcode == .Isnan {
-		if kind != .Number do return {}, .Cannot_Number, nil
+		if kind != .Number do return value.boolean_value(false), .None, nil
 		number, number_ok := value.number_value_get(input)
 		if !number_ok do return {}, .Cannot_Number, nil
 		return value.boolean_value(math.is_nan(number)), .None, nil

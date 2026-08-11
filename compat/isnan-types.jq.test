@@ -1,0 +1,28 @@
+# jq's isnan is false for every non-number value.
+isnan
+null
+false
+
+isnan
+true
+false
+
+isnan
+"text"
+false
+
+isnan
+[]
+false
+
+isnan
+{}
+false
+
+nan | isnan
+null
+true
+
+isnan
+1.25
+false
