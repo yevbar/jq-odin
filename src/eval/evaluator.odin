@@ -2363,6 +2363,16 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 }
 
 @(private)
+from_entries_member_copy :: proc(entry: ^value.Value, names: []string) -> (value.Value, bool) {
+	for name in names {
+		candidate, ok := value.object_get_copy(entry, name)
+		if ok do return candidate, true
+		if value.kind_of(&candidate) != .Invalid do _ = value.destroy_value(&candidate)
+	}
+	return {}, false
+}
+
+@(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Tonumber {
@@ -2665,8 +2675,10 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		for i in 0..<length {
 			entry, entry_ok := value.array_element_copy(input, i)
 			if !entry_ok || value.kind_of(&entry) != .Object { _ = value.destroy_value(&entry); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
-			key, key_ok := value.object_get_copy(&entry, "key")
-			item, item_ok := value.object_get_copy(&entry, "value")
+			key_names := [?]string{"key", "Key", "name", "Name"}
+			value_names := [?]string{"value", "Value"}
+			key, key_ok := from_entries_member_copy(&entry, key_names[:])
+			item, item_ok := from_entries_member_copy(&entry, value_names[:])
 			_ = value.destroy_value(&entry)
 			if !key_ok || !item_ok || value.kind_of(&key) != .String { _ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
 			_, displaced, set_error := value.object_set_take(&result, &key, &item)

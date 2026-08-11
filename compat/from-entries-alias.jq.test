@@ -1,0 +1,4 @@
+# jq.test:1679 aliases Key/Name and Value in from_entries.
+from_entries
+[{"key":"a", "value":1}, {"Key":"b", "Value":2}, {"name":"c", "value":3}, {"Name":"d", "Value":4}]
+{"a":1,"b":2,"c":3,"d":4}
