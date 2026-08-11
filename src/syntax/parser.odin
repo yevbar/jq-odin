@@ -157,6 +157,8 @@ Node_Kind :: enum {
 	Tojson,
 	// Fromjson is appended to preserve existing AST discriminants.
 	Fromjson,
+	// Last is appended to preserve existing AST discriminants.
+	Last,
 	// Log is appended to preserve existing AST discriminants.
 	Log,
 }
@@ -909,6 +911,8 @@ parse_pipe :: proc(
 					kind = .Tojson
 				} else if spelling == "fromjson" {
 					kind = .Fromjson
+				} else if spelling == "last" {
+					kind = .Last
 				} else if spelling == "log" {
 					kind = .Log
 				} else if spelling != "null" {
