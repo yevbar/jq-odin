@@ -116,7 +116,12 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && (node.has_child || node.child == 0) && no_edges && no_container_links && !node.has_value &&
 		       node.has_name_span && !node.boolean_value && no_number &&
 		       ((!node.has_string_text && string_header_absent(node.string_text) && !node.string_shorthand) ||
-		        (node.has_string_text && node.string_shorthand && string_header_present(node.string_text)))
+			        (node.has_string_text && node.string_shorthand && string_header_present(node.string_text)))
+	case .Index:
+		header := transmute(runtime.Raw_String)node.number_text
+		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && node.has_number_text && header.data != nil && header.len > 0 &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Variable:
 		return node.container_kind == .None && no_child && no_edges && no_container_links &&
 		       !node.has_value && node.has_name_span && !node.boolean_value && no_number &&
@@ -232,6 +237,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 			return validate_binding_scopes(nodes, node.key, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.value, source, scopes, depth, next_budget)
 		}
 		if node.has_child do return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Index:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Identity:
 		if node.container_kind == .Array && node.has_value do return validate_binding_scopes(nodes, node.value, source, scopes, depth, next_budget)
 		if node.container_kind == .Object && node.has_value {
@@ -367,6 +374,12 @@ lower_filter :: proc(
 			if !checked_count_add(&operand_count, 1 + u64(node.has_child)) ||
 				!checked_count_add(&text_count, u64(len(node.string_text) if node.string_shorthand else name_end-name_start)) {
 				return Lower_Outcome{kind = .Size_Overflow}
+			}
+		case .Index:
+			if !node.has_child || !node_reference_valid(node.child, len(nodes)) ||
+			   !checked_count_add(&operand_count, 2) ||
+			   !checked_count_add(&text_count, u64(len(node.number_text))) {
+				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Variable:
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
@@ -583,6 +596,25 @@ lower_filter :: proc(
 			operand_at += 1
 			text_at += u32(len(name))
 			instruction.operands_count = program.Count(1 + u32(node.has_child))
+		case .Index:
+			instruction.opcode = .Index
+			instruction.operands_count = 2
+			child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+				kind = .Instruction,
+				instruction = program.Instruction_Index(node.child),
+			})
+			assert(child_ok)
+			operand_at += 1
+			text_ok := program.set_text(output, program.Byte_Offset(text_at), node.number_text)
+			assert(text_ok)
+			index_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+				kind = .Text,
+				text_start = program.Byte_Offset(text_at),
+				text_count = program.Count(len(node.number_text)),
+			})
+			assert(index_ok)
+			operand_at += 1
+			text_at += u32(len(node.number_text))
 		case .Variable:
 			instruction.opcode = .Variable
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

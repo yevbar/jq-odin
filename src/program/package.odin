@@ -52,6 +52,7 @@ Opcode :: enum u8 {
 	Trim,
 	Ltrim,
 	Rtrim,
+	Index,
 }
 
 Operand_Kind :: enum u8 {
@@ -308,7 +309,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		return true
-	case .Identity, .Field, .Parenthesized, .Sequence, .Fork, .Optional,
+	case .Identity, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 	     .Array, .Object, .Variable, .Binding, .Reduce, .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim:
 		return false
 	}
@@ -350,6 +351,9 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 			return false
 		}
 		expected_count = count
+	case .Index:
+		if count != 2 do return false
+		expected_count = 2
 	case .Parenthesized, .Optional:
 		expected_count = 1
 	case .Array:
@@ -400,7 +404,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	for offset in 0..<count {
 		operand := program.operands[int(start+offset)]
 		expected_kind := Operand_Kind.Instruction
-		if (instruction.opcode == .Field && offset == count-1) ||
+		if ((instruction.opcode == .Field || instruction.opcode == .Index) && offset == count-1) ||
 		   (instruction.has_literal && offset == 0) {
 			expected_kind = .Text
 		}
@@ -446,6 +450,8 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return 0
 	case .Field:
 		return 1 if instruction.operands_count == 2 else 0
+	case .Index:
+		return 1
 	case .Parenthesized, .Optional:
 		return 1
 	case .Array:

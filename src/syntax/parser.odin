@@ -28,6 +28,7 @@ Node_Kind :: enum {
 	Trim,
 	Ltrim,
 	Rtrim,
+	Index,
 }
 
 Node_Id :: distinct int
@@ -1995,6 +1996,35 @@ append_postfix :: proc(
 		if token_is(parser, .Open_Bracket) {
 			open := parser.lookahead.token
 			advance(parser)
+			if token_is(parser, .Close_Bracket) {
+				close := parser.lookahead.token
+				advance(parser)
+				span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+				assert(span_ok)
+				empty_at, _, empty_ok := diagnostic.span_offsets(parser.source, close.span)
+				assert(empty_ok)
+				empty_name, empty_name_ok := diagnostic.make_span(parser.source, empty_at, empty_at)
+				assert(empty_name_ok)
+				node, ok = append_node(parser, Node{
+					kind = .Field,
+					span = span,
+					child = node,
+					has_child = true,
+					name_span = empty_name,
+					has_name_span = true,
+				})
+				if !ok do return {}, false
+				_ = open
+				continue
+			}
+			if !token_is(parser, .Number) {
+				fail_from_lookahead(parser, .Close_Bracket)
+				return {}, false
+			}
+			number_span := parser.lookahead.token.span
+			index_node, index_ok := append_number_node(parser, number_span)
+			if !index_ok do return {}, false
+			advance(parser)
 			if !token_is(parser, .Close_Bracket) {
 				fail_from_lookahead(parser, .Close_Bracket)
 				return {}, false
@@ -2003,22 +2033,15 @@ append_postfix :: proc(
 			advance(parser)
 			span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
 			assert(span_ok)
-			empty_at, _, empty_ok := diagnostic.span_offsets(parser.source, close.span)
-			assert(empty_ok)
-			empty_name, empty_name_ok := diagnostic.make_span(parser.source, empty_at, empty_at)
-			assert(empty_name_ok)
-			// `.[ ]` is the stream iterator. Represent it as a Field with an
-			// empty name so the compiler/evaluator can preserve generator
-			// cardinality instead of collapsing the suffix to identity.
-			node, ok = append_node(parser, Node{
-				kind = .Field,
-				span = span,
-				child = node,
-				has_child = true,
-				name_span = empty_name,
-				has_name_span = true,
-			})
-			if !ok do return {}, false
+			// Reuse the allocated number node as the index node. Its owned
+			// spelling remains valid for the parser lifetime and is copied by
+			// the compiler into Program text storage.
+			stored := &parser.nodes.storage[int(index_node)]
+			stored.kind = .Index
+			stored.span = span
+			stored.child = node
+			stored.has_child = true
+			node = index_node
 			_ = open
 			continue
 		}

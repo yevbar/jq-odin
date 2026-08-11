@@ -214,10 +214,18 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 	}
 	if err.kind == .Runtime && err.runtime_input_kind == .Number && len(err.runtime_key) > 0 {
 		// Ordinary field access on a numeric input uses jq's typed diagnostic,
-		// including its input-independent <unknown> location. Keep this narrow
+		// including the current input path and line. Keep this narrow
 		// to string-key indexing so numeric-index failures retain their generic
 		// runtime wording until their own parity slice is implemented.
-		ok := write_all(os.stderr, "jq: error (at <unknown>): Cannot index number with string \"")
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): Cannot index number with string \"")
 		ok = write_all(os.stderr, err.runtime_key) && ok
 		ok = write_all(os.stderr, "\"\n") && ok
 		return ok

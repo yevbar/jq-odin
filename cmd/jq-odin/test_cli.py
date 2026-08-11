@@ -1761,7 +1761,7 @@ def main() -> int:
             b"1",
             5,
             b"1\n",
-            b'jq-odin: runtime error: cannot index with string "a"\n',
+            b'jq: error (at <stdin>:1): Cannot index number with string "a"\n',
         ),
     ]
     for case in cases:

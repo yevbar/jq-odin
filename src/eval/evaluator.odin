@@ -80,6 +80,7 @@ Init_Result :: struct {
 frame_mode :: enum u8 {
 	Normal,
 	Field_Only,
+	Index_Only,
 }
 
 @(private)
@@ -97,6 +98,9 @@ frame_phase :: enum u8 {
 	Field_Start_Child,
 	Field_Child_Active,
 	Field_Result_Active,
+	Index_Start_Child,
+	Index_Child_Active,
+	Index_Result_Active,
 	Iterator_Active,
 	Binding_Start_Left,
 	Binding_Left_Active,
@@ -1023,7 +1027,7 @@ capture_composite_instruction :: proc(
 	frame: ^eval_frame,
 	instruction: program.Instruction,
 ) -> bool {
-	if frame.mode != .Normal && frame.mode != .Field_Only do return false
+	if frame.mode != .Normal && frame.mode != .Field_Only && frame.mode != .Index_Only do return false
 	#partial switch instruction.opcode {
 	case .Parenthesized, .Optional:
 		if instruction.operands_count != 1 do return false
@@ -1034,6 +1038,11 @@ capture_composite_instruction :: proc(
 		_, child_ok := child_instruction(storage, instruction, 0)
 		_, text_ok := field_text(storage, instruction)
 		if !child_ok || !text_ok do return false
+	case .Index:
+		if instruction.operands_count != 2 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+		if !child_ok || !index_ok || index_operand.kind != .Text do return false
 	case .Binding:
 		if instruction.operands_count != 3 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -1100,6 +1109,8 @@ resumed_composite_instruction_valid :: proc(
 		}
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active, .Iterator_Active:
 		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
+	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
+		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
 	case .Sequence_Start_Left, .Sequence_Left_Active, .Sequence_Right_Active:
@@ -1118,6 +1129,9 @@ resumed_composite_instruction_valid :: proc(
 	}
 	expected_operand_count: u8
 	if frame.phase == .Unary_Active do expected_operand_count = 1
+	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
+		expected_operand_count = 2
+	}
 	else if frame.phase == .Constructor_Start || frame.phase == .Constructor_Child_Active || frame.phase == .Constructor_Emit {
 		expected_operand_count = u8(instruction.operands_count)
 	}
@@ -1168,6 +1182,51 @@ field_result :: proc(
 			input_kind = value.kind_of(&frame.input),
 			span = instruction.span,
 			key = key,
+		}, true
+	case .Invalid:
+	}
+	return {}, {}, false
+}
+
+@(private)
+index_result :: proc(
+	storage: ^evaluator_storage,
+	frame: ^eval_frame,
+	instruction: program.Instruction,
+) -> (value.Value, Runtime_Error, bool) {
+	operand, operand_ok := program.program_operand(
+		storage.compiled,
+		program.Operand_Index(u32(instruction.operands_start)+1),
+	)
+	index_text, text_ok := program.operand_text(storage.compiled, operand)
+	if !operand_ok || !text_ok || operand.kind != .Text do return {}, {}, false
+	index_value, parse_error := value.literal_number_value(index_text, storage.allocator)
+	if value.constructor_error_kind(&parse_error) != .None {
+		_ = value.destroy_constructor_error(&parse_error)
+		return {}, {}, false
+	}
+	index_number, number_ok := value.number_value_get(&index_value)
+	_ = value.destroy_value(&index_value)
+	if !number_ok || index_number < 0 || index_number != f64(int(index_number)) {
+		return value.null_value(), {}, true
+	}
+	index := int(index_number)
+	switch value.kind_of(&frame.input) {
+	case .Array:
+		length, length_ok := value.array_length(&frame.input)
+		if !length_ok do return {}, {}, false
+		if index >= length do return value.null_value(), {}, true
+		output, output_ok := value.array_element_copy(&frame.input, index)
+		if !output_ok do return {}, {}, false
+		return output, {}, true
+	case .Null:
+		return value.null_value(), {}, true
+	case .Boolean, .Number, .String, .Object:
+		return {}, Runtime_Error{
+			kind = .Cannot_Index_With_String,
+			input_kind = value.kind_of(&frame.input),
+			span = instruction.span,
+			key = index_text,
 		}, true
 	case .Invalid:
 	}
@@ -1340,7 +1399,7 @@ output_needs_frame :: proc(storage: ^evaluator_storage, producer: int) -> bool {
 		parent := storage.frames[current].parent
 		if parent < 0 do return false
 		phase := storage.frames[parent].phase
-		if phase == .Sequence_Left_Active || phase == .Field_Child_Active || phase == .Binary_Left_Active do return true
+		if phase == .Sequence_Left_Active || phase == .Field_Child_Active || phase == .Index_Child_Active || phase == .Binary_Left_Active do return true
 		current = parent
 	}
 	return false
@@ -1424,6 +1483,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Field_Result_Active:
 		frame.phase = .Field_Child_Active
+	case .Index_Child_Active:
+		frame.phase = .Complete
+	case .Index_Result_Active:
+		frame.phase = .Index_Child_Active
 	case .Iterator_Active:
 		frame.phase = .Complete
 	case .Binary_Left_Active:
@@ -1612,6 +1675,15 @@ propagate_output :: proc(
 			frame.phase = .Field_Result_Active
 			return {}, false
 		case .Field_Result_Active:
+			current = parent
+		case .Index_Child_Active:
+			index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+			if !index_ok || index_operand.kind != .Text || !push_frame(storage, frame.instruction, parent, owned, .Index_Only) {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			}
+			frame.phase = .Index_Result_Active
+			return {}, false
+		case .Index_Result_Active:
 			current = parent
 		case .Iterator_Active:
 			current = parent
@@ -2111,6 +2183,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if ready do return result
 				continue
 			}
+			if frame.mode == .Index_Only {
+				output, runtime_error, valid := index_result(storage, frame, instruction)
+				if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
+				if runtime_error.kind != .None {
+					result, ready := raise_runtime(storage, index, runtime_error)
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+				continue
+			}
 
 			switch instruction.opcode {
 			case .Identity:
@@ -2183,6 +2268,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				} else {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
+			case .Index:
+				if !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				frame.phase = .Index_Start_Child
 			case .Variable:
 				output, variable_ok := variable_result(storage, index, instruction)
 				if !variable_ok || value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
@@ -2307,7 +2397,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Field_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
+		case .Field_Start_Child, .Index_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -2318,6 +2408,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			#partial switch frame.phase {
 			case .Field_Start_Child:
 				offset, next_phase = 0, .Field_Child_Active
+			case .Index_Start_Child:
+				offset, next_phase = 0, .Index_Child_Active
 			case .Fork_Start_Left:
 				offset, next_phase = 0, .Fork_Left_Active
 			case .Fork_Start_Right:
@@ -2484,7 +2576,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		case .Unary_Active, .Fork_Left_Active, .Fork_Right_Active,
 		     .Sequence_Left_Active, .Sequence_Right_Active,
-		     .Field_Child_Active, .Field_Result_Active, .Binary_Left_Active, .Binary_Right_Active,
+		     .Field_Child_Active, .Field_Result_Active,
+		     .Index_Child_Active, .Index_Result_Active,
+		     .Binary_Left_Active, .Binary_Right_Active,
 		     .Binding_Left_Active, .Binding_Body_Active, .Constructor_Child_Active:
 			// An active consumer is never the top frame: its producer is above it.
 			return begin_terminal_misuse(storage, .Malformed_Program)
