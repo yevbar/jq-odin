@@ -561,6 +561,10 @@ behavioral oracle.
   and multiplicative cases. Its focused shard passes 3/3, package/build checks
   and full tests pass, and the authoritative catalog is **184/522 passed and
   338 failed**.
+- `try`/`catch` pipe precedence (`decision 0168`) now keeps a following pipe
+  outside a comma-separated catch stream, matching jq's two-output case. Its
+  focused shard passes 1/1, package/build checks and full tests pass, and the
+  authoritative catalog is **185/522 passed and 337 failed**.
 
 ## Remaining high-value clusters
 
