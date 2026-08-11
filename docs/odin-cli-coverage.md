@@ -219,9 +219,10 @@ behavioral oracle.
   while preserving non-empty separator behavior. Its focused shard passes 6/6
   and the exact catalog is now **149/522 passed and 373 failed**. Non-string
   diagnostics and dynamic separators remain deferred.
-- Literal unary negative numbers (`7ab519d`, decision `0108`) now lower as
-  owned negative numeric literals, covering scalar, array, arithmetic, and
-  range cases. Its focused shard passes 2/2 and the exact catalog is now
+- Literal unary negative numbers (`972a775`, decisions `0108` and the
+  negative-zero correction) now lower as owned negative numeric literals,
+  covering scalar, array, arithmetic, range, and jq-specific negative-zero
+  spelling cases. Its focused shard passes 3/3 and the exact catalog is now
   **152/522 passed and 370 failed**. Dynamic `-.`, richer unary forms, and
   negative arguments to deferred parameterized builtins remain deferred.
 
