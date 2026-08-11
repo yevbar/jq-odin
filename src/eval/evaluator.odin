@@ -2843,10 +2843,16 @@ sh_append_field :: proc(builder: ^strings.Builder, input: ^value.Value) -> bool 
 
 @(private)
 sh_format_text :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, bool, runtime.Allocator_Error) {
-	if value.kind_of(input) != .Array do return "", false, nil
 	builder: strings.Builder
 	_, init_error := strings.builder_init(&builder, allocator)
 	if init_error != nil do return "", false, init_error
+	if value.kind_of(input) != .Array {
+		if !sh_append_field(&builder, input) {
+			strings.builder_destroy(&builder)
+			return "", false, nil
+		}
+		return strings.to_string(builder), true, nil
+	}
 	length, length_ok := value.array_length(input)
 	if !length_ok {
 		strings.builder_destroy(&builder)
