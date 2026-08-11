@@ -278,6 +278,11 @@ behavioral oracle.
   package/build checks pass, and the full catalog is **165/522 passed and 357
   failed**. Interpolated/dynamic fields and assignment/update forms remain
   deferred.
+- String-key bracket postfixes (`c2d4624`, decision `0118`) now support literal
+  accesses such as `.["foo"].bar` and chained `.["foo"]["bar"]`, including
+  missing-key null results. The focused shard passes 3/3, package/build checks
+  pass, and the full catalog is **166/522 passed and 356 failed**. Dynamic or
+  interpolated keys and assignment/update forms remain deferred.
 
 ## Remaining high-value clusters
 
