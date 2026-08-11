@@ -36,6 +36,8 @@ Node_Kind :: enum {
 	Ascii_Upcase,
 	// Reverse is appended to preserve existing AST discriminants.
 	Reverse,
+	// Implode is appended to preserve existing AST discriminants.
+	Implode,
 }
 
 Node_Id :: distinct int
@@ -661,6 +663,8 @@ parse_pipe :: proc(
 					kind = .Ascii_Upcase
 				} else if spelling == "reverse" {
 					kind = .Reverse
+				} else if spelling == "implode" {
+					kind = .Implode
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

@@ -3,6 +3,7 @@ package eval
 import "base:runtime"
 import "core:math"
 import "core:sync"
+import "core:strings"
 import program "jq:program"
 import value "jq:value"
 
@@ -1864,6 +1865,26 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if !ok do return {}, .Cannot_Number, nil
 		return value.number_value(math.atan(n)), .None, nil
 	}
+	if opcode == .Implode {
+		if kind != .Array do return {}, .Cannot_Iterate, nil
+		length, length_ok := value.array_length(input)
+		if !length_ok do return {}, .Cannot_Iterate, nil
+		builder: strings.Builder
+		_, builder_error := strings.builder_init(&builder, allocator)
+		if builder_error != nil do return {}, .None, .Out_Of_Memory
+		for i in 0..<length {
+			item, item_ok := value.array_element_copy(input, i)
+			if !item_ok { strings.builder_destroy(&builder); return {}, .Cannot_Iterate, nil }
+			number, number_ok := value.number_value_get(&item)
+			_ = value.destroy_value(&item)
+			if !number_ok || number < 0 || number > 127 || math.trunc(number) != number { strings.builder_destroy(&builder); return {}, .Cannot_Number, nil }
+			if strings.write_byte(&builder, u8(number)) != 1 { strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory }
+		}
+		result, constructor_error := value.string_value(strings.to_string(builder), allocator)
+		strings.builder_destroy(&builder)
+		if value.constructor_error_kind(&constructor_error) != .None { return {}, .None, .Out_Of_Memory }
+		return result, .None, nil
+	}
 	if opcode == .Ascii_Downcase || opcode == .Ascii_Upcase {
 		if kind != .String do return {}, .Cannot_Trim, nil
 		text, text_ok := value.string_borrowed(input)
@@ -2331,7 +2352,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

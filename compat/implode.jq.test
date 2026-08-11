@@ -1,0 +1,4 @@
+# Bounded ASCII implode compatibility lane.
+implode
+[65,66,67]
+"ABC"
