@@ -3561,6 +3561,22 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return result, .None, nil
 	}
 	if opcode == .Reverse {
+		zero_length := kind == .Null
+		if kind == .Number {
+			number, number_ok := value.number_value_get(input)
+			zero_length = number_ok && number == 0
+		} else if kind == .String {
+			text, text_ok := value.string_borrowed(input)
+			zero_length = text_ok && len(text) == 0
+		} else if kind == .Object {
+			object_length, object_ok := value.object_length(input)
+			zero_length = object_ok && object_length == 0
+		}
+		if zero_length {
+			result, array_error := value.array_value(allocator)
+			if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+			return result, .None, nil
+		}
 		if kind != .Array do return {}, .Cannot_Iterate, nil
 		length, length_ok := value.array_length(input)
 		if !length_ok do return {}, .Cannot_Iterate, nil

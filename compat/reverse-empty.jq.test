@@ -1,0 +1,20 @@
+# jq returns an empty array when reverse sees a zero-length value.
+reverse
+null
+[]
+
+reverse
+0
+[]
+
+reverse
+""
+[]
+
+reverse
+{}
+[]
+
+reverse
+[1,2,3]
+[3,2,1]
