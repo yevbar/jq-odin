@@ -2120,6 +2120,7 @@ contains_result :: proc(input: ^value.Value, needle: string) -> (value.Value, Ru
 has_result :: proc(input, argument: ^value.Value) -> (value.Value, Runtime_Error_Kind) {
 	input_kind := value.kind_of(input)
 	argument_kind := value.kind_of(argument)
+	if input_kind == .Null do return value.boolean_value(false), .None
 	if input_kind == .Object && argument_kind == .String {
 		key, key_ok := value.string_borrowed(argument)
 		if !key_ok do return {}, .Cannot_Iterate

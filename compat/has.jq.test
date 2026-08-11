@@ -23,3 +23,11 @@ true
 has(nan)
 [0,1,2]
 false
+
+null | has("a")
+null
+false
+
+null | has(null)
+null
+false
