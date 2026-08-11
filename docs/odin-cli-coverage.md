@@ -9,6 +9,12 @@ behavioral oracle.
 - Baseline integration head: `1a98ae1`.
 - Static postfix indexing: `2e15478` (`.[N]` and `.field[N]`, literal
   non-negative integer bounds only).
+- CLI diagnostic parity for string-key indexing: `f6babcc`; this preserves
+  container-specific wording for non-numeric keys while leaving numeric-index
+  errors on their bounded path.
+- Bounded `atan`: `7a8135a`; its focused shard passes 1/1. The full catalog
+  remains at 93/522 because jq’s unrounded floating-point text for the
+  standalone `atan` case still differs from the candidate serializer.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
