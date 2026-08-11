@@ -343,6 +343,12 @@ behavioral oracle.
   reviewed compact JSON serializer. Its focused shard passes 4/4 and
   package/build checks pass; the catalog remains **171/522 passed and 351
   failed** because `fromjson` and complex expression forms remain deferred.
+- Scalar `fromjson` (`4454e16`, whitespace fix `0271d9c`, decision `0128`) now
+  parses null, booleans, integers, floats, and surrounding JSON whitespace.
+  The focused shard passes 7/7 and package/build checks pass; the full catalog
+  is now **172/522 passed and 350 failed**. Arrays, objects, escaped strings,
+  and detailed malformed-input diagnostics remain deferred pending the JSON
+  package-boundary decision.
 
 ## Remaining high-value clusters
 
