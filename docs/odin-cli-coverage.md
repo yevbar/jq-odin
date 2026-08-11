@@ -214,6 +214,11 @@ behavioral oracle.
   duplicate behavior. Its focused shard passes 10/10 and the exact catalog is
   **148/522 passed and 374 failed**. Multi-needle, nested-object, dynamic, and
   non-array forms remain deferred.
+- Empty-separator `split("")` (`3113d56`, decision `0107`) now splits UTF-8
+  strings by Unicode code point and returns an empty array for empty input,
+  while preserving non-empty separator behavior. Its focused shard passes 6/6
+  and the exact catalog is now **149/522 passed and 373 failed**. Non-string
+  diagnostics and dynamic separators remain deferred.
 
 ## Remaining high-value clusters
 
