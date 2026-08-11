@@ -446,6 +446,12 @@ behavioral oracle.
   **172/522 passed and 350 failed** because selected log2 cases are grouped
   with unsupported expressions; `log2(10)` retains a documented one-ULP
   native-libm precision caveat.
+- The zero-argument `exp` builtin (`c4ef287e`, decision `0146`) now computes
+  the exponential for numeric inputs. Its focused shard passes 4/4 against the
+  pinned oracle and the full package suite passes. The authoritative catalog
+  remains **172/522 passed and 350 failed** after narrowing the native-number
+  formatter to avoid regressions in existing numeric-boundary cases; overflow,
+  non-number diagnostics, and platform-sensitive final digits remain deferred.
 
 ## Remaining high-value clusters
 
