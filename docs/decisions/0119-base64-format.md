@@ -10,5 +10,9 @@ result, rejecting malformed payloads instead of emitting invalid bytes. The
 implementation intentionally does not accept other format names yet; array or
 object coercion and exact diagnostics remain deferred.
 
+The reviewed scalar exception is intentional: `null|@base64d` and
+`true|@base64d` stringify first and replace malformed decoded sequences with
+U+FFFD, matching jq. Invalid bytes from a string payload remain errors.
+
 Evidence: `upstream/jq/tests/jq.test:86-92` and
 `compat/base64-format.jq.test` against the pinned jq oracle.

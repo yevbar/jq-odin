@@ -22,3 +22,11 @@ true
 @base64d
 "Zm8="
 "fo"
+
+@base64d
+null
+"��"
+
+@base64d
+true
+"���"

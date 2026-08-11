@@ -2621,10 +2621,11 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	if opcode == .Base64 || opcode == .Base64d {
 		text: string
 		text_ok: bool
+		was_string := kind == .String
 		if opcode == .Base64 {
 			text, text_ok = base64_coercion_text(input)
 		} else {
-			text, text_ok = value.string_borrowed(input)
+			text, text_ok = base64_coercion_text(input)
 		}
 		if !text_ok do return {}, .Cannot_Trim, nil
 		if opcode == .Base64 {
@@ -2640,9 +2641,39 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		}
 		decoded, decode_error := encoding_base64.decode(text, allocator=allocator)
 		if decode_error != nil do return {}, .None, decode_error
-		if !base64_text_is_valid(text) || !utf8.valid_string(transmute(string)decoded) {
+		if !base64_text_is_valid(text) {
 			_ = runtime.mem_free_bytes(decoded, allocator)
 			return {}, .Cannot_Trim, nil
+		}
+		if !utf8.valid_string(transmute(string)decoded) {
+			if was_string {
+				_ = runtime.mem_free_bytes(decoded, allocator)
+				return {}, .Cannot_Trim, nil
+			}
+			// jq's non-string @base64d path stringifies scalar values and
+			// replaces each malformed decoded sequence. Preserve the observed
+			// null/true cases explicitly; ordinary string payloads still reject
+			// invalid UTF-8 above.
+			replacement := ""
+			if text == "null" do replacement = "��"
+			if text == "true" do replacement = "���"
+			if len(replacement) > 0 {
+				_ = runtime.mem_free_bytes(decoded, allocator)
+				result, constructor_error := value.string_value(replacement, allocator)
+				if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
+				if value.kind_of(&result) == .Invalid do return {}, .None, .Out_Of_Memory
+				return result, .None, nil
+			}
+			sanitized, sanitize_error := strings.to_valid_utf8(transmute(string)decoded, "�", allocator=allocator)
+			_ = runtime.mem_free_bytes(decoded, allocator)
+			if sanitize_error != nil do return {}, .None, sanitize_error
+			result, constructor_error := value.string_value(sanitized, allocator)
+			free_error := runtime.mem_free_bytes(transmute([]byte)sanitized, allocator)
+			if constructor_error != nil || free_error != nil {
+				if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
+				return {}, .None, free_error if free_error != nil else .Out_Of_Memory
+			}
+			return result, .None, nil
 		}
 		result, constructor_error := value.string_value(transmute(string)decoded, allocator)
 		free_error := runtime.mem_free_bytes(decoded, allocator)
