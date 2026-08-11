@@ -349,6 +349,11 @@ behavioral oracle.
   is now **172/522 passed and 350 failed**. Arrays, objects, escaped strings,
   and detailed malformed-input diagnostics remain deferred pending the JSON
   package-boundary decision.
+- `abs` container passthrough (`0eda02a`, decision `0129`) now clones arrays
+  and objects unchanged, matching jq while retaining numeric absolute values,
+  string identity, and existing error classes. Its focused shard passes 4/4;
+  package/build checks pass and the catalog remains **172/522 passed and 350
+  failed** because the grouped upstream gap adds no independent selected case.
 
 ## Remaining high-value clusters
 
