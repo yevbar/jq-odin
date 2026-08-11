@@ -125,6 +125,8 @@ Node_Kind :: enum {
 	// Min and Max are appended to preserve existing AST discriminants.
 	Min,
 	Max,
+	// Toboolean is appended to preserve existing AST discriminants.
+	Toboolean,
 }
 
 Node_Id :: distinct int
@@ -842,6 +844,8 @@ parse_pipe :: proc(
 					kind = .Min
 				} else if spelling == "max" {
 					kind = .Max
+				} else if spelling == "toboolean" {
+					kind = .Toboolean
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

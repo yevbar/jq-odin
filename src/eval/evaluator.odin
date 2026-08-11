@@ -2469,6 +2469,15 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		}
 		return result, .None, nil
 	}
+	if opcode == .Toboolean {
+		if kind == .Boolean do return value.clone_value(input), .None, nil
+		if kind != .String do return {}, .Cannot_Number, nil
+		text, text_ok := value.string_borrowed(input)
+		if !text_ok do return {}, .Cannot_Number, nil
+		if text == "true" do return value.boolean_value(true), .None, nil
+		if text == "false" do return value.boolean_value(false), .None, nil
+		return {}, .Cannot_Number, nil
+	}
 	if opcode == .Min || opcode == .Max {
 		if kind != .Array do return {}, .Cannot_Iterate, nil
 		length, length_ok := value.array_length(input)
@@ -3580,7 +3589,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

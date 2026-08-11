@@ -1,0 +1,15 @@
+toboolean
+"true"
+true
+
+toboolean
+"false"
+false
+
+toboolean
+true
+true
+
+toboolean
+false
+false
