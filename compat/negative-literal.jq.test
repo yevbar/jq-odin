@@ -1,0 +1,8 @@
+# Literal unary negation is lowered without requiring evaluator control flow.
+-1
+null
+-1
+
+{x:-1}
+null
+{"x":-1}
