@@ -1,0 +1,11 @@
+# Bounded shallow object literal containment.
+{}
+true
+
+({foo: 12} | contains({}))
+{}
+true
+
+({foo: 12, bar: 13} | contains({baz: 14}))
+{}
+false

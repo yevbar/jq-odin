@@ -2109,11 +2109,40 @@ join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.A
 }
 
 @(private)
-contains_result :: proc(input: ^value.Value, needle: string) -> (value.Value, Runtime_Error_Kind) {
-	if value.kind_of(input) != .String do return {}, .Cannot_Iterate
-	haystack, ok := value.string_borrowed(input)
-	if !ok do return {}, .Cannot_Iterate
-	return value.boolean_value(strings.contains(haystack, needle)), .None
+contains_value :: proc(input, needle: ^value.Value) -> (bool, bool) {
+	input_kind := value.kind_of(input)
+	needle_kind := value.kind_of(needle)
+	if input_kind == .String && needle_kind == .String {
+		haystack, haystack_ok := value.string_borrowed(input)
+		needle_text, needle_ok := value.string_borrowed(needle)
+		return haystack_ok && needle_ok && strings.contains(haystack, needle_text), true
+	}
+	if input_kind == .Object && needle_kind == .Object {
+		length, length_ok := value.object_length(needle)
+		if !length_ok do return false, false
+		for index in 0..<length {
+			key, wanted, entry_ok := value.object_entry_copy(needle, index)
+			if !entry_ok { _ = value.destroy_value(&key); _ = value.destroy_value(&wanted); return false, false }
+			key_text, key_ok := value.string_borrowed(&key)
+			actual, found := value.object_get_copy(input, key_text)
+			if !key_ok || !found {
+				_ = value.destroy_value(&key); _ = value.destroy_value(&wanted); _ = value.destroy_value(&actual)
+				return false, true
+			}
+			matches, comparable := contains_value(&actual, &wanted)
+			_ = value.destroy_value(&key); _ = value.destroy_value(&wanted); _ = value.destroy_value(&actual)
+			if !comparable do return false, false
+			if !matches do return false, true
+		}
+		return true, true
+	}
+	return value.values_equal(input, needle), true
+}
+
+contains_result :: proc(input, needle: ^value.Value) -> (value.Value, Runtime_Error_Kind) {
+	matched, comparable := contains_value(input, needle)
+	if !comparable do return {}, .Cannot_Iterate
+	return value.boolean_value(matched), .None
 }
 
 @(private)
@@ -3435,12 +3464,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				child, child_ok := child_instruction(storage, instruction, 0)
 				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
-				needle_operand, operand_ok := program.program_operand(storage.compiled, needle_instruction.operands_start)
-				needle, needle_text_ok := program.operand_text(storage.compiled, needle_operand)
-				if !child_ok || !needle_ok || needle_operand.kind != .Text || !needle_instruction.has_literal || needle_instruction.literal_kind != .String || !operand_ok || !needle_text_ok {
+				needle: value.Value
+				needle_error: value.Error
+				needle_cleanup: runtime.Allocator_Error
+				if needle_instruction.opcode == .Object {
+					needle, needle_error, needle_cleanup = literal_object_value(storage, needle_instruction)
+				} else if needle_instruction.opcode == .Array {
+					needle, needle_error, needle_cleanup = literal_array_value(storage, needle_instruction)
+				} else {
+					needle, needle_error, needle_cleanup = literal_value(storage, needle_instruction)
+				}
+				if !child_ok || !needle_ok || needle_cleanup != nil || needle_error != .None {
+					if value.kind_of(&needle) != .Invalid do _ = value.destroy_value(&needle)
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
-				output, runtime_kind := contains_result(&frame.input, needle)
+				output, runtime_kind := contains_result(&frame.input, &needle)
+				_ = value.destroy_value(&needle)
 				if runtime_kind != .None {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result

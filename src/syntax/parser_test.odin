@@ -3380,7 +3380,7 @@ test_contains_literal_parses_as_bounded_call :: proc(t: ^testing.T) {
 
 @(test)
 test_contains_non_string_literals_fail_without_assertion :: proc(t: ^testing.T) {
-	cases := [?]string{`contains([2])`, `contains({"a":1})`}
+	cases := [?]string{`contains([2])`}
 	for source_text in cases {
 		parser: Parser
 		source := diagnostic.borrow_source("<contains-invalid>", source_text)
@@ -3390,6 +3390,22 @@ test_contains_non_string_literals_fail_without_assertion :: proc(t: ^testing.T) 
 		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_End)
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
+}
+
+@(test)
+test_contains_object_literal_parses_as_bounded_call :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<contains-object>", `contains({"a":1})`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Contains)
+	testing.expect(t, root.has_child)
+	argument := parser.nodes.storage[int(root.child)]
+	testing.expect_value(t, argument.kind, Node_Kind.Identity)
+	testing.expect_value(t, argument.container_kind, Container_Kind.Object)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
 
 @(test)
