@@ -157,6 +157,8 @@ Node_Kind :: enum {
 	Tojson,
 	// Fromjson is appended to preserve existing AST discriminants.
 	Fromjson,
+	// Log is appended to preserve existing AST discriminants.
+	Log,
 }
 
 Node_Id :: distinct int
@@ -907,6 +909,8 @@ parse_pipe :: proc(
 					kind = .Tojson
 				} else if spelling == "fromjson" {
 					kind = .Fromjson
+				} else if spelling == "log" {
+					kind = .Log
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

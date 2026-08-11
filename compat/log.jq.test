@@ -1,0 +1,15 @@
+# `log` computes the natural logarithm of numeric inputs.
+log
+1
+0
+
+log
+2.718281828459045
+1
+
+log
+0
+-1.7976931348623157e+308
+
+-1 | log
+null
