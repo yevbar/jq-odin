@@ -1,0 +1,12 @@
+# Negative array indices resolve from the end of the array.
+.[-1]
+[1,2,3]
+3
+
+.[-2]
+[1,2,3]
+2
+
+.[-4]
+[1,2,3]
+null

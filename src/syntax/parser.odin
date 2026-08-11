@@ -2603,12 +2603,23 @@ append_postfix :: proc(
 				_ = open
 				continue
 			}
+			negative_index := false
+			negative_span := diagnostic.Span{}
+			if token_is(parser, .Minus) {
+				negative_span = parser.lookahead.token.span
+				advance(parser)
+				negative_index = true
+			}
 			if !token_is(parser, .Number) {
 				fail_from_lookahead(parser, .Close_Bracket)
 				return {}, false
 			}
 			number_span := parser.lookahead.token.span
-			index_node, index_ok := append_number_node(parser, number_span)
+			index_span := number_span
+			if negative_index {
+				index_span, _ = spanning(parser, negative_span, number_span)
+			}
+			index_node, index_ok := append_number_node(parser, index_span)
 			if !index_ok do return {}, false
 			advance(parser)
 			if !token_is(parser, .Close_Bracket) {

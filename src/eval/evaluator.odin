@@ -1246,7 +1246,7 @@ index_result :: proc(
 	}
 	index_number, number_ok := value.number_value_get(&index_value)
 	_ = value.destroy_value(&index_value)
-	if !number_ok || index_number < 0 || index_number != f64(int(index_number)) {
+	if !number_ok || index_number != f64(int(index_number)) {
 		// jq rejects fractional numeric indices for strings with a typed
 		// runtime error.  Arrays retain their historical null result for an
 		// out-of-range/non-integral index in this bounded indexing contract.
@@ -1265,6 +1265,18 @@ index_result :: proc(
 		return value.null_value(), {}, true
 	}
 	index := int(index_number)
+	if index < 0 {
+		if value.kind_of(&frame.input) == .Array {
+			length, length_ok := value.array_length(&frame.input)
+			if !length_ok do return {}, {}, false
+			index += length
+			if index < 0 do return value.null_value(), {}, true
+		} else if value.kind_of(&frame.input) == .String {
+			return {}, Runtime_Error{kind=.User_Error, input_kind=.String, span=instruction.span, key="Cannot index string with number"}, true
+		} else {
+			return value.null_value(), {}, true
+		}
+	}
 	switch value.kind_of(&frame.input) {
 	case .Array:
 		length, length_ok := value.array_length(&frame.input)
