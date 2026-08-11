@@ -3270,6 +3270,32 @@ mktime_result :: proc(input: ^value.Value) -> (value.Value, Runtime_Error_Kind, 
 	return value.number_value(f64(time.to_unix_seconds(moment))), .None, nil
 }
 
+@(private)
+gmtime_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Number do return {}, .Cannot_Number, nil
+	number, number_ok := value.number_value_get(input)
+	if !number_ok do return {}, .Cannot_Number, nil
+	moment, moment_ok := time.time_to_datetime(time.unix(i64(number), 0))
+	if !moment_ok do return {}, .Cannot_Iterate, nil
+	ordinal := datetime.unsafe_date_to_ordinal(moment.date)
+	weekday := datetime.day_of_week(ordinal)
+	day_number, day_error := datetime.day_number(moment.date)
+	if day_error != .None do return {}, .Cannot_Iterate, nil
+	result, array_error := value.array_value(allocator)
+	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+	fields := [8]f64{f64(moment.year), f64(moment.month-1), f64(moment.day), f64(moment.hour), f64(moment.minute), f64(moment.second), f64(weekday), f64(day_number-1)}
+	for field in fields {
+		item := value.number_value(field)
+		_, append_error := value.array_append_take(&result, &item)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_value(&item)
+			_ = value.destroy_value(&result)
+			return {}, .None, .Out_Of_Memory
+		}
+	}
+	return result, .None, nil
+}
+
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Tonumber {
@@ -3299,6 +3325,9 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	}
 	if opcode == .Mktime {
 		return mktime_result(input)
+	}
+	if opcode == .Gmtime {
+		return gmtime_result(input, allocator)
 	}
 	if opcode == .Base64 || opcode == .Base64d {
 		text: string
@@ -4999,7 +5028,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .Gmtime, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
@@ -5025,6 +5054,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					}
 					if instruction.opcode == .Mktime {
 						err.key = "mktime requires parsed datetime inputs"
+					}
+					if instruction.opcode == .Gmtime {
+						err.key = "gmtime requires a numeric timestamp"
 					}
 					owned_key := ""
 					if instruction.opcode == .Toboolean {

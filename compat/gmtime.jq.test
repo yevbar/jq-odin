@@ -1,0 +1,12 @@
+# Zero-argument gmtime converts Unix seconds to jq datetime arrays.
+gmtime
+1425599507
+[2015,2,5,23,51,47,4,63]
+
+gmtime
+0
+[1970,0,1,0,0,0,4,0]
+
+gmtime | mktime
+1425599507
+1425599507
