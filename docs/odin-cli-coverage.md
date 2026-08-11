@@ -307,6 +307,11 @@ behavioral oracle.
   while preserving raw strings and UTF-8. The focused shard passes 5/5,
   package/build checks pass, and the catalog remains **170/522 passed and 352
   failed** because format-argument/interpolation cases are deferred.
+- Zero-argument `@json` (`a832f20`, decision `0123`) now reuses the reviewed
+  compact JSON serializer for scalar, string, array, object, null, boolean, and
+  nested values. Its focused shard passes 4/4 and package/build checks pass;
+  the catalog remains **170/522 passed and 352 failed** because format
+  arguments and sibling format filters remain deferred.
 
 ## Remaining high-value clusters
 
