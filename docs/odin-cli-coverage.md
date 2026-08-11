@@ -464,6 +464,13 @@ behavioral oracle.
   remains **172/522 passed and 350 failed** because selected exp10 cases are
   embedded in unsupported compositions. Non-number diagnostics,
   overflow/underflow, and platform-sensitive fractional values remain deferred.
+- The zero-argument `asin` builtin (`3f63e385`, decision `0150`) now computes
+  inverse sine for numeric inputs using Odin's math implementation. Its
+  focused shard passes 3/3 against the pinned oracle, package/build checks and
+  full tests pass, and the catalog remains **172/522 passed and 350 failed**.
+  Non-number diagnostics and a one-ULP native-libm difference at `asin(0.5)`
+  remain deferred;
+  cbrt was not added because the pinned Odin API has no cbrt function.
 
 ## Remaining high-value clusters
 
