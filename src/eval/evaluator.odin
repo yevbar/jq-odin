@@ -2146,23 +2146,18 @@ bsearch_result :: proc(input, needle: ^value.Value) -> (value.Value, Runtime_Err
 	length, length_ok := value.array_length(input)
 	if !length_ok do return {}, .Cannot_Iterate
 	low, high := 0, length - 1
-	found := -1
 	for low <= high {
-		middle := low + (high-low)/2
+		// jq's bsearch probe chooses the upper midpoint on even-length
+		// duplicate runs (for example, [1,1] -> 1 and [1,1,1,1] -> 2).
+		middle := (low + high + 1) / 2
 		item, item_ok := value.array_element_copy(input, middle)
 		if !item_ok do return {}, .Cannot_Iterate
 		comparison, comparison_ok := compare_values(&item, needle)
 		_ = value.destroy_value(&item)
 		if !comparison_ok do return {}, .Cannot_Iterate
-		if comparison == 0 {
-			// jq chooses the rightmost equal element for duplicate needles.
-			found = middle
-			low = middle + 1
-			continue
-		}
+		if comparison == 0 do return value.number_value(f64(middle)), .None
 		if comparison < 0 { low = middle + 1 } else { high = middle - 1 }
 	}
-	if found >= 0 do return value.number_value(f64(found)), .None
 	return value.number_value(f64(-(low + 1))), .None
 }
 
