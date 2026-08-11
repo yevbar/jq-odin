@@ -196,6 +196,11 @@ behavioral oracle.
   2/2 for `implode` and 1/1 for `explode`; package, full unit, build, and CLI
   checks pass. The exact catalog is now **146/522 passed and 376 failed**;
   malformed UTF-8 and broader diagnostic wording remain deferred.
+- Literal `has(...)` (`60fc97e`, decision `0102`) now covers object-key and
+  nonnegative array-index presence plus the `has(nan)` false case. Its focused
+  oracle shard passes 5/5, package/unit/build checks pass, and the exact catalog
+  is now **147/522 passed and 375 failed**. Dynamic arguments, negative or
+  fractional indexes, and `map(has(...))` remain deferred.
 
 ## Remaining high-value clusters
 
