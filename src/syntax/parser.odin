@@ -130,6 +130,9 @@ Node_Kind :: enum {
 	// Base64 and Base64d are appended to preserve existing AST discriminants.
 	Base64,
 	Base64d,
+	// Uri and Urid are appended to preserve existing AST discriminants.
+	Uri,
+	Urid,
 }
 
 Node_Id :: distinct int
@@ -687,11 +690,13 @@ parse_pipe :: proc(
 				term = new_term
 			case .Format:
 				format := token_spelling(parser, token)
-				if format != "@base64" && format != "@base64d" {
+				if format != "@base64" && format != "@base64d" && format != "@uri" && format != "@urid" {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
 				kind := Node_Kind.Base64 if format == "@base64" else .Base64d
+				if format == "@uri" do kind = .Uri
+				if format == "@urid" do kind = .Urid
 				advance(parser)
 				new_term, format_ok := append_node(parser, Node{kind = kind, span = token.span})
 				if !format_ok do return {}, false

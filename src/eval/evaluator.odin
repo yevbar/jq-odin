@@ -2590,6 +2590,57 @@ base64_text_is_valid :: proc(text: string) -> bool {
 	return true
 }
 
+uri_hex_digit :: proc(value: u8) -> u8 {
+	digits := "0123456789ABCDEF"
+	return digits[value & 0xf]
+}
+
+uri_encode_text :: proc(text: string, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	for b in transmute([]byte)text {
+		allowed := (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+			(b >= '0' && b <= '9') || b == '-' || b == '_' || b == '.' || b == '~'
+		if allowed {
+			if strings.write_byte(&builder, b) != 1 { strings.builder_destroy(&builder); return "", .Out_Of_Memory }
+		} else {
+			encoded := [3]u8{'%', uri_hex_digit(b >> 4), uri_hex_digit(b)}
+			if strings.write_string(&builder, transmute(string)encoded[:]) != 3 { strings.builder_destroy(&builder); return "", .Out_Of_Memory }
+		}
+	}
+	result := strings.to_string(builder)
+	return result, nil
+}
+
+uri_hex_value :: proc(byte: u8) -> (u8, bool) {
+	if byte >= '0' && byte <= '9' do return byte - '0', true
+	if byte >= 'A' && byte <= 'F' do return byte - 'A' + 10, true
+	if byte >= 'a' && byte <= 'f' do return byte - 'a' + 10, true
+	return 0, false
+}
+
+uri_decode_text :: proc(text: string, allocator: runtime.Allocator) -> (string, bool, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", false, init_error
+	for index := 0; index < len(text); index += 1 {
+		if text[index] != '%' {
+			if strings.write_byte(&builder, text[index]) != 1 { strings.builder_destroy(&builder); return "", false, .Out_Of_Memory }
+			continue
+		}
+		if index + 2 >= len(text) { strings.builder_destroy(&builder); return "", false, nil }
+		high, high_ok := uri_hex_value(text[index+1])
+		low, low_ok := uri_hex_value(text[index+2])
+		if !high_ok || !low_ok { strings.builder_destroy(&builder); return "", false, nil }
+		if strings.write_byte(&builder, high << 4 | low) != 1 { strings.builder_destroy(&builder); return "", false, .Out_Of_Memory }
+		index += 2
+	}
+	result := strings.to_string(builder)
+	if !utf8.valid_string(result) { strings.builder_destroy(&builder); return "", false, nil }
+	return result, true, nil
+}
+
 @(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
@@ -2681,6 +2732,27 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 			if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
 			return {}, .None, free_error if free_error != nil else .Out_Of_Memory
 		}
+		return result, .None, nil
+	}
+	if opcode == .Uri || opcode == .Urid {
+		text, text_ok := base64_coercion_text(input)
+		if !text_ok do return {}, .Cannot_Trim, nil
+		if opcode == .Uri {
+			encoded, encode_error := uri_encode_text(text, allocator)
+			if encode_error != nil do return {}, .None, encode_error
+			result, constructor_error := value.string_value(encoded, allocator)
+			free_error := runtime.mem_free_bytes(transmute([]byte)encoded, allocator)
+			if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
+			if constructor_error != nil || free_error != nil do return {}, .None, free_error if free_error != nil else .Out_Of_Memory
+			return result, .None, nil
+		}
+		decoded, decode_ok, decode_error := uri_decode_text(text, allocator)
+		if decode_error != nil do return {}, .None, decode_error
+		if !decode_ok do return {}, .Cannot_Trim, nil
+		result, constructor_error := value.string_value(decoded, allocator)
+		free_error := runtime.mem_free_bytes(transmute([]byte)decoded, allocator)
+		if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
+		if constructor_error != nil || free_error != nil do return {}, .None, free_error if free_error != nil else .Out_Of_Memory
 		return result, .None, nil
 	}
 	if opcode == .Min || opcode == .Max {
@@ -3804,7 +3876,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

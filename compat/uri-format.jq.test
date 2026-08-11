@@ -1,0 +1,16 @@
+# URI formats use percent-encoded UTF-8 bytes and leave unreserved ASCII.
+@uri
+"μ"
+"%CE%BC"
+
+@urid
+"%CE%BC"
+"μ"
+
+@uri
+"a b"
+"a%20b"
+
+@urid
+"a%20b"
+"a b"
