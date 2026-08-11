@@ -173,6 +173,8 @@ Node_Kind :: enum {
 	Exp10,
 	// Asin is appended to preserve existing AST discriminants.
 	Asin,
+	// Acos is appended to preserve existing AST discriminants.
+	Acos,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -943,6 +945,8 @@ parse_pipe :: proc(
 					kind = .Exp10
 				} else if spelling == "asin" {
 					kind = .Asin
+				} else if spelling == "acos" {
+					kind = .Acos
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {

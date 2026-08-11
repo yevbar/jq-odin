@@ -1,0 +1,12 @@
+# `acos` computes the inverse cosine in radians.
+acos
+-1
+3.141592653589793
+
+acos
+0
+1.5707963267948966
+
+acos
+1
+0
