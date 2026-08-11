@@ -1755,6 +1755,7 @@ def main() -> int:
         ("ltrim whitespace", ["ltrim"], b' "  hello  "\n', 0, b'"hello  "\n', b""),
         ("rtrim whitespace", ["rtrim"], b' "  hello  "\n', 0, b'"  hello"\n', b""),
         ("ASCII case builtins", ["-c", "ascii_downcase, ascii_upcase"], '"AbCé-123"'.encode(), 0, '"abcé-123"\n"ABCé-123"\n'.encode(), b""),
+        ("not follows jq truthiness", ["-c", "not"], b"null false true 0 1", 0, b"true\ntrue\nfalse\nfalse\nfalse\n", b""),
         ("bundled short options", ["-nc", "."], b"", 0, b"null\n", b""),
         ("JSON input", ["."], b"{", 4, b"", b"jq-odin: JSON input error\n"),
         (

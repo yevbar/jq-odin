@@ -50,6 +50,8 @@ Node_Kind :: enum {
 	To_Entries,
 	// Isnan is appended to preserve existing AST discriminants.
 	Isnan,
+	// Not_Builtin is appended to preserve existing AST discriminants.
+	Not_Builtin,
 }
 
 Node_Id :: distinct int
@@ -689,6 +691,8 @@ parse_pipe :: proc(
 					kind = .To_Entries
 				} else if spelling == "isnan" {
 					kind = .Isnan
+				} else if spelling == "not" {
+					kind = .Not_Builtin
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

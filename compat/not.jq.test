@@ -1,0 +1,10 @@
+# jq not: only null and false are falsey.
+not
+null false true 0 1 "x" [] {}
+true
+true
+false
+false
+false
+false
+false

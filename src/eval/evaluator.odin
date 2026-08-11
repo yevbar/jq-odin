@@ -1952,6 +1952,16 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if !number_ok do return {}, .Cannot_Number, nil
 		return value.boolean_value(math.is_nan(number)), .None, nil
 	}
+	if opcode == .Not_Builtin {
+		falsey := kind == .Null
+		if kind == .Boolean {
+			boolean, boolean_ok := value.boolean_value_get(input)
+			if boolean_ok {
+				falsey = !boolean
+			}
+		}
+		return value.boolean_value(falsey), .None, nil
+	}
 	if opcode == .Ascii_Downcase || opcode == .Ascii_Upcase {
 		if kind != .String do return {}, .Cannot_Trim, nil
 		text, text_ok := value.string_borrowed(input)
@@ -2420,7 +2430,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Not_Builtin, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

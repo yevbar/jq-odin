@@ -67,6 +67,36 @@ binary_opcodes_execute_and_replay_terminal_state :: proc(t: ^testing.T) {
 }
 
 @(test)
+not_builtin_uses_jq_truthiness :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		input: value.Value,
+		expected: bool,
+	}{
+		{value.null_value(), true},
+		{value.boolean_value(false), true},
+		{value.boolean_value(true), false},
+		{value.number_value(0), false},
+		{value.number_value(2), false},
+	}
+	for test_case in cases {
+		instructions := [?]program.Instruction{{opcode = .Not_Builtin, span = {start = 0, end = 3}}}
+		operands: []program.Operand
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], operands, "", 0)
+		input := test_case.input
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		actual, ok := value.boolean_value_get(&output)
+		testing.expect(t, ok && actual == test_case.expected)
+		testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
 binary_arithmetic_invalid_operands_are_runtime_errors :: proc(t: ^testing.T) {
 	// jq builtin.c:342-377 distinguishes type errors from the divisor-zero
 	// error; both are evaluator runtime terminals and replay identically.
