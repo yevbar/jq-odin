@@ -1,0 +1,16 @@
+# `exp10` computes ten raised to the input.
+exp10
+-2
+0.01
+
+exp10
+-1
+0.1
+
+exp10
+0
+1
+
+exp10
+2
+100
