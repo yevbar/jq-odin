@@ -87,6 +87,10 @@ behavioral oracle.
   non-null suppression shards with the full package suite; the full catalog is
   now 105/522 (417 remaining). Remaining scalar subtype and generator forms
   are still deferred.
+- Bounded zero-argument `floor` (`176dc20`) passes positive and negative
+  numeric rounding shards with the full package suite; the full catalog is now
+  107/522 (415 remaining). Non-number/special numeric diagnostics remain
+  deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
