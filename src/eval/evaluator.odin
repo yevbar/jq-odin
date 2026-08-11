@@ -6,6 +6,7 @@ import "core:sync"
 import "core:strings"
 import "core:strconv"
 import encoding_base64 "core:encoding/base64"
+import "core:unicode/utf8"
 import program "jq:program"
 import value "jq:value"
 
@@ -2549,6 +2550,47 @@ from_entries_member_copy :: proc(entry: ^value.Value, names: []string) -> (value
 }
 
 @(private)
+base64_coercion_text :: proc(input: ^value.Value) -> (string, bool) {
+	kind := value.kind_of(input)
+	#partial switch kind {
+	case .String:
+		return value.string_borrowed(input)
+	case .Null:
+		return "null", true
+	case .Boolean:
+		boolean, ok := value.boolean_value_get(input)
+		if !ok do return "", false
+		return ("true" if boolean else "false"), true
+	case .Number:
+		spelling, literal := value.literal_spelling_borrowed(input)
+		if literal do return spelling, true
+		number, ok := value.number_value_get(input)
+		if !ok do return "", false
+		buffer: [64]byte
+		return strconv.write_float(buffer[:], number, 'f', -1, 64), true
+	}
+	return "", false
+}
+
+base64_text_is_valid :: proc(text: string) -> bool {
+	if len(text) == 0 do return true
+	if len(text) % 4 == 1 do return false
+	padding := 0
+	for i := 0; i < len(text); i += 1 {
+		c := text[i]
+		valid := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') || c == '+' || c == '/'
+		if c == '=' {
+			padding += 1
+			if padding > 2 || i < len(text)-padding do return false
+		} else if padding > 0 || !valid {
+			return false
+		}
+	}
+	return true
+}
+
+@(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Tonumber {
@@ -2577,8 +2619,13 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return {}, .Cannot_Number, nil
 	}
 	if opcode == .Base64 || opcode == .Base64d {
-		if kind != .String do return {}, .Cannot_Trim, nil
-		text, text_ok := value.string_borrowed(input)
+		text: string
+		text_ok: bool
+		if opcode == .Base64 {
+			text, text_ok = base64_coercion_text(input)
+		} else {
+			text, text_ok = value.string_borrowed(input)
+		}
 		if !text_ok do return {}, .Cannot_Trim, nil
 		if opcode == .Base64 {
 			encoded, encode_error := encoding_base64.encode(transmute([]byte)text, allocator=allocator)
@@ -2593,6 +2640,10 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		}
 		decoded, decode_error := encoding_base64.decode(text, allocator=allocator)
 		if decode_error != nil do return {}, .None, decode_error
+		if !base64_text_is_valid(text) || !utf8.valid_string(transmute(string)decoded) {
+			_ = runtime.mem_free_bytes(decoded, allocator)
+			return {}, .Cannot_Trim, nil
+		}
 		result, constructor_error := value.string_value(transmute(string)decoded, allocator)
 		free_error := runtime.mem_free_bytes(decoded, allocator)
 		if constructor_error != nil || free_error != nil {
