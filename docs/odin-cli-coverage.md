@@ -483,6 +483,11 @@ behavioral oracle.
   tests pass, and the catalog remains **172/522 passed and 350 failed**.
   Non-number diagnostics and one-ULP native-libm differences at `cos(1)` and
   `cos(0.5)` remain deferred.
+- The zero-argument `sin` builtin (`102a9852`, decision `0153`) now computes
+  sine for numeric inputs using Odin's math implementation. Its focused shard
+  passes 3/3 against the pinned oracle, package/build checks and full tests
+  pass, and the catalog remains **172/522 passed and 350 failed**. Non-number
+  diagnostics and platform-sensitive interior-value precision remain deferred.
 
 ## Remaining high-value clusters
 
