@@ -1,0 +1,12 @@
+# `isinfinite` classifies infinities and suppresses other values.
+infinite | isinfinite
+null
+true
+
+isinfinite
+42
+false
+
+isinfinite
+null
+false

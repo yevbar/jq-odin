@@ -7,6 +7,19 @@ import "core:strings"
 import "core:testing"
 
 @(test)
+test_isinfinite_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<isinfinite>", "isinfinite")
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Isinfinite)
+	testing.expect(t, !root.has_child && !root.has_value)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_last_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<last>", "last")
