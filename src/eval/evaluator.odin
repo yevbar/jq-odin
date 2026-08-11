@@ -2409,9 +2409,18 @@ search_result :: proc(input: ^value.Value, needle: ^value.Value, opcode: program
 	}
 	if kind != .String || needle_kind != .String do return {}, .Cannot_Iterate, nil
 	needle_text, needle_text_ok := value.string_borrowed(needle)
-	if !needle_text_ok || len(needle_text) == 0 do return {}, .Cannot_Iterate, nil
+	if !needle_text_ok do return {}, .Cannot_Iterate, nil
 	text, text_ok := value.string_borrowed(input)
 	if !text_ok do return {}, .Cannot_Iterate, nil
+	// jq 1.8 treats an empty string needle as no match for string inputs.
+	if len(needle_text) == 0 {
+		if opcode == .Indices_Builtin {
+			result, array_error := value.array_value(allocator)
+			if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+			return result, .None, nil
+		}
+		return value.null_value(), .None, nil
+	}
 	if opcode == .Index_Builtin {
 		position := strings.index(text, needle_text)
 		if position < 0 do return value.null_value(), .None, nil

@@ -1,0 +1,12 @@
+# jq 1.8 empty-string needle semantics for string and null inputs.
+[index(""), rindex(""), indices("")]
+""
+[null,null,[]]
+
+[index(""), rindex(""), indices("")]
+"abc"
+[null,null,[]]
+
+[index(""), rindex(""), indices("")]
+null
+[null,null,null]
