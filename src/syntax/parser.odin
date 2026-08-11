@@ -64,6 +64,8 @@ Node_Kind :: enum {
 	Objects,
 	// Iterables is appended to preserve existing AST discriminants.
 	Iterables,
+	// Scalars is appended to preserve existing AST discriminants.
+	Scalars,
 }
 
 Node_Id :: distinct int
@@ -717,6 +719,8 @@ parse_pipe :: proc(
 					kind = .Objects
 				} else if spelling == "iterables" {
 					kind = .Iterables
+				} else if spelling == "scalars" {
+					kind = .Scalars
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

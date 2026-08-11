@@ -1,0 +1,7 @@
+# `scalars` yields scalar values including null.
+scalars
+null
+null
+
+scalars
+{"a":1}
