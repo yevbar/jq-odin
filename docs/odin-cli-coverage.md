@@ -26,6 +26,10 @@ behavioral oracle.
   tests. It does not change the catalog total yet because the remaining core
   `implode` cases require Unicode code-point handling; that limitation is
   recorded in `compat/implode.md`.
+- Bounded ASCII `explode` (`866a593`) also passes its focused shard and the
+  full package suite. Its Unicode cases remain deferred, so the catalog is
+  still 94/522; the implementation is intentionally not represented as full
+  jq `explode` compatibility.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
