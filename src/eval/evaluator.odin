@@ -2011,6 +2011,12 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	if opcode == .Flatten {
 		return flatten_result(input, allocator)
 	}
+	if opcode == .Nan {
+		return value.number_value(math.nan_f64()), .None, nil
+	}
+	if opcode == .Infinite {
+		return value.number_value(math.inf_f64(1)), .None, nil
+	}
 	if opcode == .Abs || opcode == .Sqrt || opcode == .Fabs {
 		if kind == .String && opcode == .Abs {
 			copy := value.clone_value(input)
@@ -2731,7 +2737,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

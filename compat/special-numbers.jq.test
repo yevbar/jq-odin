@@ -1,0 +1,15 @@
+# NaN serializes as null while retaining NaN arithmetic semantics.
+[nan % 1, 1 % nan | isnan]
+null
+[true,true]
+
+# Positive infinity is clamped by jq's JSON serializer.
+infinite
+null
+1.7976931348623157e+308
+
+# NaN predicates remain true when the value is produced by the builtin.
+nan | isnan
+null
+true
+

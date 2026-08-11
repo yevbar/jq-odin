@@ -84,6 +84,10 @@ Node_Kind :: enum {
 	Ceil,
 	// Flatten is appended to preserve existing AST discriminants.
 	Flatten,
+	// Nan is appended to preserve existing AST discriminants.
+	Nan,
+	// Infinite is appended to preserve existing AST discriminants.
+	Infinite,
 }
 
 Node_Id :: distinct int
@@ -757,6 +761,10 @@ parse_pipe :: proc(
 					kind = .Ceil
 				} else if spelling == "flatten" {
 					kind = .Flatten
+				} else if spelling == "nan" {
+					kind = .Nan
+				} else if spelling == "infinite" {
+					kind = .Infinite
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
