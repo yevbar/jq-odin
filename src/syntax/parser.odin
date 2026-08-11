@@ -76,6 +76,8 @@ Node_Kind :: enum {
 	Strings,
 	// Finites is appended to preserve existing AST discriminants.
 	Finites,
+	// Normals is appended to preserve existing AST discriminants.
+	Normals,
 	// Floor is appended to preserve existing AST discriminants.
 	Floor,
 	// Round is appended to preserve existing AST discriminants.
@@ -839,6 +841,8 @@ parse_pipe :: proc(
 					kind = .Strings
 				} else if spelling == "finites" {
 					kind = .Finites
+				} else if spelling == "normals" {
+					kind = .Normals
 				} else if spelling == "floor" {
 					kind = .Floor
 				} else if spelling == "round" {

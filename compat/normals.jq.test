@@ -1,0 +1,23 @@
+# `normals` yields IEEE-754 normal numeric inputs only.
+normals
+42
+42
+
+normals
+1.5
+1.5
+
+normals
+0
+
+normals
+1e-320
+
+normals
+null
+
+nan | normals
+null
+
+infinite | normals
+null
