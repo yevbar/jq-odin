@@ -1030,9 +1030,10 @@ parse_pipe :: proc(
 					if !second_ok || (token_is(parser, .Semicolon) && !has_third) || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					close := parser.lookahead.token; advance(parser)
 					first_node := parser.nodes.storage[int(first)]; second_node := parser.nodes.storage[int(second)]
-					first_numeric := first_node.kind == .Number && !first_node.has_child && !first_node.has_value
-					second_numeric := second_node.kind == .Number && !second_node.has_child && !second_node.has_value
-					third_numeric := !has_third || (parser.nodes.storage[int(third)].kind == .Number && !parser.nodes.storage[int(third)].has_child && !parser.nodes.storage[int(third)].has_value)
+					first_numeric := (first_node.kind == .Number && !first_node.has_child && !first_node.has_value) || (first_node.kind == .Negate && first_node.has_child && !first_node.has_value && parser.nodes.storage[int(first_node.child)].kind == .Number)
+					second_numeric := (second_node.kind == .Number && !second_node.has_child && !second_node.has_value) || (second_node.kind == .Negate && second_node.has_child && !second_node.has_value && parser.nodes.storage[int(second_node.child)].kind == .Number)
+					third_node := parser.nodes.storage[int(third)] if has_third else Node{}
+					third_numeric := !has_third || (third_node.kind == .Number && !third_node.has_child && !third_node.has_value) || (third_node.kind == .Negate && third_node.has_child && !third_node.has_value && parser.nodes.storage[int(third_node.child)].kind == .Number)
 					if !first_numeric || !second_numeric || !third_numeric { fail_from_lookahead(parser, .Expression); return {}, false }
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third}); if !ok { return {}, false }; term = new_term

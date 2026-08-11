@@ -24,3 +24,17 @@ range(3;5)
 null
 3
 4
+
+range(0;10;-1)
+null
+
+range(0;-5;-1)
+null
+0
+-1
+-2
+-3
+-4
+
+range(5;1;0)
+null

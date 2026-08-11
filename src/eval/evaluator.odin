@@ -4639,7 +4639,6 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					}
 				}
 				if instruction.operands_count == 1 { end = start; start = 0 }
-				if step == 0 do return begin_terminal_misuse(storage, .Malformed_Program)
 				result, array_error := value.array_value(storage.allocator); if value.array_error_kind(&array_error) != .None do return resource_step(.Out_Of_Memory)
 				current := start
 				if (step > 0 && start < end) || (step < 0 && start > end) {
