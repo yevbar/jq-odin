@@ -93,6 +93,10 @@ frame_phase :: enum u8 {
 	Enter,
 	Leaf_Yielded,
 	Unary_Active,
+	Try_Start_Expression,
+	Try_Start_Catch,
+	Try_Expression_Active,
+	Try_Catch_Active,
 	Fork_Start_Left,
 	Fork_Left_Active,
 	Fork_Start_Right,
@@ -288,6 +292,7 @@ evaluator_storage :: struct {
 
 	pending:          pending_kind,
 	suppress_at:      int,
+	suppress_try:     bool,
 	pending_terminal: terminal_kind,
 	runtime_error:    Runtime_Error,
 	pending_constructor_error: ^value.Constructor_Error,
@@ -1048,6 +1053,11 @@ capture_composite_instruction :: proc(
 		_, child_ok := child_instruction(storage, instruction, 0)
 		index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
 		if !child_ok || !index_ok || index_operand.kind != .Text do return false
+	case .Try:
+		if instruction.operands_count != 2 do return false
+		_, expression_ok := child_instruction(storage, instruction, 0)
+		_, catch_ok := child_instruction(storage, instruction, 1)
+		if !expression_ok || !catch_ok do return false
 	case .Binding:
 		if instruction.operands_count != 3 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -1112,6 +1122,8 @@ resumed_composite_instruction_valid :: proc(
 		   (instruction.opcode != .Parenthesized && instruction.opcode != .Optional) {
 			return false
 		}
+	case .Try_Expression_Active, .Try_Catch_Active:
+		if frame.mode != .Normal || instruction.opcode != .Try do return false
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active, .Iterator_Active:
 		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
@@ -1134,6 +1146,7 @@ resumed_composite_instruction_valid :: proc(
 	}
 	expected_operand_count: u8
 	if frame.phase == .Unary_Active do expected_operand_count = 1
+	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
 		expected_operand_count = 2
 	}
@@ -1476,6 +1489,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	#partial switch frame.phase {
 	case .Unary_Active:
 		frame.phase = .Complete
+	case .Try_Expression_Active, .Try_Catch_Active:
+		frame.phase = .Complete
 	case .Fork_Left_Active:
 		frame.phase = .Fork_Start_Right
 	case .Fork_Right_Active:
@@ -1593,6 +1608,11 @@ find_optional_ancestor :: proc(
 		}
 		if frame.mode == .Normal && instruction.opcode == .Optional &&
 		   frame.phase == .Unary_Active {
+			storage.suppress_try = false
+			return current, true
+		}
+		if frame.mode == .Normal && instruction.opcode == .Try && frame.phase == .Try_Expression_Active {
+			storage.suppress_try = true
 			return current, true
 		}
 		current = frame.parent
@@ -1612,6 +1632,30 @@ continue_suppression :: proc(storage: ^evaluator_storage) -> (Step_Result, bool)
 	}
 	free_error := destroy_frames_to(storage, storage.suppress_at+1)
 	if free_error != nil do return resource_step(free_error), true
+	if storage.suppress_try {
+		message := storage.runtime_error.key
+		catch_instruction, child_ok := child_instruction(storage, instruction, 1)
+		catch_value, value_error := value.string_value(message, storage.allocator)
+		if !child_ok || value.constructor_error_kind(&value_error) != .None {
+			_ = value.destroy_constructor_error(&value_error)
+			return begin_terminal_misuse(storage, .Malformed_Program), true
+		}
+		free_error = release_runtime_error(storage)
+		if free_error != nil do return resource_step(free_error), true
+		if storage.frame_count == len(storage.frames) {
+			free_error = grow_frames(storage)
+			if free_error != nil { _ = value.destroy_value(&catch_value); return resource_step(free_error), true }
+		}
+		parent := storage.suppress_at
+		if !push_frame(storage, catch_instruction, parent, &catch_value) {
+			_ = value.destroy_value(&catch_value)
+			return begin_terminal_misuse(storage, .Malformed_Program), true
+		}
+		storage.frames[parent].phase = .Try_Catch_Active
+		storage.pending = .None
+		storage.suppress_try = false
+		return {}, false
+	}
 	free_error = release_runtime_error(storage)
 	if free_error != nil do return resource_step(free_error), true
 	storage.frames[storage.suppress_at].phase = .Complete
@@ -1660,8 +1704,11 @@ propagate_output :: proc(
 			return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
 		}
 		#partial switch frame.phase {
-		case .Unary_Active, .Fork_Left_Active, .Fork_Right_Active:
+		case .Unary_Active, .Try_Catch_Active, .Fork_Left_Active, .Fork_Right_Active:
 			current = parent
+		case .Try_Expression_Active:
+			frame.phase = .Complete
+			return propagate_output(storage, parent, owned)
 		case .Sequence_Left_Active:
 			child, ok := child_instruction(storage, instruction, 1)
 			if !ok || !push_frame(storage, child, parent, owned) {
@@ -4548,6 +4595,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				})
 				if ready do return result
 				continue
+			case .Try:
+				if !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				frame.phase = .Try_Start_Expression
 			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -4679,7 +4731,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Field_Start_Child, .Index_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
+		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -4688,6 +4740,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			offset: u32
 			next_phase: frame_phase
 			#partial switch frame.phase {
+			case .Try_Start_Expression:
+				offset, next_phase = 0, .Try_Expression_Active
+			case .Try_Start_Catch:
+				offset, next_phase = 1, .Try_Catch_Active
 			case .Field_Start_Child:
 				offset, next_phase = 0, .Field_Child_Active
 			case .Index_Start_Child:
@@ -4715,6 +4771,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				)
 			}
 			frame.phase = next_phase
+
+		case .Try_Expression_Active, .Try_Catch_Active:
+			return begin_terminal_misuse(storage, .Malformed_Program)
 
 		case .Constructor_Start:
 			child_count := int(instruction.operands_count)

@@ -2,3 +2,11 @@
 error("foo")
 null
 
+# Static error is caught with the error message as the catch input.
+try error("foo") catch .
+null
+"foo"
+
+try error("boom") catch "caught"
+null
+"caught"

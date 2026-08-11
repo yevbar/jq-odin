@@ -161,6 +161,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Error:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Try:
+		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Variable:
 		return node.container_kind == .None && no_child && no_edges && no_container_links &&
 		       !node.has_value && node.has_name_span && !node.boolean_value && no_number &&
@@ -286,6 +289,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Error:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Try:
+		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Identity:
 		if node.container_kind == .Array && node.has_value do return validate_binding_scopes(nodes, node.value, source, scopes, depth, next_budget)
 		if node.container_kind == .Object && node.has_value {
@@ -454,6 +459,10 @@ lower_filter :: proc(
 			}
 		case .Error:
 			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+		case .Try:
+			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Variable:
@@ -740,6 +749,15 @@ lower_filter :: proc(
 			})
 			assert(child_ok)
 			operand_at += 1
+		case .Try:
+			instruction.opcode = .Try
+			instruction.operands_count = 2
+			children := [2]syntax.Node_Id{node.left, node.right}
+			for child in children {
+				child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind = .Instruction, instruction = program.Instruction_Index(child)})
+				assert(child_ok)
+				operand_at += 1
+			}
 		case .Variable:
 			instruction.opcode = .Variable
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

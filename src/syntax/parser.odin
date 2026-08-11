@@ -185,6 +185,8 @@ Node_Kind :: enum {
 	Sinh,
 	// Error is appended to preserve existing AST discriminants.
 	Error,
+	// Try is appended to preserve existing AST discriminants.
+	Try,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -614,6 +616,7 @@ parse_pipe :: proc(
 	parser: ^Parser,
 	closing := Token_Kind.Invalid,
 	stop_at_comma := false,
+	stop_at_catch := false,
 ) -> (Node_Id, bool) {
 	invalid_id := Node_Id(-1)
 	current, pipe_root, pipe_tail := invalid_id, invalid_id, invalid_id
@@ -639,6 +642,9 @@ parse_pipe :: proc(
 
 	for {
 		if !term_ready {
+			if stop_at_catch && parser.lookahead.kind == .Token && parser.lookahead.token.kind == .Catch {
+				return current, current != invalid_id
+			}
 			if parser.lookahead.kind != .Token {
 				fail_from_lookahead(parser, .Expression)
 				return {}, false
@@ -762,6 +768,21 @@ parse_pipe :: proc(
 				advance(parser)
 				new_term, format_ok := append_node(parser, Node{kind = kind, span = token.span})
 				if !format_ok do return {}, false
+				term = new_term
+			case .Try:
+				advance(parser)
+				expression, expression_ok := parse_pipe(parser, closing, stop_at_comma, true)
+				if !expression_ok || !token_is(parser, .Catch) {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				advance(parser)
+				catch_filter, catch_ok := parse_pipe(parser, closing, stop_at_comma)
+				if !catch_ok do return {}, false
+				span, span_ok := spanning(parser, parser.nodes.storage[int(expression)].span, parser.nodes.storage[int(catch_filter)].span)
+				assert(span_ok)
+				new_term, try_ok := append_node(parser, Node{kind = .Try, span = span, left = expression, right = catch_filter})
+				if !try_ok do return {}, false
 				term = new_term
 			case .Minus:
 				minus_depth += 1

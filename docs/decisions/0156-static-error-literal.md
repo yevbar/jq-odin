@@ -19,13 +19,13 @@ temporary allocator data escapes evaluation.
 ## Evidence
 
 The jq 1.8.1 cases at `upstream/jq/tests/jq.test:1447-1451` establish the
-runtime-error and suppression contract. This lane directly checks
-`error("foo")`'s diagnostic/status and uses an evaluator Optional parent to
-exercise the existing suppression and cleanup boundary. Full jq `try`/`catch`
-syntax is not claimed by this static-only parser slice.
+runtime-error and suppression contract. This lane checks `error("foo")`'s
+diagnostic/status and static `try error("foo") catch .` plus a literal catch
+replacement, with the evaluator retaining the message until it is transferred
+to the catch input.
 
 ## Deferred
 
-The `try`/`catch` parser forms, dynamic expressions, non-string arguments,
+Dynamic expressions, non-string arguments,
 `halt`, `debug`, and exact source-location formatting beyond the existing driver
 contract remain deferred.
