@@ -148,6 +148,7 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 		{"tojson", .Tojson},
 		{"fromjson", .Fromjson},
 		{"last", .Last},
+		{"first", .First},
 		{"isinfinite", .Isinfinite},
 		{"log", .Log},
 		{"min", .Min},

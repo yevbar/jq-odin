@@ -3621,6 +3621,16 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if !element_ok do return {}, .Cannot_Index_With_String, nil
 		return result, .None, nil
 	}
+	if opcode == .First {
+		if kind == .Null do return value.null_value(), .None, nil
+		if kind != .Array do return {}, .Cannot_Index_With_String, nil
+		length, ok := value.array_length(input)
+		if !ok do return {}, .Cannot_Index_With_String, nil
+		if length == 0 do return value.null_value(), .None, nil
+		result, element_ok := value.array_element_copy(input, 0)
+		if !element_ok do return {}, .Cannot_Index_With_String, nil
+		return result, .None, nil
+	}
 	if opcode == .Add_Builtin {
 		if kind == .Object {
 			iterator := value.object_iterator()
@@ -4453,7 +4463,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

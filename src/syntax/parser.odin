@@ -159,6 +159,8 @@ Node_Kind :: enum {
 	Fromjson,
 	// Last is appended to preserve existing AST discriminants.
 	Last,
+	// First is appended to preserve existing AST discriminants.
+	First,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -915,6 +917,8 @@ parse_pipe :: proc(
 					kind = .Fromjson
 				} else if spelling == "last" {
 					kind = .Last
+				} else if spelling == "first" {
+					kind = .First
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {

@@ -1,0 +1,12 @@
+# `first` returns the first element of an array.
+first
+[1,2,3]
+1
+
+first
+[]
+null
+
+first
+null
+null
