@@ -40,6 +40,8 @@ Node_Kind :: enum {
 	Implode,
 	// Explode is appended to preserve existing AST discriminants.
 	Explode,
+	// Keys_Unsorted is appended to preserve existing AST discriminants.
+	Keys_Unsorted,
 }
 
 Node_Id :: distinct int
@@ -669,6 +671,8 @@ parse_pipe :: proc(
 					kind = .Implode
 				} else if spelling == "explode" {
 					kind = .Explode
+				} else if spelling == "keys_unsorted" {
+					kind = .Keys_Unsorted
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

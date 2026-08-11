@@ -1981,6 +1981,7 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if value.array_error_kind(&err) != .None { return {}, .None, .Out_Of_Memory }
 		n, _ := value.object_length(input)
 		for i in 0..<n { key, _, ok := value.object_entry_copy(input, i); if !ok { _ = value.destroy_value(&out); return {}, .None, nil }; _, ae := value.array_append_take(&out, &key); if value.array_error_kind(&ae) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&out); return {}, .None, .Out_Of_Memory } }
+		if opcode == .Keys_Unsorted do return out, .None, nil
 		// jq's `keys` sorts object names lexicographically, independent of
 		// insertion order. The array owns each key, so swapping handles is a
 		// move operation rather than a shallow copy.
@@ -2365,7 +2366,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
