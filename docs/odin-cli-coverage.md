@@ -365,6 +365,12 @@ behavioral oracle.
   classification. Its focused shard passes 7/7 and package/build checks pass;
   the catalog remains **172/522 passed and 350 failed** because these cases are
   grouped outside the parser-supported catalog subset.
+- Object `add` semantics (`4101b65`, decision `0132`) now reduce object values
+  in insertion order and return `null` for empty objects, while preserving
+  array concatenation and existing error classes. Its focused shard passes
+  5/5 and package/build checks pass; the catalog remains **172/522 passed and
+  350 failed** because the selected object cases are grouped with unsupported
+  expressions.
 
 ## Remaining high-value clusters
 
