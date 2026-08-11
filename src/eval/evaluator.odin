@@ -2032,72 +2032,11 @@ join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.A
 			_ = value.destroy_value(&item)
 			continue
 		}
-		item_kind := value.kind_of(&item)
-		text: string
-		text_ok := true
-		direct_number_spelling := ""
-		if item_kind == .String {
-			text, text_ok = value.string_borrowed(&item)
-		} else if item_kind == .Boolean {
-			boolean, boolean_ok := value.boolean_value_get(&item)
-			text = "true" if boolean else "false"
-			text_ok = boolean_ok
-		} else if item_kind == .Number {
-			// Parsed jq literals retain their source spelling, which is also the
-			// number spelling used by jq's join conversion.  Native numbers (for
-			// example, values produced by arithmetic) use the fallback formatter;
-			// its full dtoa parity remains outside this bounded lane.
-			spelling, literal := value.literal_spelling_borrowed(&item)
-			if literal {
-				text = spelling
-				// jq's number printer canonicalizes scientific notation. Keep
-				// ordinary literal spellings borrowed, but defer exponent output
-				// to the canonical writer below (notably 1e20 -> 1E+20).
-				for c in spelling {
-					if c == 'e' || c == 'E' {
-						direct_number_spelling = spelling
-						break
-					}
-				}
-			} else {
-				number, number_ok := value.number_value_get(&item)
-				buffer: [64]byte
-				text = strconv.write_float(buffer[:], number, 'f', -1, 64)
-				text_ok = number_ok
-			}
-		} else {
-			text_ok = false
-		}
+		text, text_ok := value.string_borrowed(&item)
 		if !text_ok {
 			_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .Cannot_Iterate, nil
 		}
-		if len(direct_number_spelling) > 0 {
-			e_at := 0
-			for e_at < len(direct_number_spelling) &&
-				direct_number_spelling[e_at] != 'e' && direct_number_spelling[e_at] != 'E' {
-				e_at += 1
-			}
-			if strings.write_string(&builder, direct_number_spelling[:e_at]) != e_at {
-				_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory
-			}
-			exponent := direct_number_spelling[e_at + 1:]
-			exponent_sign := "+"
-			if len(exponent) > 0 && exponent[0] == '-' {
-				exponent_sign = "-"
-				exponent = exponent[1:]
-			}
-			if strings.write_string(&builder, "E") != 1 ||
-				strings.write_string(&builder, exponent_sign) != 1 {
-				_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory
-			}
-			first_digit := 0
-			for first_digit < len(exponent) - 1 && exponent[first_digit] == '0' {
-				first_digit += 1
-			}
-			if strings.write_string(&builder, exponent[first_digit:]) != len(exponent) - first_digit {
-				_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory
-			}
-		} else if strings.write_string(&builder, text) != len(text) {
+		if strings.write_string(&builder, text) != len(text) {
 			_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory
 		}
 		_ = value.destroy_value(&item)
