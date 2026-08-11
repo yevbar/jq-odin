@@ -2902,7 +2902,8 @@ test_atan_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 @(test)
 test_ascii_case_parses_as_zero_argument_builtins :: proc(t: ^testing.T) {
 	Case :: struct { text: string, expected: Node_Kind }
-	for test_case in [?]Case{{"ascii_downcase", .Ascii_Downcase}, {"ascii_upcase", .Ascii_Upcase}} {
+	cases := [?]Case{{"ascii_downcase", .Ascii_Downcase}, {"ascii_upcase", .Ascii_Upcase}}
+	for test_case in cases {
 		parser: Parser
 		source := diagnostic.borrow_source("<ascii-case>", test_case.text)
 		testing.expect(t, init_parser(&parser, source, context.allocator))
