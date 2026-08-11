@@ -158,6 +158,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Error:
+		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Variable:
 		return node.container_kind == .None && no_child && no_edges && no_container_links &&
 		       !node.has_value && node.has_name_span && !node.boolean_value && no_number &&
@@ -280,6 +283,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Flatten:
 		if node.has_child do return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Error:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Identity:
 		if node.container_kind == .Array && node.has_value do return validate_binding_scopes(nodes, node.value, source, scopes, depth, next_budget)
@@ -444,6 +449,10 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
+			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+		case .Error:
 			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
@@ -715,6 +724,15 @@ lower_filter :: proc(
 			if node.kind == .Ltrimstr do instruction.opcode = .Ltrimstr
 			if node.kind == .Rtrimstr do instruction.opcode = .Rtrimstr
 			if node.kind == .Trimstr do instruction.opcode = .Trimstr
+			instruction.operands_count = 1
+			child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+				kind = .Instruction,
+				instruction = program.Instruction_Index(node.child),
+			})
+			assert(child_ok)
+			operand_at += 1
+		case .Error:
+			instruction.opcode = .Error
 			instruction.operands_count = 1
 			child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
 				kind = .Instruction,

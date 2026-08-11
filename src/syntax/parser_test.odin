@@ -137,6 +137,22 @@ test_sinh_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_error_parses_literal_string_argument :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<error>", `error("foo")`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Error)
+	testing.expect(t, root.has_child)
+	child := parser.nodes.storage[int(root.child)]
+	testing.expect_value(t, child.kind, Node_Kind.String)
+	testing.expect_value(t, child.string_text, "foo")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_log10_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<log10>", "log10")

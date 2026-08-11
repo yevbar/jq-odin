@@ -22,6 +22,7 @@ Runtime_Error_Kind :: enum u8 {
 	Cannot_Length,
 	Cannot_Number,
 	Cannot_Trim,
+	User_Error,
 }
 
 Runtime_Error :: struct {
@@ -4529,6 +4530,24 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Error:
+				child, child_ok := child_instruction(storage, instruction, 0)
+				message_instruction, message_instruction_ok := program.program_instruction(storage.compiled, child)
+				message_operand, operand_ok := program.program_operand(storage.compiled, message_instruction.operands_start)
+				message, message_ok := program.operand_text(storage.compiled, message_operand)
+				if !child_ok || !message_instruction_ok || !operand_ok || !message_ok ||
+				   message_operand.kind != .Text || !message_instruction.has_literal ||
+				   message_instruction.literal_kind != .String {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				result, ready := raise_runtime(storage, index, Runtime_Error{
+					kind = .User_Error,
+					input_kind = value.kind_of(&frame.input),
+					span = instruction.span,
+					key = message,
+				})
+				if ready do return result
+				continue
 			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)

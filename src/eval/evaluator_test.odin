@@ -2337,6 +2337,38 @@ optional_suppresses_runtime_only_and_preserves_prior_outputs :: proc(t: ^testing
 }
 
 @(test)
+static_error_owns_message_and_optional_suppresses_with_cleanup :: proc(t: ^testing.T) {
+	instructions := [3]program.Instruction{
+		{opcode = .Identity, operands_start = 0, operands_count = 1, has_literal = true, literal_kind = .String},
+		{opcode = .Error, operands_start = 1, operands_count = 1},
+		{opcode = .Optional, operands_start = 2, operands_count = 1},
+	}
+	operands := [3]program.Operand{
+		text_operand(0, 3), instruction_operand(0), instruction_operand(1),
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:2], operands[:2], "foo", 1)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	runtime_result := step_evaluator(&evaluator)
+	testing.expect_value(t, runtime_result.kind, Step_Kind.Runtime_Error)
+	testing.expect_value(t, runtime_result.runtime_error.kind, Runtime_Error_Kind.User_Error)
+	testing.expect_value(t, runtime_result.runtime_error.key, "foo")
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Runtime_Error)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+
+	optional_program: program.Program
+	build_program(t, &optional_program, instructions[:], operands[:], "foo", 2)
+	optional_input := value.null_value()
+	testing.expect_value(t, init_evaluator(&evaluator, &optional_program, &optional_input, context.allocator).kind, Init_Error_Kind.None)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &optional_program)
+}
+
+@(test)
 fork_and_sequence_preserve_order_cardinality_and_missing_fields :: proc(t: ^testing.T) {
 	// Fork(Identity, Field a): two outputs. Sequence(that fork, Field b):
 	// the complete first branch's right results precede the second branch's.

@@ -1,0 +1,4 @@
+# Static error emits jq's runtime diagnostic and status 5.
+error("foo")
+null
+
