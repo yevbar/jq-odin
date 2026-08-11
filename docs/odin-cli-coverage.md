@@ -51,6 +51,10 @@ behavioral oracle.
   the full catalog is now 96/522 (426 remaining). Its zero-argument truthiness
   form is covered; generator and richer control-flow compositions remain
   deferred.
+- Bounded `utf8bytelength` (`51d7b86`) passes its ASCII/UTF-8 shard and package
+  suite; the full catalog is now 97/522 (425 remaining). Valid string values
+  are covered, while typed non-string diagnostics and malformed UTF-8 remain
+  deferred to a follow-up parity lane.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
