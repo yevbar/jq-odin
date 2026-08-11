@@ -177,6 +177,10 @@ behavioral oracle.
   Its focused shard and full Odin package/CLI suites pass; the exact catalog is
   now **142/522 passed and 380 failed**. Dynamic depth and full jq diagnostics
   remain deferred.
+- Unicode White_Space handling for `trim`, `ltrim`, and `rtrim` (`d5305b7`)
+  adds a focused 2/2 shard covering non-ASCII whitespace and preserves the
+  existing ASCII behavior. The exact catalog is now **143/522 passed and 379
+  failed**.
 
 ## Remaining high-value clusters
 
