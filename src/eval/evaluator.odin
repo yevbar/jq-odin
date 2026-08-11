@@ -3355,6 +3355,11 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	}
 	if opcode == .Length {
 		if kind == .Null do return value.number_value(0), .None, nil
+		if kind == .Number {
+			number, number_ok := value.number_value_get(input)
+			if !number_ok do return {}, .Cannot_Length, nil
+			return value.number_value(math.abs(number)), .None, nil
+		}
 		if kind == .Array { n, ok := value.array_length(input); if ok do return value.number_value(f64(n)), .None, nil }
 		if kind == .Object { n, ok := value.object_length(input); if ok do return value.number_value(f64(n)), .None, nil }
 		if kind == .String { s, ok := value.string_borrowed(input); if ok do return value.number_value(f64(utf8_codepoint_length(s))), .None, nil }

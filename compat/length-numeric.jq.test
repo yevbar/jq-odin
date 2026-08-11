@@ -1,0 +1,21 @@
+# jq's length returns the absolute value for numeric inputs.
+length
+-1.5
+1.5
+
+length
+0
+0
+
+# Existing collection/string/null behavior remains covered alongside numbers.
+length
+null
+0
+
+length
+"abcd"
+4
+
+length
+[1,2,3]
+3
