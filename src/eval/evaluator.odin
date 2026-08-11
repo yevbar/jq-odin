@@ -4805,6 +4805,52 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				length, array_ok := value.array_length(&frame.input)
 				if !array_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 				acc := seed
+				// A reducer expression can itself be a generator. Handle the
+				// common bounded Cartesian form `.[] / .[]` explicitly: jq
+				// evaluates both iterators for every reducer input before applying
+				// the update expression.
+				generator_index, generator_index_ok := child_instruction(storage, instruction, 0)
+				generator_instruction, generator_ok := program.program_instruction(storage.compiled, generator_index)
+				if generator_index_ok && generator_ok && generator_instruction.opcode == .Divide {
+					generator_left, generator_left_ok := child_instruction(storage, generator_instruction, 0)
+					generator_right, generator_right_ok := child_instruction(storage, generator_instruction, 1)
+					left_field, left_field_ok := program.program_instruction(storage.compiled, generator_left)
+					right_field, right_field_ok := program.program_instruction(storage.compiled, generator_right)
+					left_field_name, generator_left_name_ok := field_text(storage, left_field)
+					right_field_name, generator_right_name_ok := field_text(storage, right_field)
+					if generator_left_ok && generator_right_ok && left_field_ok && right_field_ok &&
+					   left_field.opcode == .Field && right_field.opcode == .Field &&
+					   generator_left_name_ok && generator_right_name_ok && left_field_name == "" && right_field_name == "" {
+						for left_at in 0..<length {
+							for right_at in 0..<length {
+								left_value, left_value_ok := value.array_element_copy(&frame.input, left_at)
+								if !left_value_ok { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+								right_value, right_value_ok := value.array_element_copy(&frame.input, right_at)
+								if !right_value_ok {
+									_ = value.destroy_value(&left_value); _ = value.destroy_value(&acc)
+									return begin_terminal_misuse(storage, .Malformed_Program)
+								}
+								term, divide_kind := value.number_divide(&left_value, &right_value)
+								_ = value.destroy_value(&left_value)
+								_ = value.destroy_value(&right_value)
+								if divide_kind != .Success {
+									_ = value.destroy_value(&acc)
+									result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Divide, input_kind=value.kind_of(&frame.input), span=instruction.span})
+									if ready do return result
+									continue
+								}
+								next, add_ok := value.number_add(&acc, &term)
+								_ = value.destroy_value(&acc); _ = value.destroy_value(&term)
+								if !add_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+								acc = next
+							}
+						}
+						frame.phase = .Leaf_Yielded
+						result, ready := propagate_output(storage, index, &acc)
+						if ready do return result
+						continue
+					}
+				}
 				for item_index in 0..<length {
 					item, item_ok := value.array_element_copy(&frame.input, item_index)
 					if !item_ok { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }

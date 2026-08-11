@@ -551,6 +551,11 @@ behavioral oracle.
   streams. The focused shard passes 1/1, package/build checks and full tests
   pass, and the authoritative catalog is **182/522 passed and 340 failed**.
   Destructuring and dynamic assignment bindings remain deferred.
+- The bounded generator-valued `reduce .[] / .[]` path (`decision 0166`)
+  now evaluates the Cartesian division stream before applying its numeric
+  update. Its focused shard passes 1/1, package/build checks and full tests
+  pass, and the authoritative catalog is **183/522 passed and 339 failed**.
+  General generator-valued reducers and `foreach` remain deferred.
 
 ## Remaining high-value clusters
 

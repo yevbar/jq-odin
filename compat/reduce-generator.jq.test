@@ -1,0 +1,4 @@
+# A reducer expression may itself produce a Cartesian generator stream.
+[reduce .[] / .[] as $i (0; . + $i)]
+[1,2]
+[4.5]
