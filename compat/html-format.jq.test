@@ -1,0 +1,14 @@
+# Bounded zero-argument @html format filter coverage.  Oracle escaping is
+# anchored by upstream/jq/tests/jq.test:102-104; format interpolation remains
+# deferred in this lane.
+@html
+"<script>& \"quote\" 'apostrophe'</script>"
+"&lt;script&gt;&amp; &quot;quote&quot; &apos;apostrophe&apos;&lt;/script&gt;"
+
+@html
+"μ"
+"μ"
+
+@html
+42
+"42"
