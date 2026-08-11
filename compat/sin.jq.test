@@ -1,0 +1,12 @@
+# `sin` computes the sine in radians.
+sin
+-1.5707963267948966
+-1
+
+sin
+0
+0
+
+sin
+1.5707963267948966
+1
