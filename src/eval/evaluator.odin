@@ -2201,6 +2201,36 @@ literal_object_value :: proc(
 }
 
 @(private)
+literal_array_value :: proc(
+	storage: ^evaluator_storage,
+	instruction: program.Instruction,
+) -> (value.Value, value.Error, runtime.Allocator_Error) {
+	if instruction.opcode != .Array || instruction.operands_count > 1 {
+		return {}, .Invalid_Number_Literal, nil
+	}
+	result, array_error := value.array_value(storage.allocator)
+	if value.array_error_kind(&array_error) != .None {
+		return {}, .Invalid_Number_Literal, nil
+	}
+	if instruction.operands_count == 0 {
+		return result, .None, nil
+	}
+	child, child_ok := child_instruction(storage, instruction, 0)
+	if !child_ok {
+		_ = value.destroy_value(&result)
+		return {}, .Invalid_Number_Literal, nil
+	}
+	dummy := value.null_value()
+	if !collect_constructor_key_stream(storage, child, 0, &dummy, &result) {
+		_ = value.destroy_value(&dummy)
+		_ = value.destroy_value(&result)
+		return {}, .Invalid_Number_Literal, nil
+	}
+	_ = value.destroy_value(&dummy)
+	return result, .None, nil
+}
+
+@(private)
 prefix_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcode) -> (value.Value, Runtime_Error_Kind) {
 	if value.kind_of(input) != .String do return {}, .Cannot_Iterate
 	haystack, ok := value.string_borrowed(input)
@@ -2275,15 +2305,71 @@ split_result :: proc(input: ^value.Value, separator: string, allocator: runtime.
 }
 
 @(private)
-search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcode, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+search_result :: proc(input: ^value.Value, needle: ^value.Value, opcode: program.Opcode, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
-	// jq's search builtins preserve null as null.  Arrays search exact string
-	// elements (rather than serializing the array); non-string elements simply
-	// cannot match a literal string needle.
+	needle_kind := value.kind_of(needle)
+	// jq's search builtins preserve null as null. Arrays compare literal needles
+	// by JSON value; array needles match contiguous subarrays.
 	if kind == .Null do return value.null_value(), .None, nil
 	if kind == .Array {
 		length, length_ok := value.array_length(input)
 		if !length_ok do return {}, .Cannot_Iterate, nil
+		if needle_kind == .Array {
+			needle_length, needle_length_ok := value.array_length(needle)
+			if !needle_length_ok do return {}, .Cannot_Iterate, nil
+			if needle_length == 0 do return {}, .Cannot_Iterate, nil
+			if needle_length > length {
+				if opcode == .Indices_Builtin {
+					result, array_error := value.array_value(allocator)
+					if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+					return result, .None, nil
+				}
+				return value.null_value(), .None, nil
+			}
+			last_index := -1
+			for start in 0..<(length - needle_length + 1) {
+				matches := true
+				for offset in 0..<needle_length {
+					item, item_ok := value.array_element_copy(input, start + offset)
+					wanted, wanted_ok := value.array_element_copy(needle, offset)
+					if !item_ok || !wanted_ok || !value.values_equal(&item, &wanted) do matches = false
+					_ = value.destroy_value(&item)
+					_ = value.destroy_value(&wanted)
+					if !matches do break
+				}
+				if matches {
+					if opcode == .Index_Builtin do return value.number_value(f64(start)), .None, nil
+					last_index = start
+				}
+			}
+			if opcode == .Indices_Builtin {
+				result, array_error := value.array_value(allocator)
+				if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+				for start in 0..<(length - needle_length + 1) {
+					matches := true
+					for offset in 0..<needle_length {
+						item, item_ok := value.array_element_copy(input, start + offset)
+						wanted, wanted_ok := value.array_element_copy(needle, offset)
+						if !item_ok || !wanted_ok || !value.values_equal(&item, &wanted) do matches = false
+						_ = value.destroy_value(&item)
+						_ = value.destroy_value(&wanted)
+						if !matches do break
+					}
+					if matches {
+						position := value.number_value(f64(start))
+						_, append_error := value.array_append_take(&result, &position)
+						if value.array_error_kind(&append_error) != .None {
+							_ = value.destroy_value(&position)
+							_ = value.destroy_value(&result)
+							return {}, .None, .Out_Of_Memory
+						}
+					}
+				}
+				return result, .None, nil
+			}
+			if last_index < 0 do return value.null_value(), .None, nil
+			return value.number_value(f64(last_index)), .None, nil
+		}
 		if opcode == .Indices_Builtin {
 			result, array_error := value.array_value(allocator)
 			if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
@@ -2293,12 +2379,7 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 					_ = value.destroy_value(&result)
 					return {}, .Cannot_Iterate, nil
 				}
-				item_kind := value.kind_of(&item)
-				matches := false
-				if item_kind == .String {
-					item_text, text_ok := value.string_borrowed(&item)
-					matches = text_ok && item_text == needle
-				}
+				matches := value.values_equal(&item, needle)
 				_ = value.destroy_value(&item)
 				if matches {
 					position := value.number_value(f64(index))
@@ -2316,12 +2397,7 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 		for index in 0..<length {
 			item, item_ok := value.array_element_copy(input, index)
 			if !item_ok do return {}, .Cannot_Iterate, nil
-			item_kind := value.kind_of(&item)
-			matches := false
-			if item_kind == .String {
-				item_text, text_ok := value.string_borrowed(&item)
-				matches = text_ok && item_text == needle
-			}
+			matches := value.values_equal(&item, needle)
 			_ = value.destroy_value(&item)
 			if matches {
 				if opcode == .Index_Builtin do return value.number_value(f64(index)), .None, nil
@@ -2331,16 +2407,18 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 		if last_index < 0 do return value.null_value(), .None, nil
 		return value.number_value(f64(last_index)), .None, nil
 	}
-	if kind != .String || len(needle) == 0 do return {}, .Cannot_Iterate, nil
+	if kind != .String || needle_kind != .String do return {}, .Cannot_Iterate, nil
+	needle_text, needle_text_ok := value.string_borrowed(needle)
+	if !needle_text_ok || len(needle_text) == 0 do return {}, .Cannot_Iterate, nil
 	text, text_ok := value.string_borrowed(input)
 	if !text_ok do return {}, .Cannot_Iterate, nil
 	if opcode == .Index_Builtin {
-		position := strings.index(text, needle)
+		position := strings.index(text, needle_text)
 		if position < 0 do return value.null_value(), .None, nil
 		return value.number_value(f64(utf8_codepoint_offset(text, position))), .None, nil
 	}
 	if opcode == .Rindex_Builtin {
-		position := strings.last_index(text, needle)
+		position := strings.last_index(text, needle_text)
 		if position < 0 do return value.null_value(), .None, nil
 		return value.number_value(f64(utf8_codepoint_offset(text, position))), .None, nil
 	}
@@ -2348,7 +2426,7 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
 	start := 0
 	for start <= len(text) {
-		relative := strings.index(text[start:], needle)
+		relative := strings.index(text[start:], needle_text)
 		if relative < 0 do break
 		item := value.number_value(f64(utf8_codepoint_offset(text, start + relative)))
 		_, append_error := value.array_append_take(&result, &item)
@@ -3479,12 +3557,20 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				child, child_ok := child_instruction(storage, instruction, 0)
 				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
-				needle_operand, operand_ok := program.program_operand(storage.compiled, needle_instruction.operands_start)
-				needle, needle_text_ok := program.operand_text(storage.compiled, needle_operand)
-				if !child_ok || !needle_ok || needle_operand.kind != .Text || !needle_instruction.has_literal || needle_instruction.literal_kind != .String || !operand_ok || !needle_text_ok {
+				needle: value.Value
+				needle_error: value.Error
+				needle_cleanup: runtime.Allocator_Error
+				if needle_instruction.opcode == .Array {
+					needle, needle_error, needle_cleanup = literal_array_value(storage, needle_instruction)
+				} else {
+					needle, needle_error, needle_cleanup = literal_value(storage, needle_instruction)
+				}
+				if !child_ok || !needle_ok || needle_cleanup != nil || needle_error != .None {
+					if value.kind_of(&needle) != .Invalid do _ = value.destroy_value(&needle)
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
-				output, runtime_kind, resource_error := search_result(&frame.input, needle, instruction.opcode, storage.allocator)
+				output, runtime_kind, resource_error := search_result(&frame.input, &needle, instruction.opcode, storage.allocator)
+				_ = value.destroy_value(&needle)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
