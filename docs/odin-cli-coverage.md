@@ -119,6 +119,9 @@ behavioral oracle.
 - Bounded zero-argument `any`/`all` (`f620eb8`) pass five array truthiness and
   empty-identity oracle cases. The full catalog is now 119/522 (403 remaining);
   generator and condition overloads remain deferred.
+- Bounded zero-argument `isfinite` (`5532f38`) passes its numeric finite/NaN/
+  infinity predicate shard and package suite. The full catalog remains 119/522
+  because the selected case overlaps existing numeric coverage.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 315 subprocess checks and 41
   differential checks.
