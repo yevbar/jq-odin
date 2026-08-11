@@ -494,6 +494,12 @@ behavioral oracle.
   tests pass, and the catalog remains **172/522 passed and 350 failed**.
   Non-number diagnostics and one-ULP native-libm differences at interior
   values remain deferred.
+- The zero-argument `sinh` builtin (`e55758c7`, decision `0155`) now computes
+  hyperbolic sine for numeric inputs using Odin's math implementation. Its
+  focused shard passes 3/3 against the pinned oracle, package/build checks and
+  full tests pass, and the catalog remains **172/522 passed and 350 failed**.
+  Non-number diagnostics, dynamic forms, near-overflow behavior, and
+  platform-sensitive precision remain deferred.
 
 ## Remaining high-value clusters
 
