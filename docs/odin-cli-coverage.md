@@ -128,6 +128,21 @@ behavioral oracle.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 316 subprocess checks and 41
   differential checks.
+- The bounded `isnormal` numeric predicate (`73cbdf4`) passes its 5/5 oracle
+  shard and the full Odin package suite. It does not add a new jq catalog case
+  on this snapshot; subnormal, NaN, infinity, zero, and non-number behavior is
+  covered by the focused shard and documented in decision `0095`.
+- The bounded literal `contains("...")` predicate (`36b9268`, with the
+  integration fixture correction in `ff89ff8`) passes its 4/4 oracle shard,
+  the full package suite, and the CLI harness. The full pinned catalog now
+  measures **128/522 passed and 394 failed**. The six newly passing cases are
+  the string-substring cases at `upstream/jq/tests/jq.test:1404-1425`;
+  recursive array/object containment and dynamic arguments remain deferred.
+- The exact catalog measurement was produced with
+  `tools/compat/jq_compat.py` against jq 1.8.1 (oracle SHA
+  `30df4803a4ebbfd2741b2477d06488ce5973e3517cb1121d56be4b1fad9efa8d`) and
+  summarized with `tools/compat/catalog_report.py` at integration head
+  `ff89ff8`.
 - The jq catalog moved from 90/522 passing filters at the baseline to 93/522
   after static indexing; 429 catalog cases still fail. The catalog report is
   generated with `tools/compat/catalog_report.py` and is intentionally kept as
