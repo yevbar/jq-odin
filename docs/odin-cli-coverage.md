@@ -245,6 +245,12 @@ behavioral oracle.
   `Name` plus `value`/`Value` spellings, defaulting an omitted value to `null`.
   Its focused shard passes 2/2 and the exact catalog is **157/522 passed and
   365 failed**. Malformed entries and non-array diagnostics remain deferred.
+- Literal numeric and non-empty array needles for `index`/`rindex`/`indices`
+  (`a4db92a`, decision `0113`) now support scalar matching and contiguous-array
+  searches while preserving the string needle shard. The new shard passes 3/3,
+  the existing shard passes 10/10, and the exact catalog is now **160/522
+  passed and 362 failed**. Empty-array needles, dynamic/two-argument forms,
+  Unicode edges, and detailed diagnostics remain deferred.
 
 ## Remaining high-value clusters
 
