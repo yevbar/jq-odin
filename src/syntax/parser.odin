@@ -191,6 +191,8 @@ Node_Kind :: enum {
 	IsEmpty,
 	// Range is appended to preserve existing AST discriminants.
 	Range,
+	// Strftime is appended to preserve existing AST discriminants.
+	Strftime,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -996,6 +998,8 @@ parse_pipe :: proc(
 					kind = .IsEmpty
 				} else if spelling == "range" {
 					kind = .Range
+				} else if spelling == "strftime" {
+					kind = .Strftime
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {
@@ -1039,7 +1043,7 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third}); if !ok { return {}, false }; term = new_term
 					}
-				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -1080,6 +1084,7 @@ parse_pipe :: proc(
 					if spelling == "trimstr" do call_kind = .Trimstr
 					if spelling == "error" do call_kind = .Error
 					if spelling == "isempty" do call_kind = .IsEmpty
+					if spelling == "strftime" do call_kind = .Strftime
 					new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
 					if !ok { return {}, false }
 					term = new_term

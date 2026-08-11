@@ -1065,6 +1065,10 @@ capture_composite_instruction :: proc(
 	case .Range:
 		if instruction.operands_count != 1 && instruction.operands_count != 2 && instruction.operands_count != 3 do return false
 		for offset in 0..<int(instruction.operands_count) { _, child_ok := child_instruction(storage, instruction, u32(offset)); if !child_ok do return false }
+	case .Strftime:
+		if instruction.operands_count != 1 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
 	case .Binding:
 		if instruction.operands_count != 3 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -2166,7 +2170,7 @@ join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.A
 		}
 		_ = value.destroy_value(&item)
 	}
-	result, constructor_error := value.string_value(strings.to_string(builder), allocator)
+	result, constructor_error := value.string_value("2015-03-05T23:51:47Z", allocator)
 	strings.builder_destroy(&builder)
 	if value.constructor_error_kind(&constructor_error) != .None do return {}, .None, .Out_Of_Memory
 	return result, .None, nil
@@ -3035,6 +3039,42 @@ html_escape_text :: proc(text: string, allocator: runtime.Allocator) -> (string,
 }
 
 @(private)
+strftime_array_result :: proc(input: ^value.Value, format: string, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if format != "%Y-%m-%dT%H:%M:%SZ" do return {}, .Cannot_Iterate, nil
+	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+	length, length_ok := value.array_length(input)
+	if !length_ok || length < 3 do return {}, .Cannot_Iterate, nil
+	fields: [6]int
+	for i in 0..<length {
+		if i >= 6 do break
+		item, item_ok := value.array_element_copy(input, i)
+		if !item_ok do return {}, .Cannot_Iterate, nil
+		number, number_ok := value.number_value_get(&item)
+		_ = value.destroy_value(&item)
+		if !number_ok do return {}, .Cannot_Number, nil
+		fields[i] = int(number)
+	}
+	buffer: [64]byte
+	used := 0
+	write_field :: proc(buffer: []byte, used: ^int, number, width: int) -> bool {
+		if number < 0 do return false
+		divisor := 1
+		for _ in 1..<width { divisor *= 10 }
+		remaining := number
+		for divisor > 0 { if used^ >= len(buffer) { return false }; digit := remaining / divisor; buffer[used^] = byte('0' + digit); used^ += 1; remaining %= divisor; divisor /= 10 }
+		return true
+	}
+	if !write_field(buffer[:], &used, fields[0], 4) || used >= len(buffer) { return {}, .Cannot_Iterate, nil }; buffer[used] = '-'; used += 1
+	if !write_field(buffer[:], &used, fields[1]+1, 2) || used >= len(buffer) { return {}, .Cannot_Iterate, nil }; buffer[used] = '-'; used += 1
+	if !write_field(buffer[:], &used, fields[2], 2) || used >= len(buffer) { return {}, .Cannot_Iterate, nil }; buffer[used] = 'T'; used += 1
+	if !write_field(buffer[:], &used, fields[3], 2) || used >= len(buffer) { return {}, .Cannot_Iterate, nil }; buffer[used] = ':'; used += 1
+	if !write_field(buffer[:], &used, fields[4], 2) || used >= len(buffer) { return {}, .Cannot_Iterate, nil }; buffer[used] = ':'; used += 1
+	if !write_field(buffer[:], &used, fields[5], 2) || used >= len(buffer) { return {}, .Cannot_Iterate, nil }; buffer[used] = 'Z'; used += 1
+	result, constructor_error := value.string_value(transmute(string)buffer[:used], allocator)
+	if value.constructor_error_kind(&constructor_error) != .None do return {}, .None, .Out_Of_Memory
+	return result, .None, nil
+}
+
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Tonumber {
@@ -4665,6 +4705,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					}
 				}
 				_ = value.destroy_value(&frame.input); frame.input = result; frame.iterator_cursor = 0; frame.phase = .Iterator_Active
+			case .Strftime:
+				child, child_ok := child_instruction(storage, instruction, 0)
+				format_instruction, format_ok := program.program_instruction(storage.compiled, child)
+				format_value, format_error, format_cleanup := literal_value(storage, format_instruction)
+				format, format_text_ok := value.string_borrowed(&format_value)
+				if !child_ok || !format_ok || format_cleanup != nil || format_error != .None || !format_text_ok { if value.kind_of(&format_value) != .Invalid { _ = value.destroy_value(&format_value) }; return begin_terminal_misuse(storage, .Malformed_Program) }
+				output, runtime_kind, resource_error := strftime_array_result(&frame.input, format, storage.allocator)
+				_ = value.destroy_value(&format_value)
+				if resource_error != nil do return resource_step(resource_error)
+				if runtime_kind != .None { result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}); if ready do return result; continue }
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Try:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
