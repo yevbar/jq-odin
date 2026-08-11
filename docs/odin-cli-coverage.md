@@ -102,8 +102,12 @@ behavioral oracle.
   sorting and deduplication, including duplicate preservation regression cases;
   its shard and package suite pass, and the full catalog is now 111/522 (411
   remaining).
+- Bounded zero-argument `sort` (`b999fac`) performs owned insertion sorting
+  with jq-compatible mixed-value ordering and duplicate retention. Its focused
+  shard and package suite pass; the full catalog is now 112/522 (410
+  remaining).
 - Package validation and the full Odin package test suite pass on the
-  integration worktree. The CLI harness reports 311 subprocess checks and 40
+  integration worktree. The CLI harness reports 313 subprocess checks and 41
   differential checks.
 - The jq catalog moved from 90/522 passing filters at the baseline to 93/522
   after static indexing; 429 catalog cases still fail. The catalog report is
