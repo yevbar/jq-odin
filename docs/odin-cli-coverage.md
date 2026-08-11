@@ -164,6 +164,10 @@ behavioral oracle.
   an external artifact rather than committed output.
 - The focused postfix-index shard passes 5/5 against the pinned jq oracle;
   see `compat/postfix-index.md` and decision `0066`.
+- The index-family follow-up (`91add64`) now reports UTF-8 search positions as
+  jq-compatible code-point offsets and covers null/array inputs. Its focused
+  shard passes 10/10, the independent ownership/parity review found no issues,
+  and the exact catalog is now **137/522 passed and 385 failed**.
 
 ## Remaining high-value clusters
 
