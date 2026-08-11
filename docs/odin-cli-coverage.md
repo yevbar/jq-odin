@@ -272,6 +272,12 @@ behavioral oracle.
   passes 7/7 and the string-literal shard remains 4/4; the fresh full catalog
   is **164/522 passed and 358 failed**. Dynamic arguments, broader array
   literal syntax, and detailed diagnostic wording remain deferred.
+- Quoted field postfixes (`98f50b5`, decision `0117`) now support non-interpolated
+  `."foo"` and chained forms such as `."foo"."bar"` and `.foo."bar"` by
+  reusing the existing Field representation. The focused shard passes 3/3,
+  package/build checks pass, and the full catalog is **165/522 passed and 357
+  failed**. Interpolated/dynamic fields and assignment/update forms remain
+  deferred.
 
 ## Remaining high-value clusters
 
