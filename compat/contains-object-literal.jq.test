@@ -17,3 +17,11 @@ true
 ([1,2] | contains([2]))
 {}
 true
+
+({a: {b: 2}} | contains({a: [1,2]}))
+{}
+false
+
+({a: [1,2]} | contains({a: {b: 2}}))
+{}
+false

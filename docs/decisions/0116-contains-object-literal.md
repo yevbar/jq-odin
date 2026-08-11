@@ -2,8 +2,10 @@
 
 `contains` now accepts static object and array literals. Object-subset checks
 require every needle key and recursively compare nested values; arrays apply a
-literal-element subset check. String-literal behavior is preserved. Dynamic
-arguments and exact diagnostic wording remain deferred.
+literal-element subset check. A nested object/array kind mismatch is a normal
+false result, while a top-level object/array mismatch remains a runtime error,
+matching jq. String-literal behavior is preserved. Dynamic arguments and exact
+diagnostic wording remain deferred.
 
 Evidence: `upstream/jq/tests/jq.test:1623-1625` and
 `compat/contains-object-literal.jq.test` against the pinned oracle.

@@ -2109,7 +2109,7 @@ join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.A
 }
 
 @(private)
-contains_value :: proc(input, needle: ^value.Value) -> (bool, bool) {
+contains_value :: proc(input, needle: ^value.Value, top_level := false) -> (bool, bool) {
 	input_kind := value.kind_of(input)
 	needle_kind := value.kind_of(needle)
 	if input_kind == .String && needle_kind == .String {
@@ -2140,7 +2140,7 @@ contains_value :: proc(input, needle: ^value.Value) -> (bool, bool) {
 		return true, true
 	}
 	if (input_kind == .Array || input_kind == .Object) && input_kind != needle_kind {
-		return false, false
+		return false, !top_level
 	}
 	if input_kind == .Object && needle_kind == .Object {
 		length, length_ok := value.object_length(needle)
@@ -2165,7 +2165,7 @@ contains_value :: proc(input, needle: ^value.Value) -> (bool, bool) {
 }
 
 contains_result :: proc(input, needle: ^value.Value) -> (value.Value, Runtime_Error_Kind) {
-	matched, comparable := contains_value(input, needle)
+	matched, comparable := contains_value(input, needle, true)
 	if !comparable do return {}, .Cannot_Iterate
 	return value.boolean_value(matched), .None
 }
