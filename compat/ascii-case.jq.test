@@ -1,0 +1,11 @@
+# ASCII case conversion changes only ASCII letters.
+ascii_downcase, ascii_upcase
+"AbCé-123"
+"abcé-123"
+"ABCé-123"
+
+# Non-ASCII codepoints remain byte-for-byte unchanged.
+ascii_downcase, ascii_upcase
+"Äß"
+"Äß"
+"Äß"

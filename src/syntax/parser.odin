@@ -31,6 +31,9 @@ Node_Kind :: enum {
 	Index,
 	// Atan is appended to preserve existing AST discriminants.
 	Atan,
+	// ASCII case filters are appended to preserve existing AST discriminants.
+	Ascii_Downcase,
+	Ascii_Upcase,
 }
 
 Node_Id :: distinct int
@@ -650,6 +653,10 @@ parse_pipe :: proc(
 					kind = .Rtrim
 				} else if spelling == "atan" {
 					kind = .Atan
+				} else if spelling == "ascii_downcase" {
+					kind = .Ascii_Downcase
+				} else if spelling == "ascii_upcase" {
+					kind = .Ascii_Upcase
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

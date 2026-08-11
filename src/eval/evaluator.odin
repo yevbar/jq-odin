@@ -1864,6 +1864,38 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if !ok do return {}, .Cannot_Number, nil
 		return value.number_value(math.atan(n)), .None, nil
 	}
+	if opcode == .Ascii_Downcase || opcode == .Ascii_Upcase {
+		if kind != .String do return {}, .Cannot_Trim, nil
+		text, text_ok := value.string_borrowed(input)
+		if !text_ok do return {}, .Cannot_Trim, nil
+		if len(text) == 0 {
+			result, err := value.string_value(text, allocator)
+			if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
+			return result, .None, nil
+		}
+		memory, allocation_error := runtime.mem_alloc_bytes(len(text), 1, allocator)
+		if allocation_error != nil || len(memory) != len(text) {
+			if len(memory) > 0 { _ = runtime.mem_free_bytes(memory, allocator) }
+			return {}, .None, .Out_Of_Memory
+		}
+		copy(memory, transmute([]byte)text)
+		for index in 0..<len(memory) {
+			byte := memory[index]
+			if opcode == .Ascii_Downcase {
+				if byte >= 'A' && byte <= 'Z' { memory[index] = byte + 32 }
+			} else {
+				if byte >= 'a' && byte <= 'z' { memory[index] = byte - 32 }
+			}
+		}
+		result, err := value.string_value(transmute(string)memory, allocator)
+		free_error := runtime.mem_free_bytes(memory, allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			if value.constructor_error_kind(&err) == .None { _ = value.destroy_value(&result) }
+			return {}, .None, free_error
+		}
+		if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
+		return result, .None, nil
+	}
 	if opcode == .Add_Builtin {
 		if kind != .Array do return {}, .Cannot_Add, nil
 		n, ok := value.array_length(input)
@@ -2285,7 +2317,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

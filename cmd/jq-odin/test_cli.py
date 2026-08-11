@@ -1418,6 +1418,7 @@ def expect_differential(candidate: pathlib.Path, oracle: pathlib.Path) -> int:
         (["-c", "abs"], b'-3 3.5 "x"'),
         (["-c", "sqrt"], b'0 2 3.5 -1'),
         (["-c", "fabs"], b'-3 3.5'),
+        (["-c", "ascii_downcase, ascii_upcase"], '"AbCé-123"'.encode()),
         (["-c", "add"], b'[1,2,3]'),
         (["-c", "add"], b'[null,2,null,3]'),
         (["-c", "add"], b'["a","b","c"]'),
@@ -1753,6 +1754,7 @@ def main() -> int:
         ("trim whitespace", ["trim"], b' "  hello  "\n', 0, b'"hello"\n', b""),
         ("ltrim whitespace", ["ltrim"], b' "  hello  "\n', 0, b'"hello  "\n', b""),
         ("rtrim whitespace", ["rtrim"], b' "  hello  "\n', 0, b'"  hello"\n', b""),
+        ("ASCII case builtins", ["-c", "ascii_downcase, ascii_upcase"], '"AbCé-123"'.encode(), 0, '"abcé-123"\n"ABCé-123"\n'.encode(), b""),
         ("bundled short options", ["-nc", "."], b"", 0, b"null\n", b""),
         ("JSON input", ["."], b"{", 4, b"", b"jq-odin: JSON input error\n"),
         (

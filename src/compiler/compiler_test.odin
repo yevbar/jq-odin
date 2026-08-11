@@ -126,6 +126,8 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 		{".|.field", .Sequence},
 		{".?", .Optional},
 		{"atan", .Atan},
+		{"ascii_downcase", .Ascii_Downcase},
+		{"ascii_upcase", .Ascii_Upcase},
 	}
 	for test_case in cases {
 		parser: syntax.Parser
@@ -310,7 +312,7 @@ scalar_keyword_call_parse_failure_never_reaches_compiler_allocation :: proc(t: ^
 @(test)
 every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.T) {
 	parser: syntax.Parser
-	source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-2,(.)?,.a|.,.[1],1 as $x | $x,reduce . as $r (0; .),length,keys,type,abs,sqrt,fabs,add,trim,ltrim,rtrim,atan`)
+	source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-2,(.)?,.a|.,.[1],1 as $x | $x,reduce . as $r (0; .),length,keys,type,abs,sqrt,fabs,add,trim,ltrim,rtrim,atan,ascii_downcase,ascii_upcase`)
 	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
 	parsed := syntax.parse_filter(&parser)
 	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
