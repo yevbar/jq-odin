@@ -120,6 +120,8 @@ Node_Kind :: enum {
 	Ltrimstr,
 	Rtrimstr,
 	Trimstr,
+	// Tonumber is appended to preserve existing AST discriminants.
+	Tonumber,
 }
 
 Node_Id :: distinct int
@@ -831,6 +833,8 @@ parse_pipe :: proc(
 					kind = .Rtrimstr
 				} else if spelling == "trimstr" {
 					kind = .Trimstr
+				} else if spelling == "tonumber" {
+					kind = .Tonumber
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

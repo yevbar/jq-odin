@@ -1,0 +1,12 @@
+# Bounded tonumber conversion cases, including jq.test:697.
+tonumber
+4
+4
+
+1 + tonumber + ("10" | tonumber)
+4
+15
+
+tonumber
+"1.5"
+1.5
