@@ -392,6 +392,13 @@ behavioral oracle.
   Its focused shard passes 5/5 and package/build checks pass; the catalog
   remains **172/522 passed and 350 failed** because the builtin has no
   standalone selected jq.test case.
+- The `finites` type filter (`968f102`, decision `0137`) now emits finite number
+  inputs and suppresses infinities, NaN, and non-number values, reusing the
+  existing finite-number predicate. Its focused shard passes 6/6 against the
+  available oracle and package/build checks pass; the catalog remains
+  **172/522 passed and 350 failed** because the builtin has no standalone
+  selected jq.test case. The local jq 1.7 oracle lacks this jq 1.8 builtin;
+  special-value coverage is pinned-oracle dependent.
 
 ## Remaining high-value clusters
 
