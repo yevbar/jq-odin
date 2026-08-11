@@ -20,8 +20,8 @@ The exact import edges are:
 - `syntax`: may import `diagnostic`, but not `value`.
 - `program`: may import `value` and `diagnostic`.
 - `compiler`: may import `syntax`, `program`, `value`, and `diagnostic`.
-- `eval`: may import `program`, `value`, and `diagnostic`; it must not import
-  `compiler`.
+- `eval`: may import `program`, `value`, `json`, and `diagnostic`; it must not
+  import `compiler`.
 
 `src/eval/external_layout_test` is a test-only consumer package. It imports
 `eval`, `program`, and `value` solely to verify their public package layout and
@@ -38,4 +38,3 @@ Do not create generic `common` or `util` packages. Do not split builtins,
 regular expressions, modules, or I/O into packages until their dependency
 direction has been demonstrated by an implementation slice and recorded as a
 decision.
-

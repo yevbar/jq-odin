@@ -9,6 +9,7 @@ import encoding_base64 "core:encoding/base64"
 import "core:unicode/utf8"
 import program "jq:program"
 import value "jq:value"
+import json "jq:json"
 
 Runtime_Error_Kind :: enum u8 {
 	None,
@@ -3249,12 +3250,9 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		for start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\n' || text[start] == '\r') do start += 1
 		for end > start && (text[end-1] == ' ' || text[end-1] == '\t' || text[end-1] == '\n' || text[end-1] == '\r') do end -= 1
 		text = text[start:end]
-		if text == "null" do return value.null_value(), .None, nil
-		if text == "true" do return value.boolean_value(true), .None, nil
-		if text == "false" do return value.boolean_value(false), .None, nil
-		result, constructor_error := value.literal_number_value(text, allocator)
-		if value.constructor_error_kind(&constructor_error) != .None {
-			_ = value.destroy_constructor_error(&constructor_error)
+		result, parse_error := json.parse_value(text, allocator)
+		if parse_error.kind != .None {
+			if value.kind_of(&result) != .Invalid do _ = value.destroy_value(&result)
 			return {}, .Cannot_Number, nil
 		}
 		return result, .None, nil

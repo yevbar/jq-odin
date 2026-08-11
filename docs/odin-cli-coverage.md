@@ -541,6 +541,11 @@ behavioral oracle.
   The focused shard passes 2/2, package/build checks pass, and the
   authoritative catalog is **180/522 passed and 342 failed**. Input JSON
   spelling and unary-negative canonicalization are unchanged.
+- Structured `fromjson` values (`decision 0164`) now delegate to the existing
+  JSON parser, covering arrays, objects, strings, and nested round trips. The
+  focused shard passes 3/3, package/build checks and full tests pass, and the
+  authoritative catalog is **181/522 passed and 341 failed**. Exact parse-error
+  wording and dynamic arguments remain deferred.
 
 ## Remaining high-value clusters
 

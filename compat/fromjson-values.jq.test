@@ -1,0 +1,10 @@
+# fromjson reuses the JSON parser for non-scalar values.
+"[1,{\"a\":true}]" | fromjson
+[1,{"a":true}]
+
+"{\"a\":[1,null]}" | fromjson
+{"a":[1,null]}
+
+[.[] | tojson | fromjson]
+[1, null, [2], {"a":3}]
+[1,null,[2],{"a":3}]
