@@ -1967,6 +1967,14 @@ join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.A
 }
 
 @(private)
+contains_result :: proc(input: ^value.Value, needle: string) -> (value.Value, Runtime_Error_Kind) {
+	if value.kind_of(input) != .String do return {}, .Cannot_Iterate
+	haystack, ok := value.string_borrowed(input)
+	if !ok do return {}, .Cannot_Iterate
+	return value.boolean_value(strings.contains(haystack, needle)), .None
+}
+
+@(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Type {
@@ -2838,6 +2846,26 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				output, runtime_kind, resource_error := join_result(&frame.input, separator, storage.allocator)
 				if resource_error != nil do return resource_step(resource_error)
+				if runtime_kind != .None {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Contains:
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				child, child_ok := child_instruction(storage, instruction, 0)
+				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
+				needle_operand, operand_ok := program.program_operand(storage.compiled, needle_instruction.operands_start)
+				needle, needle_text_ok := program.operand_text(storage.compiled, needle_operand)
+				if !child_ok || !needle_ok || needle_operand.kind != .Text || !needle_instruction.has_literal || needle_instruction.literal_kind != .String || !operand_ok || !needle_text_ok {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output, runtime_kind := contains_result(&frame.input, needle)
 				if runtime_kind != .None {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result

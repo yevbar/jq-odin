@@ -125,6 +125,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Join:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Contains:
+		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Variable:
 		return node.container_kind == .None && no_child && no_edges && no_container_links &&
 		       !node.has_value && node.has_name_span && !node.boolean_value && no_number &&
@@ -242,7 +245,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		if node.has_child do return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Index:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
-	case .Join:
+	case .Join, .Contains:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Identity:
 		if node.container_kind == .Array && node.has_value do return validate_binding_scopes(nodes, node.value, source, scopes, depth, next_budget)
@@ -387,6 +390,10 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Join:
+			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+		case .Contains:
 			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
@@ -624,8 +631,9 @@ lower_filter :: proc(
 			assert(index_ok)
 			operand_at += 1
 			text_at += u32(len(node.number_text))
-		case .Join:
+		case .Join, .Contains:
 			instruction.opcode = .Join
+			if node.kind == .Contains do instruction.opcode = .Contains
 			instruction.operands_count = 1
 			child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
 				kind = .Instruction,

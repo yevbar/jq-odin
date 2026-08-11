@@ -98,6 +98,8 @@ Node_Kind :: enum {
 	Join,
 	// Isnormal is appended to preserve existing AST discriminants.
 	Isnormal,
+	// Contains is appended to preserve existing AST discriminants.
+	Contains,
 }
 
 Node_Id :: distinct int
@@ -785,12 +787,14 @@ parse_pipe :: proc(
 					kind = .Join
 				} else if spelling == "isnormal" {
 					kind = .Isnormal
+				} else if spelling == "contains" {
+					kind = .Contains
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
 				advance(parser)
-				if spelling == "join" && token_is(parser, .Open_Paren) {
+				if (spelling == "join" || spelling == "contains") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -806,7 +810,8 @@ parse_pipe :: proc(
 					}
 					span, span_ok := spanning(parser, token.span, close.span)
 					assert(span_ok)
-					new_term, ok := append_node(parser, Node{kind=.Join, span=span, child=argument, has_child=true})
+					call_kind := Node_Kind.Join if spelling == "join" else Node_Kind.Contains
+					new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
 					if !ok { return {}, false }
 					term = new_term
 				} else {
