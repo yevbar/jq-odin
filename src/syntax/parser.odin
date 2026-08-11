@@ -72,6 +72,8 @@ Node_Kind :: enum {
 	Nulls,
 	// Numbers is appended to preserve existing AST discriminants.
 	Numbers,
+	// Strings is appended to preserve existing AST discriminants.
+	Strings,
 	// Floor is appended to preserve existing AST discriminants.
 	Floor,
 	// Round is appended to preserve existing AST discriminants.
@@ -831,6 +833,8 @@ parse_pipe :: proc(
 					kind = .Nulls
 				} else if spelling == "numbers" {
 					kind = .Numbers
+				} else if spelling == "strings" {
+					kind = .Strings
 				} else if spelling == "floor" {
 					kind = .Floor
 				} else if spelling == "round" {

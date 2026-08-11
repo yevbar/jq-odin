@@ -1,0 +1,17 @@
+# `strings` yields only string inputs.
+strings
+"text"
+"text"
+
+strings
+42
+
+strings
+true
+
+strings
+null
+
+strings
+""
+""
