@@ -202,6 +202,12 @@ behavioral oracle.
   package/unit/build and CLI checks pass, and the exact catalog is now
   **147/522 passed and 375 failed**. Negative-index parsing, dynamic
   arguments, and `map(has(...))` remain deferred.
+- Numeric literal `bsearch(...)` (`487eea9`, decision `0105`) now emits jq's
+  exact-match or negative insertion-position encoding for sorted numeric arrays.
+  Its focused oracle shard passes 3/3 and package/build checks pass; the full
+  catalog remains **147/522 passed and 375 failed** because its selected cases
+  currently exercise deferred multi-needle/object forms. Dynamic needles,
+  object ordering, and non-array diagnostics remain deferred.
 
 ## Remaining high-value clusters
 
