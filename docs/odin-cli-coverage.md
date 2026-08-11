@@ -586,6 +586,10 @@ behavioral oracle.
 - `bsearch` runtime keys (`decision 0173`) now preserve the non-array input
   diagnostic through catches. The combined runtime-key shard passes 5/5, and
   the authoritative catalog is **190/522 passed and 332 failed**.
+- Zero-divisor runtime keys (`decision 0174`) now preserve numeric division and
+  remainder diagnostics through catches. The combined runtime-key shard
+  passes 6/6, and the authoritative catalog is **195/522 passed and 327
+  failed**.
 
 ## Remaining high-value clusters
 

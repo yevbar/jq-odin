@@ -1782,8 +1782,33 @@ propagate_output :: proc(
 				return resource_step(resource_error), true
 			}
 			if runtime_kind != .None {
+				owned_key := ""
+				if runtime_kind == .Cannot_Divide || runtime_kind == .Cannot_Modulo {
+					_, left_number_ok := value.number_value_get(&frame.binary_left)
+					right_number, right_number_ok := value.number_value_get(owned)
+					if left_number_ok && right_number_ok && right_number == 0 {
+						key_error: runtime.Allocator_Error
+						owned_key, key_error = binary_zero_divisor_runtime_key(
+							&frame.binary_left,
+							owned,
+							runtime_kind == .Cannot_Modulo,
+							storage.allocator,
+						)
+						if key_error != nil {
+							assert(value.kind_of(&storage.pending_value) == .Invalid)
+							storage.pending_value = value.take_value(owned)
+							_ = value.destroy_value(&frame.binary_left)
+							return resource_step(key_error), true
+						}
+					}
+				}
 				_ = value.destroy_value(owned)
-				result_step, ready := raise_runtime(storage, parent, {kind = runtime_kind, input_kind = value.kind_of(&frame.binary_left), span = instruction.operator_span})
+				err := Runtime_Error{kind = runtime_kind, input_kind = value.kind_of(&frame.binary_left), span = instruction.operator_span, key = owned_key}
+				result_step, ready := raise_runtime(storage, parent, err)
+				if len(owned_key) > 0 {
+					free_error := runtime.mem_free_bytes(transmute([]byte)owned_key, storage.allocator)
+					if free_error != nil do return resource_step(free_error), true
+				}
 				return result_step, ready
 			}
 			_ = value.destroy_value(owned)
@@ -2814,6 +2839,24 @@ bsearch_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -
 	if strings.write_string(&builder, kind_name) != len(kind_name) ||
 	   strings.write_string(&builder, " (") != 2 ||
 	   !text_append_json_value(&builder, input) ||
+	   strings.write_string(&builder, ")") != 1 ||
+	   strings.write_string(&builder, suffix) != len(suffix) {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
+binary_zero_divisor_runtime_key :: proc(left, right: ^value.Value, remainder: bool, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	suffix := " cannot be divided (remainder) because the divisor is zero" if remainder else " cannot be divided because the divisor is zero"
+	if strings.write_string(&builder, "number (") != 8 ||
+	   !text_append_json_value(&builder, left) ||
+	   strings.write_string(&builder, ") and number (") != 14 ||
+	   !text_append_json_value(&builder, right) ||
 	   strings.write_string(&builder, ")") != 1 ||
 	   strings.write_string(&builder, suffix) != len(suffix) {
 		strings.builder_destroy(&builder)
