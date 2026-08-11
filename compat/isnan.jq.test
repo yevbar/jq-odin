@@ -1,0 +1,4 @@
+# Scalar NaN classifier compatibility lane (finite numeric path).
+isnan
+0
+false

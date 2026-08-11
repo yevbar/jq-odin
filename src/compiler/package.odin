@@ -102,7 +102,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
-	case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+	case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
@@ -250,7 +250,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 				current = entry.next
 			}
 		}
-	case .Null, .Boolean, .Number, .String, .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+	case .Null, .Boolean, .Number, .String, .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 		return true
 	}
 	return true
@@ -425,7 +425,7 @@ lower_filter :: proc(
 			   !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
-		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 			// Builtin filters are operand-free instructions.
 		case:
 			return Lower_Outcome{kind = .Invalid_AST}
@@ -646,8 +646,8 @@ lower_filter :: proc(
 			}
 			name_start, name_end, _ := diagnostic.span_offsets(source, node.name_span); name := bytes[name_start:name_end]
 			assert(program.set_text(output, program.Byte_Offset(text_at), name)); assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text,text_start=program.Byte_Offset(text_at),text_count=program.Count(len(name))})); text_at += u32(len(name)); operand_at += 1; instruction.operands_count = 4
-		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
-			instruction.opcode = .Length if node.kind == .Length else (.Keys if node.kind == .Keys else (.Keys_Unsorted if node.kind == .Keys_Unsorted else (.Tostring if node.kind == .Tostring else (.From_Entries if node.kind == .From_Entries else (.To_Entries if node.kind == .To_Entries else (.Type if node.kind == .Type else (.Abs if node.kind == .Abs else (.Sqrt if node.kind == .Sqrt else (.Fabs if node.kind == .Fabs else (.Add_Builtin if node.kind == .Add_Builtin else (.Trim if node.kind == .Trim else (.Ltrim if node.kind == .Ltrim else (.Rtrim if node.kind == .Rtrim else (.Atan if node.kind == .Atan else (.Ascii_Downcase if node.kind == .Ascii_Downcase else (.Ascii_Upcase if node.kind == .Ascii_Upcase else (.Reverse if node.kind == .Reverse else (.Implode if node.kind == .Implode else .Explode))))))))))))))))))
+		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			instruction.opcode = .Length if node.kind == .Length else (.Keys if node.kind == .Keys else (.Keys_Unsorted if node.kind == .Keys_Unsorted else (.Tostring if node.kind == .Tostring else (.From_Entries if node.kind == .From_Entries else (.To_Entries if node.kind == .To_Entries else (.Isnan if node.kind == .Isnan else (.Type if node.kind == .Type else (.Abs if node.kind == .Abs else (.Sqrt if node.kind == .Sqrt else (.Fabs if node.kind == .Fabs else (.Add_Builtin if node.kind == .Add_Builtin else (.Trim if node.kind == .Trim else (.Ltrim if node.kind == .Ltrim else (.Rtrim if node.kind == .Rtrim else (.Atan if node.kind == .Atan else (.Ascii_Downcase if node.kind == .Ascii_Downcase else (.Ascii_Upcase if node.kind == .Ascii_Upcase else (.Reverse if node.kind == .Reverse else (.Implode if node.kind == .Implode else .Explode)))))))))))))))))))
 			instruction.operands_count = 0
 		case .Parenthesized, .Optional:
 			instruction.opcode = .Parenthesized if node.kind == .Parenthesized else .Optional
