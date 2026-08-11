@@ -1,0 +1,4 @@
+# jq flatten: recursively concatenate nested arrays.
+flatten
+[1,[2,[3]],4]
+[1,2,3,4]

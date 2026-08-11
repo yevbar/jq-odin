@@ -120,6 +120,45 @@ ceil_builtin_rounds_toward_positive_infinity :: proc(t: ^testing.T) {
 }
 
 @(test)
+flatten_builtin_recursively_concatenates_nested_arrays :: proc(t: ^testing.T) {
+	input, input_error := value.array_value(context.allocator)
+	testing.expect_value(t, value.array_error_kind(&input_error), value.Array_Error.None)
+	nested, nested_error := value.array_value(context.allocator)
+	testing.expect_value(t, value.array_error_kind(&nested_error), value.Array_Error.None)
+	numbers := [?]f64{2, 3}
+	for number in numbers {
+		item := value.number_value(number)
+		_, append_error := value.array_append_take(&nested, &item)
+		testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+	}
+	items := [?]value.Value{value.number_value(1), nested, value.number_value(4)}
+	for &item in items {
+		copy := value.clone_value(&item)
+		_, append_error := value.array_append_take(&input, &copy)
+		testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+	}
+	_ = value.destroy_value(&nested)
+	instructions := [?]program.Instruction{{opcode = .Flatten, span = {start = 0, end = 7}}}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], nil, "", 0)
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	length, length_ok := value.array_length(&output)
+	testing.expect(t, length_ok && length == 4)
+	for index in 0..<4 {
+		item, item_ok := value.array_element_copy(&output, index)
+		testing.expect(t, item_ok)
+		expect_number(t, &item, f64(index+1))
+		_ = value.destroy_value(&item)
+	}
+	_ = value.destroy_value(&output)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 binary_arithmetic_invalid_operands_are_runtime_errors :: proc(t: ^testing.T) {
 	// jq builtin.c:342-377 distinguishes type errors from the divisor-zero
 	// error; both are evaluator runtime terminals and replay identically.

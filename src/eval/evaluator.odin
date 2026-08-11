@@ -1899,6 +1899,41 @@ sort_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value
 }
 
 @(private)
+flatten_append :: proc(input: ^value.Value, output: ^value.Value) -> (Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) == .Array {
+		length, ok := value.array_length(input)
+		if !ok do return .Cannot_Iterate, nil
+		for i in 0..<length {
+			item, item_ok := value.array_element_copy(input, i)
+			if !item_ok do return .Cannot_Iterate, nil
+			runtime_kind, allocator_error := flatten_append(&item, output)
+			_ = value.destroy_value(&item)
+			if runtime_kind != .None || allocator_error != nil do return runtime_kind, allocator_error
+		}
+		return .None, nil
+	}
+	item := value.clone_value(input)
+	if value.kind_of(&item) == .Invalid do return .None, .Out_Of_Memory
+	_, append_error := value.array_append_take(output, &item)
+	if value.array_error_kind(&append_error) != .None {
+		_ = value.destroy_value(&item)
+		_ = value.destroy_array_error(&append_error)
+		return .None, .Out_Of_Memory
+	}
+	return .None, nil
+}
+
+@(private)
+flatten_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+	result, array_error := value.array_value(allocator)
+	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+	runtime_kind, allocator_error := flatten_append(input, &result)
+	if runtime_kind != .None || allocator_error != nil { _ = value.destroy_value(&result); return {}, runtime_kind, allocator_error }
+	return result, .None, nil
+}
+
+@(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Type {
@@ -1972,6 +2007,9 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		n, ok := value.number_value_get(input)
 		if !ok do return {}, .Cannot_Number, nil
 		return value.number_value(math.ceil(n)), .None, nil
+	}
+	if opcode == .Flatten {
+		return flatten_result(input, allocator)
 	}
 	if opcode == .Abs || opcode == .Sqrt || opcode == .Fabs {
 		if kind == .String && opcode == .Abs {
@@ -2693,7 +2731,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
