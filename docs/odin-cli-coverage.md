@@ -83,6 +83,10 @@ behavioral oracle.
   non-boolean suppression shards with the full package suite; the full catalog
   is now 104/522 (418 remaining). Other scalar subtype predicates and richer
   generator forms remain deferred.
+- Bounded zero-argument `nulls` (`131d300`) passes null selection and
+  non-null suppression shards with the full package suite; the full catalog is
+  now 105/522 (417 remaining). Remaining scalar subtype and generator forms
+  are still deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
