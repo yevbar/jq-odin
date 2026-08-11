@@ -290,6 +290,12 @@ behavioral oracle.
   checks pass and the full catalog is **168/522 passed and 354 failed**. Other
   format filters, array/object coercion, and exact diagnostic wording remain
   deferred.
+- `@uri`/`@urid` (`e998b35`, fix `6629496`, decision `0120`) now provide
+  RFC3986-style scalar encoding/decoding, including percent-encoded UTF-8 and
+  jq-compatible replacement behavior for raw non-ASCII decode input. The
+  focused shard passes 5/5, package/build checks pass, and the full catalog is
+  **170/522 passed and 352 failed**. Other format filters and detailed
+  malformed-input diagnostics remain deferred.
 
 ## Remaining high-value clusters
 
