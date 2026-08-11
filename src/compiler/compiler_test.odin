@@ -150,6 +150,7 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 		{"last", .Last},
 		{"first", .First},
 		{"log10", .Log10},
+		{"log2", .Log2},
 		{"isinfinite", .Isinfinite},
 		{"log", .Log},
 		{"min", .Min},

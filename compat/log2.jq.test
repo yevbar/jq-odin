@@ -1,0 +1,8 @@
+# `log2` computes the base-2 logarithm.
+log2
+8
+3
+
+log2
+1
+0
