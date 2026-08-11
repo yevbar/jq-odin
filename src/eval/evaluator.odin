@@ -1894,6 +1894,8 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 			return {}, .None, free_error
 		}
 		if value.constructor_error_kind(&err) != .None do return {}, .None, .Out_Of_Memory
+		return result, .None, nil
+	}
 	if opcode == .Reverse {
 		if kind != .Array do return {}, .Cannot_Iterate, nil
 		length, length_ok := value.array_length(input)

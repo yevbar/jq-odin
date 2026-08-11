@@ -2914,6 +2914,9 @@ test_ascii_case_parses_as_zero_argument_builtins :: proc(t: ^testing.T) {
 		testing.expect(t, !root.has_child && !root.has_value)
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
+}
+
+@(test)
 test_reverse_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<reverse>", "reverse")
