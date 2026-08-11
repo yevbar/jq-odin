@@ -102,6 +102,12 @@ Node_Kind :: enum {
 	Contains,
 	// Split is appended to preserve existing AST discriminants.
 	Split,
+	// Index_Builtin is appended to preserve existing AST discriminants.
+	Index_Builtin,
+	// Rindex_Builtin is appended to preserve existing AST discriminants.
+	Rindex_Builtin,
+	// Indices_Builtin is appended to preserve existing AST discriminants.
+	Indices_Builtin,
 }
 
 Node_Id :: distinct int
@@ -793,12 +799,18 @@ parse_pipe :: proc(
 					kind = .Contains
 				} else if spelling == "split" {
 					kind = .Split
+				} else if spelling == "index" {
+					kind = .Index_Builtin
+				} else if spelling == "rindex" {
+					kind = .Rindex_Builtin
+				} else if spelling == "indices" {
+					kind = .Indices_Builtin
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
 				advance(parser)
-				if (spelling == "join" || spelling == "contains" || spelling == "split") && token_is(parser, .Open_Paren) {
+				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -820,6 +832,9 @@ parse_pipe :: proc(
 					call_kind := Node_Kind.Join
 					if spelling == "contains" do call_kind = .Contains
 					if spelling == "split" do call_kind = .Split
+					if spelling == "index" do call_kind = .Index_Builtin
+					if spelling == "rindex" do call_kind = .Rindex_Builtin
+					if spelling == "indices" do call_kind = .Indices_Builtin
 					new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
 					if !ok { return {}, false }
 					term = new_term
