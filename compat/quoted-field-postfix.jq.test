@@ -1,0 +1,12 @@
+# Quoted field postfixes compose with dotted and shorthand fields.
+."foo"."bar"
+{"foo":{"bar":20}}
+20
+
+.foo."bar"
+{"foo":{"bar":20}}
+20
+
+."missing"
+{}
+null

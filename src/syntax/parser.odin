@@ -2232,7 +2232,37 @@ append_postfix :: proc(
 ) -> (Node_Id, bool) {
 	node := initial
 	ok: bool
-	for token_is(parser, .Question) || token_is(parser, .Field) || token_is(parser, .Open_Bracket) {
+	for token_is(parser, .Question) || token_is(parser, .Field) || token_is(parser, .Open_Bracket) || token_is(parser, .String_Start) || token_is(parser, .Dot) {
+		if token_is(parser, .Dot) {
+			advance(parser)
+			if !token_is(parser, .String_Start) {
+				// Preserve jq's existing standalone-dot diagnostic boundary:
+				// the dot is consumed before a non-quoted suffix is reported.
+				fail_from_lookahead(parser, .End_Of_Input)
+				return {}, false
+			}
+		}
+		if token_is(parser, .String_Start) {
+			quoted, quoted_ok := append_string_node(parser, parser.lookahead.token.span, live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead, has_postfix^)
+			if !quoted_ok do return {}, false
+			quoted_node := parser.nodes.storage[int(quoted)]
+			if quoted_node.kind != .String || !quoted_node.has_string_text do return {}, false
+			span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, quoted_node.span)
+			assert(span_ok)
+			node, ok = append_node(parser, Node{
+				kind = .Field,
+				span = span,
+				child = node,
+				has_child = true,
+				name_span = quoted_node.span,
+				has_name_span = true,
+				string_text = quoted_node.string_text,
+				has_string_text = true,
+				string_shorthand = true,
+			})
+			if !ok do return {}, false
+			continue
+		}
 		// The canonical reduction slice uses `.[]`.  Preserve it as the
 		// identity term for now; Reduce's evaluator consumes the input array
 		// directly, while this parser acceptance keeps the source shape intact.
