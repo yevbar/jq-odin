@@ -168,6 +168,10 @@ behavioral oracle.
   jq-compatible code-point offsets and covers null/array inputs. Its focused
   shard passes 10/10, the independent ownership/parity review found no issues,
   and the exact catalog is now **137/522 passed and 385 failed**.
+- Literal `startswith`/`endswith` (`b342e11`) adds two string-prefix/suffix
+  cases from `upstream/jq/tests/jq.test:1487-1491`. Its focused shard and full
+  Odin package/CLI suites pass; the exact catalog is now **139/522 passed and
+  383 failed**. Dynamic arguments and non-string diagnostics remain deferred.
 
 ## Remaining high-value clusters
 
