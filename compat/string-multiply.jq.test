@@ -1,0 +1,10 @@
+# jq repeats strings by truncated nonnegative numeric counts.
+["a", "ab", "abc"] | [.[] * 3]
+["aaa", "ababab", "abcabcabc"]
+
+[3 * "abc", "abc" * 0.5, "abc" * 1.5, "abc" * -1]
+["abc", "", "abc", null]
+
+try ("abc" * 1000000000) catch .
+"null"
+"Repeat string result too long"

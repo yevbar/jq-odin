@@ -590,6 +590,10 @@ behavioral oracle.
   remainder diagnostics through catches. The combined runtime-key shard
   passes 6/6, and the authoritative catalog is **195/522 passed and 327
   failed**.
+- String multiplication (`decision 0175`) now supports bounded string×number
+  and number×string repetition, including truncation, null/empty behavior,
+  and overflow diagnostics. Its focused shard passes 3/3, and the
+  authoritative catalog is **199/522 passed and 323 failed**.
 
 ## Remaining high-value clusters
 

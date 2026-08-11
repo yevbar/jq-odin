@@ -1783,7 +1783,7 @@ propagate_output :: proc(
 			}
 			if runtime_kind != .None {
 				owned_key := ""
-				if runtime_kind == .Cannot_Divide || runtime_kind == .Cannot_Modulo {
+					if runtime_kind == .Cannot_Divide || runtime_kind == .Cannot_Modulo {
 					_, left_number_ok := value.number_value_get(&frame.binary_left)
 					right_number, right_number_ok := value.number_value_get(owned)
 					if left_number_ok && right_number_ok && right_number == 0 {
@@ -1802,8 +1802,24 @@ propagate_output :: proc(
 						}
 					}
 				}
-				_ = value.destroy_value(owned)
 				err := Runtime_Error{kind = runtime_kind, input_kind = value.kind_of(&frame.binary_left), span = instruction.operator_span, key = owned_key}
+				if runtime_kind == .Cannot_Multiply {
+					left_kind := value.kind_of(&frame.binary_left)
+					right_kind := value.kind_of(owned)
+					text_value := &frame.binary_left if left_kind == .String else owned
+					number_value := owned if left_kind == .String else &frame.binary_left
+					if (left_kind == .String && right_kind == .Number) || (left_kind == .Number && right_kind == .String) {
+						text, text_ok := value.string_borrowed(text_value)
+						count, count_ok := value.number_value_get(number_value)
+						if text_ok && count_ok && count > 100_000_000 {
+							err.key = "Repeat string result too long"
+						}
+						if text_ok && count_ok && count > 0 && u64(len(text)) > 0 && count > f64(100_000_000 / u64(len(text))) {
+							err.key = "Repeat string result too long"
+						}
+					}
+				}
+				_ = value.destroy_value(owned)
 				result_step, ready := raise_runtime(storage, parent, err)
 				if len(owned_key) > 0 {
 					free_error := runtime.mem_free_bytes(transmute([]byte)owned_key, storage.allocator)
@@ -4036,6 +4052,44 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 		if kind == .Success do return result, .None, nil
 		return {}, .Cannot_Subtract, nil
 	case .Multiply:
+		left_kind := value.kind_of(left)
+		right_kind := value.kind_of(right)
+		if (left_kind == .String && right_kind == .Number) || (left_kind == .Number && right_kind == .String) {
+			text_value := left if left_kind == .String else right
+			number_value := right if left_kind == .String else left
+			text, text_ok := value.string_borrowed(text_value)
+			count_float, number_ok := value.number_value_get(number_value)
+			if !text_ok || !number_ok do return {}, .Cannot_Multiply, nil
+			if math.is_nan(count_float) || count_float < 0 do return value.null_value(), .None, nil
+			if count_float == 0 || len(text) == 0 {
+				empty, empty_error := value.string_value("", allocator)
+				if value.constructor_error_kind(&empty_error) != .None do return {}, .None, .Out_Of_Memory
+				return empty, .None, nil
+			}
+			if count_float > 100_000_000 do return {}, .Cannot_Multiply, nil
+			count := int(count_float)
+			if count <= 0 {
+				empty, empty_error := value.string_value("", allocator)
+				if value.constructor_error_kind(&empty_error) != .None do return {}, .None, .Out_Of_Memory
+				return empty, .None, nil
+			}
+			if u64(len(text)) * u64(count) > 100_000_000 do return {}, .Cannot_Multiply, nil
+			builder: strings.Builder
+			_, builder_error := strings.builder_init(&builder, allocator)
+			if builder_error != nil do return {}, .None, builder_error
+			for _ in 0..<count {
+				if strings.write_string(&builder, text) != len(text) {
+					strings.builder_destroy(&builder)
+					return {}, .None, .Out_Of_Memory
+				}
+			}
+			result_text := strings.to_string(builder)
+			result, constructor_error := value.string_value(result_text, allocator)
+			free_error := runtime.mem_free_bytes(transmute([]byte)result_text, allocator)
+			if value.constructor_error_kind(&constructor_error) != .None do _ = value.destroy_constructor_error(&constructor_error)
+			if constructor_error != nil || free_error != nil do return {}, .None, free_error if free_error != nil else .Out_Of_Memory
+			return result, .None, nil
+		}
 		result, kind := value.number_multiply(left, right)
 		if kind == .Success do return result, .None, nil
 		return {}, .Cannot_Multiply, nil
