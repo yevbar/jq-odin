@@ -433,6 +433,13 @@ behavioral oracle.
   full package suite passes after the compiler-shape fixture correction. The
   catalog remains **172/522 passed and 350 failed** because selected `first`
   cases are generator expressions.
+- The zero-argument `log10` builtin (`cc4148a4`, corrected by `0a35271f`,
+  decision `0144`) now computes base-10 logarithms for numeric inputs. Its
+  focused shard passes 2/2 against the pinned oracle, and the full package
+  suite passes after the compiler-shape fixture correction. The catalog remains
+  **172/522 passed and 350 failed** because selected log10 cases are grouped
+  with unsupported expressions; `log10(0.1)` retains a documented native-libm
+  final-digit precision caveat.
 
 ## Remaining high-value clusters
 
