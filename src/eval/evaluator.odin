@@ -1934,6 +1934,39 @@ flatten_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (va
 }
 
 @(private)
+join_result :: proc(input: ^value.Value, separator: string, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+	length, ok := value.array_length(input)
+	if !ok do return {}, .Cannot_Iterate, nil
+	builder: strings.Builder
+	_, builder_error := strings.builder_init(&builder, allocator)
+	if builder_error != nil do return {}, .None, .Out_Of_Memory
+	for i in 0..<length {
+		item, item_ok := value.array_element_copy(input, i)
+		if !item_ok { strings.builder_destroy(&builder); return {}, .Cannot_Iterate, nil }
+		if i > 0 && strings.write_string(&builder, separator) != len(separator) {
+			_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory
+		}
+		if value.kind_of(&item) == .Null {
+			_ = value.destroy_value(&item)
+			continue
+		}
+		text, text_ok := value.string_borrowed(&item)
+		if !text_ok {
+			_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .Cannot_Iterate, nil
+		}
+		if strings.write_string(&builder, text) != len(text) {
+			_ = value.destroy_value(&item); strings.builder_destroy(&builder); return {}, .None, .Out_Of_Memory
+		}
+		_ = value.destroy_value(&item)
+	}
+	result, constructor_error := value.string_value(strings.to_string(builder), allocator)
+	strings.builder_destroy(&builder)
+	if value.constructor_error_kind(&constructor_error) != .None do return {}, .None, .Out_Of_Memory
+	return result, .None, nil
+}
+
+@(private)
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
 	if opcode == .Type {
@@ -2778,6 +2811,27 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				output := value.clone_value(&frame.input)
 				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Join:
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				child, child_ok := child_instruction(storage, instruction, 0)
+				separator_instruction, separator_ok := program.program_instruction(storage.compiled, child)
+				separator_operand, operand_ok := program.program_operand(storage.compiled, separator_instruction.operands_start)
+				separator, separator_text_ok := program.operand_text(storage.compiled, separator_operand)
+				if !child_ok || !separator_ok || separator_operand.kind != .Text || !separator_instruction.has_literal || separator_instruction.literal_kind != .String || !operand_ok || !separator_text_ok {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output, runtime_kind, resource_error := join_result(&frame.input, separator, storage.allocator)
+				if resource_error != nil do return resource_step(resource_error)
+				if runtime_kind != .None {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result

@@ -94,6 +94,8 @@ Node_Kind :: enum {
 	All,
 	// Isfinite is appended to preserve existing AST discriminants.
 	Isfinite,
+	// Join is appended to preserve existing AST discriminants.
+	Join,
 }
 
 Node_Id :: distinct int
@@ -777,11 +779,33 @@ parse_pipe :: proc(
 					kind = .All
 				} else if spelling == "isfinite" {
 					kind = .Isfinite
+				} else if spelling == "join" {
+					kind = .Join
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
 				advance(parser)
+				if spelling == "join" && token_is(parser, .Open_Paren) {
+					advance(parser)
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
+					if !argument_ok || !token_is(parser, .Close_Paren) {
+						fail_from_lookahead(parser, .Close_Paren)
+						return {}, false
+					}
+					close := parser.lookahead.token
+					advance(parser)
+					argument_node := parser.nodes.storage[int(argument)]
+					if argument_node.kind != .String || argument_node.has_child || argument_node.has_value {
+						fail_at_current(parser, .Unexpected_Token, .Expression)
+						return {}, false
+					}
+					span, span_ok := spanning(parser, token.span, close.span)
+					assert(span_ok)
+					new_term, ok := append_node(parser, Node{kind=.Join, span=span, child=argument, has_child=true})
+					if !ok { return {}, false }
+					term = new_term
+				} else {
 				// The same identifier spellings select jq's call production when
 				// followed by `(`. Calls have no node/lowering contract in this
 				// slice, so reject at that delimiter before allocating a literal.
@@ -798,6 +822,7 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				term = new_term
+				}
 			case .Binding:
 				// A binding reference is a filter term.  The lexer keeps the
 				// `$` outside value_span; retain only the identifier span so the

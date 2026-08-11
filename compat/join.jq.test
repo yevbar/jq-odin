@@ -1,0 +1,13 @@
+# Literal separator joins string arrays, including empty members.
+.[] | join("a")
+[[],[""],["",""] ,["","",""]]
+["","","a","aa"]
+
+# Null array members contribute empty text.
+.[] | join(",")
+[[null],[null,null],[null,null,null]]
+["",",",",,"]
+
+.[] | join(",")
+[["a",null],[null,"a"]]
+["a,",",a"]

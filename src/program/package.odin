@@ -118,6 +118,8 @@ Opcode :: enum u8 {
 	All,
 	// Isfinite is appended to preserve existing serialized opcodes.
 	Isfinite,
+	// Join is appended to preserve existing serialized opcodes.
+	Join,
 }
 
 Operand_Kind :: enum u8 {
@@ -433,6 +435,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		 expected_count = 3
 	case .Reduce:
 		if count != 4 { return false }; expected_count = 4
+	case .Join:
+		if count != 1 { return false }; expected_count = 1
 	case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite:
 		expected_count = 0
 	case .Sequence, .Fork,
@@ -512,6 +516,9 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> Count {
 	switch instruction.opcode {
 	case .Identity, .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite:
+		return 0
+	case .Join:
+		return 1
 		return 0
 	case .Field:
 		return 1 if instruction.operands_count == 2 else 0
