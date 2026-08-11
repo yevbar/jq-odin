@@ -230,6 +230,10 @@ behavioral oracle.
   behavior. The focused shard passes 6/6 and the exact catalog is now
   **155/522 passed and 367 failed**. Dynamic arguments, non-string diagnostics,
   and full Unicode edge behavior remain deferred.
+- Bounded `tonumber` (`99dd95c`, decision `0110`) now handles numeric identity
+  and literal numeric-string conversion. Its focused shard passes 3/3 and the
+  exact catalog is now **156/522 passed and 366 failed**. Invalid strings,
+  dynamic inputs, precision edges, and full diagnostic wording remain deferred.
 
 ## Remaining high-value clusters
 
