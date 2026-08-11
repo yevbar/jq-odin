@@ -63,6 +63,10 @@ behavioral oracle.
   shards with the full package suite; the full catalog is now 99/522 (423
   remaining). Object/array stream compositions and richer argument forms are
   still deferred.
+- Bounded zero-argument `arrays` (`537b6fc`) passes array selection and scalar
+  suppression shards with the full package suite; the full catalog is now
+  100/522 (422 remaining). Object/type-predicate families and generator
+  compositions remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
