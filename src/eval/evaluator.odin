@@ -1812,6 +1812,16 @@ utf8_codepoint_length :: proc(text: string) -> int {
 }
 
 @(private)
+utf8_codepoint_offset :: proc(text: string, byte_offset: int) -> int {
+	count := 0
+	limit := min(byte_offset, len(text))
+	for i in 0..<limit {
+		if (text[i] & 0xc0) != 0x80 do count += 1
+	}
+	return count
+}
+
+@(private)
 unique_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
 	length, ok := value.array_length(input)
@@ -2069,12 +2079,12 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 	if opcode == .Index_Builtin {
 		position := strings.index(text, needle)
 		if position < 0 do return value.null_value(), .None, nil
-		return value.number_value(f64(position)), .None, nil
+		return value.number_value(f64(utf8_codepoint_offset(text, position))), .None, nil
 	}
 	if opcode == .Rindex_Builtin {
 		position := strings.last_index(text, needle)
 		if position < 0 do return value.null_value(), .None, nil
-		return value.number_value(f64(position)), .None, nil
+		return value.number_value(f64(utf8_codepoint_offset(text, position))), .None, nil
 	}
 	result, array_error := value.array_value(allocator)
 	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
@@ -2082,7 +2092,7 @@ search_result :: proc(input: ^value.Value, needle: string, opcode: program.Opcod
 	for start <= len(text) {
 		relative := strings.index(text[start:], needle)
 		if relative < 0 do break
-		item := value.number_value(f64(start + relative))
+		item := value.number_value(f64(utf8_codepoint_offset(text, start + relative)))
 		_, append_error := value.array_append_take(&result, &item)
 		if value.array_error_kind(&append_error) != .None {
 			_ = value.destroy_value(&item)

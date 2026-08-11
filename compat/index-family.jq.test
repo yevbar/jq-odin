@@ -27,3 +27,16 @@ null
 [index("a"), rindex("a"), indices("a")]
 ["ba", "a", "c"]
 [1, 1, [1]]
+
+# Unicode input reports code-point indexes (not UTF-8 byte offsets).
+index("!")
+"здравствуй мир!"
+14
+
+indices("o")
+"🇬🇧oo"
+[2, 3]
+
+indices("o")
+"ƒoo"
+[1, 2]
