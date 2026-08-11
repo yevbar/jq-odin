@@ -116,6 +116,10 @@ Node_Kind :: enum {
 	Has,
 	// Bsearch is appended to preserve existing AST discriminants.
 	Bsearch,
+	// Ltrimstr, Rtrimstr, and Trimstr are appended to preserve existing AST discriminants.
+	Ltrimstr,
+	Rtrimstr,
+	Trimstr,
 }
 
 Node_Id :: distinct int
@@ -821,12 +825,18 @@ parse_pipe :: proc(
 					kind = .Has
 				} else if spelling == "bsearch" {
 					kind = .Bsearch
+				} else if spelling == "ltrimstr" {
+					kind = .Ltrimstr
+				} else if spelling == "rtrimstr" {
+					kind = .Rtrimstr
+				} else if spelling == "trimstr" {
+					kind = .Trimstr
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
 				advance(parser)
-				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten") && token_is(parser, .Open_Paren) {
+				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -857,6 +867,9 @@ parse_pipe :: proc(
 					if spelling == "has" do call_kind = .Has
 					if spelling == "bsearch" do call_kind = .Bsearch
 					if spelling == "flatten" do call_kind = .Flatten
+					if spelling == "ltrimstr" do call_kind = .Ltrimstr
+					if spelling == "rtrimstr" do call_kind = .Rtrimstr
+					if spelling == "trimstr" do call_kind = .Trimstr
 					new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
 					if !ok { return {}, false }
 					term = new_term
