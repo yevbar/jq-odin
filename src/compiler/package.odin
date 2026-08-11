@@ -646,7 +646,7 @@ lower_filter :: proc(
 			}
 			name_start, name_end, _ := diagnostic.span_offsets(source, node.name_span); name := bytes[name_start:name_end]
 			assert(program.set_text(output, program.Byte_Offset(text_at), name)); assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text,text_start=program.Byte_Offset(text_at),text_count=program.Count(len(name))})); text_at += u32(len(name)); operand_at += 1; instruction.operands_count = 4
-		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+		case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 			#partial switch node.kind {
 			case .Length: instruction.opcode = .Length
 			case .Keys: instruction.opcode = .Keys
