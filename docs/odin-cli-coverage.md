@@ -360,6 +360,11 @@ behavioral oracle.
   package/build checks pass and the catalog remains **172/522 passed and 350
   failed** because selected numeric-length cases are grouped with unsupported
   expressions.
+- `isnan` type semantics (`de82c48`, decision `0131`) now return `false` for
+  null, booleans, strings, arrays, and objects while preserving numeric
+  classification. Its focused shard passes 7/7 and package/build checks pass;
+  the catalog remains **172/522 passed and 350 failed** because these cases are
+  grouped outside the parser-supported catalog subset.
 
 ## Remaining high-value clusters
 
