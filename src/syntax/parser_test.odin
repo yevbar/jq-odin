@@ -3814,8 +3814,10 @@ try_catch_stops_before_surrounding_pipe :: proc(t: ^testing.T) {
 	root := parser.nodes.storage[int(outcome.root)]
 	testing.expect_value(t, root.kind, Node_Kind.Pipe)
 	left := parser.nodes.storage[int(root.left)]
-	testing.expect_value(t, left.kind, Node_Kind.Try)
-	catch_filter := parser.nodes.storage[int(left.right)]
-	testing.expect_value(t, catch_filter.kind, Node_Kind.Comma)
+	testing.expect_value(t, left.kind, Node_Kind.Comma)
+	first_try := parser.nodes.storage[int(left.left)]
+	second_try := parser.nodes.storage[int(left.right)]
+	testing.expect_value(t, first_try.kind, Node_Kind.Try)
+	testing.expect_value(t, second_try.kind, Node_Kind.Try)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }

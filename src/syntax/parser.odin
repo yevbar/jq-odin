@@ -785,7 +785,10 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				advance(parser)
-				catch_filter, catch_ok := parse_pipe(parser, closing, stop_at_comma, false, true, true)
+				// A catch filter binds through binary and pipe operators, but a
+				// comma at this level starts the surrounding query stream. Commas
+				// intended inside the catch remain available through parentheses.
+				catch_filter, catch_ok := parse_pipe(parser, closing, true, false, true, true)
 				if !catch_ok do return {}, false
 				span, span_ok := spanning(parser, parser.nodes.storage[int(expression)].span, parser.nodes.storage[int(catch_filter)].span)
 				assert(span_ok)

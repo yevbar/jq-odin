@@ -570,6 +570,11 @@ behavioral oracle.
   through `try ... catch .`. Its focused shard passes 2/2, package/build
   checks and full tests pass, and the authoritative catalog is **186/522
   passed and 336 failed**.
+- Catch/comma precedence (`decision 0170`) now leaves a same-level comma in the
+  surrounding query stream while retaining binary and pipe binding inside the
+  catch branch. Its focused shard passes 2/2, package/build checks and full
+  tests pass, and the authoritative catalog is **187/522 passed and 335
+  failed**.
 
 ## Remaining high-value clusters
 
