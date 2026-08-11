@@ -1,0 +1,6 @@
+# `empty` is a generator that yields no values.
+empty
+
+# In a comma stream only the non-empty branch remains.
+empty, 1
+1

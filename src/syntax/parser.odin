@@ -54,6 +54,8 @@ Node_Kind :: enum {
 	Utf8bytelength,
 	// Not_Builtin is appended to preserve existing AST discriminants.
 	Not_Builtin,
+	// Empty is appended to preserve existing AST discriminants.
+	Empty,
 }
 
 Node_Id :: distinct int
@@ -697,6 +699,8 @@ parse_pipe :: proc(
 					kind = .Utf8bytelength
 				} else if spelling == "not" {
 					kind = .Not_Builtin
+				} else if spelling == "empty" {
+					kind = .Empty
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
