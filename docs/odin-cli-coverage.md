@@ -95,6 +95,9 @@ behavioral oracle.
   rounding shards and the full package suite. The catalog remains 107/522
   because the selected upstream cases overlap already-covered rounding paths;
   non-number/special numeric diagnostics remain deferred.
+- Bounded zero-argument `transpose` (`20859a1`) passes ragged-array null-fill
+  and empty-input shards with the full package suite; the full catalog is now
+  109/522 (413 remaining). Non-array diagnostics remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
