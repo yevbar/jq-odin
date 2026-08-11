@@ -71,6 +71,10 @@ behavioral oracle.
   scalar suppression shards with the full package suite; the full catalog is
   now 101/522 (421 remaining). The remaining type-predicate families and
   generator compositions are still deferred.
+- Bounded zero-argument `iterables` (`f20eddb`) passes array/object selection
+  and scalar suppression shards with the full package suite; the full catalog
+  is now 102/522 (420 remaining). More general generator and predicate
+  compositions remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
