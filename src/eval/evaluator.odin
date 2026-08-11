@@ -2829,6 +2829,63 @@ runtime_value_kind_name :: proc(kind: value.Kind) -> string {
 }
 
 @(private)
+fromjson_parse_runtime_key :: proc(
+	err: json.Scalar_Parse_Error,
+	text: string,
+	allocator: runtime.Allocator,
+) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	column_buffer: [32]byte
+	column := strconv.write_int(column_buffer[:], i64(err.detection_offset+1), 10)
+	prefix := "Invalid JSON text at line 1, column "
+	if err.kind == .Invalid_Number {
+		prefix = "Invalid numeric literal at EOF at line 1, column "
+	} else if err.kind == .Object_Keys_Must_Be_Strings {
+		prefix = "Object keys must be strings at line 1, column "
+	}
+	// jq diagnoses a quoted object key with the string scanner's wording,
+	// even though the container parser reports the key-type boundary.
+	if len(text) > 1 && text[0] == '{' && text[1] == '\'' {
+		prefix = "Invalid string literal; expected \", but got ' at line 1, column "
+	}
+	if strings.write_string(&builder, prefix) != len(prefix) ||
+	   strings.write_string(&builder, column) != len(column) ||
+	   strings.write_string(&builder, " (while parsing '") != len(" (while parsing '") ||
+	   strings.write_string(&builder, text) != len(text) ||
+	   strings.write_string(&builder, "')") != 2 {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
+fromjson_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (
+	value.Value,
+	Runtime_Error_Kind,
+	runtime.Allocator_Error,
+	string,
+) {
+	if value.kind_of(input) != .String do return {}, .Cannot_Number, nil, ""
+	text, text_ok := value.string_borrowed(input)
+	if !text_ok do return {}, .Cannot_Number, nil, ""
+	start := 0
+	end := len(text)
+	for start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\n' || text[start] == '\r') do start += 1
+	for end > start && (text[end-1] == ' ' || text[end-1] == '\t' || text[end-1] == '\n' || text[end-1] == '\r') do end -= 1
+	text = text[start:end]
+	result, parse_error := json.parse_value(text, allocator)
+	if parse_error.kind != .None {
+		if value.kind_of(&result) != .Invalid do _ = value.destroy_value(&result)
+		key, key_error := fromjson_parse_runtime_key(parse_error, text, allocator)
+		return {}, .User_Error, key_error, key
+	}
+	return result, .None, nil, ""
+}
+
+@(private)
 toboolean_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
 	builder: strings.Builder
 	_, init_error := strings.builder_init(&builder, allocator)
@@ -5080,10 +5137,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					flatten_depth = int(parsed_depth)
 					if flatten_depth < 0 do flatten_depth = -2
 				}
-				output, runtime_kind, resource_error := builtin_result(instruction.opcode, &frame.input, storage.allocator, flatten_depth)
+				output: value.Value
+				runtime_kind: Runtime_Error_Kind
+				resource_error: runtime.Allocator_Error
+				builtin_key := ""
+				if instruction.opcode == .Fromjson {
+					output, runtime_kind, resource_error, builtin_key = fromjson_result(&frame.input, storage.allocator)
+				} else {
+					output, runtime_kind, resource_error = builtin_result(instruction.opcode, &frame.input, storage.allocator, flatten_depth)
+				}
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
 					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					err.key = builtin_key
 					if (instruction.opcode == .Trim || instruction.opcode == .Ltrim || instruction.opcode == .Rtrim) && value.kind_of(&frame.input) != .String {
 						err.key = "trim input must be a string"
 					}
@@ -5093,7 +5159,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if instruction.opcode == .Gmtime {
 						err.key = "gmtime requires a numeric timestamp"
 					}
-					owned_key := ""
+					owned_key := builtin_key
 					if instruction.opcode == .Toboolean {
 						key_error: runtime.Allocator_Error
 						owned_key, key_error = toboolean_runtime_key(&frame.input, storage.allocator)

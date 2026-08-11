@@ -1,0 +1,11 @@
+# fromjson parse diagnostics survive try/catch as jq error messages.
+.[] | try (fromjson | isnan) catch .
+["NaN1", "NaN10"]
+true
+true
+"Invalid numeric literal at EOF at line 1, column 4 (while parsing 'NaN1')"
+"Invalid numeric literal at EOF at line 1, column 5 (while parsing 'NaN10')"
+
+try fromjson catch .
+"{'a': 123}"
+"Invalid string literal; expected \", but got ' at line 1, column 5 (while parsing '{'a': 123}')"
