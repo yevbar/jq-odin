@@ -138,6 +138,10 @@ behavioral oracle.
   measures **128/522 passed and 394 failed**. The six newly passing cases are
   the string-substring cases at `upstream/jq/tests/jq.test:1404-1425`;
   recursive array/object containment and dynamic arguments remain deferred.
+- The follow-up guard (`106c0be`) turns unsupported array/object literal
+  arguments into controlled parse errors instead of parser assertions; the
+  accepted string-literal behavior and the 128/522 catalog result are
+  unchanged.
 - The exact catalog measurement was produced with
   `tools/compat/jq_compat.py` against jq 1.8.1 (oracle SHA
   `30df4803a4ebbfd2741b2477d06488ce5973e3517cb1121d56be4b1fad9efa8d`) and
