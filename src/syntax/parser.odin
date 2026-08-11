@@ -189,6 +189,8 @@ Node_Kind :: enum {
 	Try,
 	// IsEmpty is appended to preserve existing AST discriminants.
 	IsEmpty,
+	// Range is appended to preserve existing AST discriminants.
+	Range,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -992,6 +994,8 @@ parse_pipe :: proc(
 					kind = .Error
 				} else if spelling == "isempty" {
 					kind = .IsEmpty
+				} else if spelling == "range" {
+					kind = .Range
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {
@@ -1001,7 +1005,39 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				advance(parser)
-				if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty") && token_is(parser, .Open_Paren) {
+				if spelling == "range" && token_is(parser, .Open_Paren) {
+					advance(parser)
+					first, first_ok := parse_pipe(parser, .Close_Paren, true)
+					if !first_ok { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					if token_is(parser, .Close_Paren) {
+						close := parser.lookahead.token; advance(parser)
+						first_node := parser.nodes.storage[int(first)]
+						if first_node.kind != .Number || first_node.has_child || first_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+						span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+						new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=Node_Id(-1)}); if !ok { return {}, false }; term = new_term
+						// `range(n)` is the shorthand for `range(0;n)`.
+					} else {
+						if !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; advance(parser)
+					second, second_ok := parse_pipe(parser, .Close_Paren, true)
+					third := Node_Id(-1)
+					has_third := false
+					if token_is(parser, .Semicolon) {
+						advance(parser)
+						third_ok: bool
+						third, third_ok = parse_pipe(parser, .Close_Paren, true)
+						has_third = third_ok
+					}
+					if !second_ok || (token_is(parser, .Semicolon) && !has_third) || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token; advance(parser)
+					first_node := parser.nodes.storage[int(first)]; second_node := parser.nodes.storage[int(second)]
+					first_numeric := first_node.kind == .Number && !first_node.has_child && !first_node.has_value
+					second_numeric := second_node.kind == .Number && !second_node.has_child && !second_node.has_value
+					third_numeric := !has_third || (parser.nodes.storage[int(third)].kind == .Number && !parser.nodes.storage[int(third)].has_child && !parser.nodes.storage[int(third)].has_value)
+					if !first_numeric || !second_numeric || !third_numeric { fail_from_lookahead(parser, .Expression); return {}, false }
+					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+					new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third}); if !ok { return {}, false }; term = new_term
+					}
+				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
 					if !argument_ok || !token_is(parser, .Close_Paren) {

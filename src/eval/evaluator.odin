@@ -1062,6 +1062,9 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
+	case .Range:
+		if instruction.operands_count != 1 && instruction.operands_count != 2 && instruction.operands_count != 3 do return false
+		for offset in 0..<int(instruction.operands_count) { _, child_ok := child_instruction(storage, instruction, u32(offset)); if !child_ok do return false }
 	case .Binding:
 		if instruction.operands_count != 3 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -1128,8 +1131,10 @@ resumed_composite_instruction_valid :: proc(
 		}
 	case .Try_Expression_Active, .Try_Catch_Active:
 		if frame.mode != .Normal || instruction.opcode != .Try do return false
-	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active, .Iterator_Active:
+	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
+	case .Iterator_Active:
+		if frame.mode != .Normal || (instruction.opcode != .Field && instruction.opcode != .Range) do return false
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
@@ -1155,6 +1160,8 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = 2
 	}
 	else if frame.phase == .Constructor_Start || frame.phase == .Constructor_Child_Active || frame.phase == .Constructor_Emit {
+		expected_operand_count = u8(instruction.operands_count)
+	} else if frame.phase == .Iterator_Active {
 		expected_operand_count = u8(instruction.operands_count)
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
@@ -4609,6 +4616,36 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Range:
+				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				start: f64
+				end: f64
+				step: f64 = 1
+				for offset in 0..<int(instruction.operands_count) {
+					child, child_ok := child_instruction(storage, instruction, u32(offset)); child_instruction_value, range_instruction_ok := program.program_instruction(storage.compiled, child)
+					if !child_ok || !range_instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					literal, literal_error, literal_cleanup := literal_value(storage, child_instruction_value)
+					if literal_cleanup != nil || literal_error != .None { if value.kind_of(&literal) != .Invalid { _ = value.destroy_value(&literal) }; return begin_terminal_misuse(storage, .Malformed_Program) }
+					number, number_ok := value.number_value_get(&literal); _ = value.destroy_value(&literal)
+					if !number_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					if offset == 0 {
+						start = number
+					} else if offset == 1 {
+						end = number
+					} else {
+						step = number
+					}
+				}
+				if instruction.operands_count == 1 { end = start; start = 0 }
+				if step == 0 do return begin_terminal_misuse(storage, .Malformed_Program)
+				result, array_error := value.array_value(storage.allocator); if value.array_error_kind(&array_error) != .None do return resource_step(.Out_Of_Memory)
+				current := start
+				if (step > 0 && start < end) || (step < 0 && start > end) {
+					for (step > 0 && current < end) || (step < 0 && current > end) {
+						item := value.number_value(current); _, append_error := value.array_append_take(&result, &item); if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_value(&result); return resource_step(.Out_Of_Memory) }; current += step
+					}
+				}
+				_ = value.destroy_value(&frame.input); frame.input = result; frame.iterator_cursor = 0; frame.phase = .Iterator_Active
 			case .Try:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
