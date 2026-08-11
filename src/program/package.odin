@@ -237,6 +237,8 @@ Opcode :: enum u8 {
 	Fromdate,
 	// Todate is appended to preserve existing serialized opcodes.
 	Todate,
+	// Negate is appended to preserve existing serialized opcodes.
+	Negate,
 }
 
 Operand_Kind :: enum u8 {
@@ -493,7 +495,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		return true
-	case .Identity, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
+	case .Identity, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 	     .Array, .Object, .Variable, .Binding, .Reduce, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
 		return false
 	}
@@ -538,7 +540,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Index:
 		if count != 2 do return false
 		expected_count = 2
-	case .Parenthesized, .Optional:
+	case .Parenthesized, .Optional, .Negate:
 		expected_count = 1
 	case .Array:
 		expected_count = count
@@ -666,6 +668,8 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 	case .Index:
 		return 1
 	case .Parenthesized, .Optional:
+		return 1
+	case .Negate:
 		return 1
 	case .Array:
 		return instruction.operands_count

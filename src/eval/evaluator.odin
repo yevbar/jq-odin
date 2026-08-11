@@ -631,7 +631,7 @@ collect_constructor_key_stream :: proc(
 			_ = value.destroy_value(&key)
 			return false
 		}
-	case .Parenthesized, .Optional:
+	case .Parenthesized, .Optional, .Negate:
 		child, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
 		return collect_constructor_key_stream(storage, child, producer, input, output)
@@ -1043,7 +1043,7 @@ capture_composite_instruction :: proc(
 ) -> bool {
 	if frame.mode != .Normal && frame.mode != .Field_Only && frame.mode != .Index_Only do return false
 	#partial switch instruction.opcode {
-	case .Parenthesized, .Optional:
+	case .Parenthesized, .Optional, .Negate:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
@@ -1134,7 +1134,7 @@ resumed_composite_instruction_valid :: proc(
 	#partial switch frame.phase {
 	case .Unary_Active:
 		if frame.mode != .Normal ||
-		   (instruction.opcode != .Parenthesized && instruction.opcode != .Optional) {
+		   (instruction.opcode != .Parenthesized && instruction.opcode != .Optional && instruction.opcode != .Negate) {
 			return false
 		}
 	case .Try_Expression_Active, .Try_Catch_Active:
@@ -1740,7 +1740,30 @@ propagate_output :: proc(
 			return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
 		}
 		#partial switch frame.phase {
-		case .Unary_Active, .Try_Catch_Active, .Fork_Left_Active, .Fork_Right_Active:
+		case .Unary_Active:
+			if instruction.opcode == .Negate {
+				number, number_ok := value.number_value_get(owned)
+				if !number_ok {
+					input_kind := value.kind_of(owned)
+					key, key_error := negate_type_error_runtime_key(owned, storage.allocator)
+					if key_error != nil {
+						_ = value.destroy_value(owned)
+						return resource_step(key_error), true
+					}
+					_ = value.destroy_value(owned)
+					err := Runtime_Error{kind=.Cannot_Number, input_kind=input_kind, span=instruction.span, key=key}
+					result, ready := raise_runtime(storage, current, err)
+					if len(key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator)
+						if free_error != nil do return resource_step(free_error), true
+					}
+					return result, ready
+				}
+				_ = value.destroy_value(owned)
+				owned^ = value.number_value(-number)
+			}
+			current = parent
+		case .Try_Catch_Active, .Fork_Left_Active, .Fork_Right_Active:
 			current = parent
 		case .Try_Expression_Active:
 			// A try expression may be a generator. Preserve the active phase for
@@ -3076,6 +3099,22 @@ binary_type_error_runtime_key :: proc(
 	}
 	if !right_ok || strings.write_string(&builder, ") cannot be ") != 12 ||
 	   strings.write_string(&builder, op) != len(op) {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
+negate_type_error_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	kind := runtime_value_kind_name(value.kind_of(input))
+	if strings.write_string(&builder, kind) != len(kind) ||
+	   strings.write_string(&builder, " (") != 2 ||
+	   !text_append_json_value(&builder, input) ||
+	   strings.write_string(&builder, ") cannot be negated") != len(") cannot be negated") {
 		strings.builder_destroy(&builder)
 		return "", nil
 	}
@@ -5475,7 +5514,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &acc)
 				if ready do return result
-			case .Parenthesized, .Optional:
+			case .Parenthesized, .Optional, .Negate:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}

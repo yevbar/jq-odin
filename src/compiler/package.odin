@@ -542,7 +542,9 @@ lower_filter :: proc(
 				prefix_bytes := 1 if !literal_number_is_zero(child.number_text) else 0
 				if !checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(len(child.number_text) + prefix_bytes)) do return Lower_Outcome{kind = .Size_Overflow}
 			} else {
-				has_unlowered_node = true
+				if !checked_count_add(&operand_count, 1) {
+					return Lower_Outcome{kind = .Size_Overflow}
+				}
 			}
 		case .Null, .Boolean:
 		case .Number:
@@ -961,7 +963,7 @@ lower_filter :: proc(
 			}
 			instruction.operands_count = 0
 		case .Parenthesized, .Optional:
-			instruction.opcode = .Parenthesized if node.kind == .Parenthesized else .Optional
+			instruction.opcode = .Parenthesized if node.kind == .Parenthesized else .Optional if node.kind == .Optional else .Negate
 			instruction.operands_count = 1
 			write_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
 				kind = .Instruction,
@@ -1019,9 +1021,10 @@ lower_filter :: proc(
 				operand_at += 1
 				text_at += u32(len("-Infinity"))
 			} else if child.kind != .Number || child.has_child || child.has_value {
-				cleanup_error := program.destroy_program(output)
-				if cleanup_error != nil { return Lower_Outcome{kind = .Resource_Failure, resource_error = cleanup_error} }
-				return Lower_Outcome{kind = .Invalid_AST}
+				instruction.opcode = .Negate
+				instruction.operands_count = 1
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
+				operand_at += 1
 			} else {
 				instruction.opcode = .Identity
 				instruction.has_literal = true

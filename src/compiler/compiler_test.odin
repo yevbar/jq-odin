@@ -345,17 +345,15 @@ scalar_and_general_negate_ast_nodes_validate_without_lowering_or_allocation :: p
 			testing.expect(t, node_reference_valid(root.child, len(nodes)), text)
 		}
 		compiled: program.Program
-		probe := Compiler_Fail_Allocator{backing = context.allocator}
 		lowered := lower_filter(
 			&compiled,
 			nodes,
 			parsed.root,
 			syntax.parser_source(&parser),
-			runtime.Allocator{procedure = compiler_fail_allocator_proc, data = &probe},
+			context.allocator,
 		)
-		testing.expect_value(t, lowered.kind, Lower_Error_Kind.Invalid_AST)
-		testing.expect_value(t, probe.allocations, 0)
-		testing.expect(t, !program.program_is_active(&compiled))
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+		testing.expect(t, program.program_is_active(&compiled))
 		testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
 		testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
@@ -410,20 +408,18 @@ every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.
 	}
 
 	compiled: program.Program
-	probe := Compiler_Fail_Allocator{backing = context.allocator}
 	lowered := lower_filter(
 		&compiled,
 		syntax.parser_nodes(&parser),
 		parsed.root,
 		syntax.parser_source(&parser),
-		runtime.Allocator{procedure = compiler_fail_allocator_proc, data = &probe},
+		context.allocator,
 	)
 	testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
-	// The copied outcome and inert output remain valid after the source AST owner
-	// is gone. Scalar lowering is intentionally still unsupported.
-	testing.expect_value(t, lowered.kind, Lower_Error_Kind.Invalid_AST)
-	testing.expect_value(t, probe.allocations, 0)
-	testing.expect(t, !program.program_is_active(&compiled))
+	// The copied outcome and active output remain valid after the source AST owner
+	// is gone; computed unary negation is lowered through its appended opcode.
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	testing.expect(t, program.program_is_active(&compiled))
 	testing.expect(t, !program.program_is_building(&compiled))
 	testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
 }
