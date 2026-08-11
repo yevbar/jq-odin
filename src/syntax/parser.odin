@@ -201,6 +201,10 @@ Node_Kind :: enum {
 	Mktime,
 	// Gmtime is appended to preserve existing AST discriminants.
 	Gmtime,
+	// Fromdate is appended to preserve existing AST discriminants.
+	Fromdate,
+	// Todate is appended to preserve existing AST discriminants.
+	Todate,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -1021,6 +1025,10 @@ parse_pipe :: proc(
 					kind = .Mktime
 				} else if spelling == "gmtime" {
 					kind = .Gmtime
+				} else if spelling == "fromdateiso8601" || spelling == "fromdate" {
+					kind = .Fromdate
+				} else if spelling == "todateiso8601" || spelling == "todate" {
+					kind = .Todate
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {

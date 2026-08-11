@@ -1,0 +1,16 @@
+# jq's date aliases compose the ISO strptime/strftime primitives.
+fromdateiso8601
+"2015-03-05T23:51:47Z"
+1425599507
+
+todateiso8601
+1425599507
+"2015-03-05T23:51:47Z"
+
+fromdate
+"2015-03-05T23:51:47Z"
+1425599507
+
+todate
+1425599507
+"2015-03-05T23:51:47Z"

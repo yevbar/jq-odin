@@ -3329,6 +3329,26 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	if opcode == .Gmtime {
 		return gmtime_result(input, allocator)
 	}
+	if opcode == .Fromdate {
+		parsed, parse_kind, parse_error := strptime_result(input, "%Y-%m-%dT%H:%M:%SZ", allocator)
+		if parse_error != nil || parse_kind != .None {
+			_ = value.destroy_value(&parsed)
+			return {}, parse_kind if parse_kind != .None else .Cannot_Iterate, parse_error
+		}
+		result, result_kind, result_error := mktime_result(&parsed)
+		_ = value.destroy_value(&parsed)
+		return result, result_kind, result_error
+	}
+	if opcode == .Todate {
+		parsed, parse_kind, parse_error := gmtime_result(input, allocator)
+		if parse_error != nil || parse_kind != .None {
+			_ = value.destroy_value(&parsed)
+			return {}, parse_kind if parse_kind != .None else .Cannot_Number, parse_error
+		}
+		result, result_kind, result_error := strftime_array_result(&parsed, "%Y-%m-%dT%H:%M:%SZ", allocator)
+		_ = value.destroy_value(&parsed)
+		return result, result_kind, result_error
+	}
 	if opcode == .Base64 || opcode == .Base64d {
 		text: string
 		text_ok: bool
@@ -5028,7 +5048,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .Gmtime, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
