@@ -106,6 +106,10 @@ behavioral oracle.
   with jq-compatible mixed-value ordering and duplicate retention. Its focused
   shard and package suite pass; the full catalog is now 112/522 (410
   remaining).
+- Bounded zero-argument `ceil` (`c4944f7`) passes its numeric oracle shard and
+  the full package/CLI suites. The full catalog remains 112/522 because its
+  selected catalog case overlaps an already-covered numeric path; non-number
+  diagnostics remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 313 subprocess checks and 41
   differential checks.
