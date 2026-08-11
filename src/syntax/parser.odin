@@ -46,6 +46,8 @@ Node_Kind :: enum {
 	Tostring,
 	// From_Entries is appended to preserve existing AST discriminants.
 	From_Entries,
+	// To_Entries is appended to preserve existing AST discriminants.
+	To_Entries,
 }
 
 Node_Id :: distinct int
@@ -681,6 +683,8 @@ parse_pipe :: proc(
 					kind = .Tostring
 				} else if spelling == "from_entries" {
 					kind = .From_Entries
+				} else if spelling == "to_entries" {
+					kind = .To_Entries
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

@@ -1923,6 +1923,29 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		}
 		return result, .None, nil
 	}
+	if opcode == .To_Entries {
+		if kind != .Object do return {}, .Cannot_Iterate, nil
+		length, length_ok := value.object_length(input)
+		if !length_ok do return {}, .Cannot_Iterate, nil
+		result, array_error := value.array_value(allocator)
+		if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+		for i in 0..<length {
+			key, item, entry_ok := value.object_entry_copy(input, i)
+			if !entry_ok { _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+			entry, object_error := value.object_value(allocator)
+			if value.object_error_kind(&object_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+			key_name, key_name_error := value.string_value("key", allocator)
+			value_name, value_name_error := value.string_value("value", allocator)
+			if value.constructor_error_kind(&key_name_error) != .None || value.constructor_error_kind(&value_name_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&key_name); _ = value.destroy_value(&value_name); _ = value.destroy_value(&entry); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+			_, displaced_key, set_key_error := value.object_set_take(&entry, &key_name, &key)
+			_, displaced_value, set_value_error := value.object_set_take(&entry, &value_name, &item)
+			_ = value.destroy_value(&displaced_key); _ = value.destroy_value(&displaced_value)
+			if value.object_error_kind(&set_key_error) != .None || value.object_error_kind(&set_value_error) != .None { _ = value.destroy_value(&entry); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+			_, append_error := value.array_append_take(&result, &entry)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&entry); _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+		}
+		return result, .None, nil
+	}
 	if opcode == .Ascii_Downcase || opcode == .Ascii_Upcase {
 		if kind != .String do return {}, .Cannot_Trim, nil
 		text, text_ok := value.string_borrowed(input)
@@ -2391,7 +2414,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .From_Entries, .To_Entries, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
