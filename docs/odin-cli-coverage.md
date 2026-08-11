@@ -377,6 +377,11 @@ behavioral oracle.
   focused shard passes 5/5 and package/build checks pass; the catalog remains
   **172/522 passed and 350 failed** because these cases are grouped with
   unsupported expressions.
+- All-value `tostring` semantics (`883327e`, decision `0134`) now preserve
+  strings and JSON-stringify null, booleans, numbers, arrays, and objects using
+  the owned text serializer. Its focused shard passes 6/6 and package/build
+  checks pass; the catalog remains **172/522 passed and 350 failed** because
+  the selected tostring cases are grouped with unsupported expressions.
 
 ## Remaining high-value clusters
 
