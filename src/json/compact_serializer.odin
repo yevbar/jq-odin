@@ -652,11 +652,18 @@ append_literal_number :: proc(serializer: ^Compact_Serializer, literal: string) 
 append_native_number :: proc(serializer: ^Compact_Serializer, number: f64) -> Compact_Error {
 	n := number
 	if math.is_nan(n) do return append_bytes(serializer, "null")
-	if math.is_inf(n) {
+	infinite := math.is_inf(n)
+	if infinite {
 		n = -max(f64) if n < 0 else max(f64)
 	}
 	buffer: [64]byte
-	scientific := strconv.write_float(buffer[:], n, 'e', -1, 64)
+	// jq's dtoa emits the shortest useful decimal for ordinary finite values;
+	// fifteen significant digits removes binary-float noise while preserving
+	// the exact max-f64 spelling used for infinities.
+	// The compatibility gap is the tiny-exponent noise case; retain jq's
+	// existing full-precision path for ordinary and large magnitudes.
+	precision := 15 if !infinite && math.abs(n) < 1e-10 else -1
+	scientific := strconv.write_float(buffer[:], n, 'e', precision, 64)
 	at := 0
 	if scientific[at] == '+' do at += 1
 	negative := false
@@ -666,7 +673,10 @@ append_native_number :: proc(serializer: ^Compact_Serializer, number: f64) -> Co
 	}
 	e_at := at
 	for scientific[e_at] != 'e' do e_at += 1
-	digits := e_at - at
+	mantissa_end := e_at
+	for mantissa_end > at+1 && scientific[mantissa_end-1] == '0' do mantissa_end -= 1
+	if mantissa_end > at && scientific[mantissa_end-1] == '.' do mantissa_end -= 1
+	digits := mantissa_end - at
 	if digits > 1 do digits -= 1
 	exponent, ok := strconv.parse_i64(scientific[e_at + 1:])
 	if !ok do return {kind = .Value_Access_Failure, value_kind = .Number}
@@ -677,7 +687,7 @@ append_native_number :: proc(serializer: ^Compact_Serializer, number: f64) -> Co
 			err := append_byte(serializer, '-')
 			if err.kind != .None do return err
 		}
-		err := append_bytes(serializer, scientific[at:e_at])
+		err := append_bytes(serializer, scientific[at:mantissa_end])
 		if err.kind != .None do return err
 		err = append_byte(serializer, 'e')
 		if err.kind != .None do return err
@@ -708,7 +718,7 @@ append_native_number :: proc(serializer: ^Compact_Serializer, number: f64) -> Co
 			if err.kind != .None do return err
 		}
 	}
-	for digit_at < e_at {
+	for digit_at < mantissa_end {
 		if scientific[digit_at] == '.' {
 			digit_at += 1
 			continue
