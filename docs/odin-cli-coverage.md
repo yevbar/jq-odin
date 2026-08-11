@@ -110,8 +110,11 @@ behavioral oracle.
   the full package/CLI suites. The full catalog remains 112/522 because its
   selected catalog case overlaps an already-covered numeric path; non-number
   diagnostics remain deferred.
+- Bounded zero-argument `flatten` (`1af2c9b`) recursively flattens nested
+  arrays with ownership-safe output construction. Its focused shard and full
+  package/CLI suites pass; the full catalog is now 113/522 (409 remaining).
 - Package validation and the full Odin package test suite pass on the
-  integration worktree. The CLI harness reports 313 subprocess checks and 41
+  integration worktree. The CLI harness reports 315 subprocess checks and 41
   differential checks.
 - The jq catalog moved from 90/522 passing filters at the baseline to 93/522
   after static indexing; 429 catalog cases still fail. The catalog report is
