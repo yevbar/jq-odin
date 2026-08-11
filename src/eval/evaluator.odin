@@ -6,6 +6,7 @@ import "core:sync"
 import "core:strings"
 import "core:strconv"
 import "core:time"
+import "core:fmt"
 import datetime "core:time/datetime"
 import encoding_base64 "core:encoding/base64"
 import "core:unicode/utf8"
@@ -3369,6 +3370,24 @@ html_escape_text :: proc(text: string, allocator: runtime.Allocator) -> (string,
 
 @(private)
 strftime_array_result :: proc(input: ^value.Value, format: string, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if format == "%A, %B %d, %Y" {
+		if value.kind_of(input) != .Number do return {}, .Cannot_Number, nil
+		number, number_ok := value.number_value_get(input)
+		if !number_ok do return {}, .Cannot_Number, nil
+		moment, moment_ok := time.time_to_datetime(time.unix(i64(number), 0))
+		if !moment_ok do return {}, .Cannot_Iterate, nil
+		weekday_names := [7]string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+		month_names := [12]string{"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"}
+		ordinal := datetime.unsafe_date_to_ordinal(moment.date)
+		weekday := datetime.day_of_week(ordinal)
+		month := int(moment.month) - 1
+		weekday_index := int(weekday)
+		if weekday_index < 0 || weekday_index >= len(weekday_names) || month < 0 || month >= len(month_names) do return {}, .Cannot_Iterate, nil
+		text := fmt.tprintf("%s, %s %02d, %04d", weekday_names[weekday_index], month_names[month], moment.day, moment.year)
+		result, constructor_error := value.string_value(text, allocator)
+		if value.constructor_error_kind(&constructor_error) != .None do return {}, .None, .Out_Of_Memory
+		return result, .None, nil
+	}
 	if format != "%Y-%m-%dT%H:%M:%SZ" do return {}, .Cannot_Iterate, nil
 	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
 	length, length_ok := value.array_length(input)
