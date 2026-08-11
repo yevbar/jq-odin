@@ -1,0 +1,8 @@
+# `log10` computes the base-10 logarithm.
+log10
+100
+2
+
+log10
+1
+0

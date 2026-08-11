@@ -161,6 +161,8 @@ Node_Kind :: enum {
 	Last,
 	// First is appended to preserve existing AST discriminants.
 	First,
+	// Log10 is appended to preserve existing AST discriminants.
+	Log10,
 	// Isinfinite is appended to preserve existing AST discriminants.
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
@@ -919,6 +921,8 @@ parse_pipe :: proc(
 					kind = .Last
 				} else if spelling == "first" {
 					kind = .First
+				} else if spelling == "log10" {
+					kind = .Log10
 				} else if spelling == "isinfinite" {
 					kind = .Isinfinite
 				} else if spelling == "log" {
