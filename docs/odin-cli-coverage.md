@@ -124,9 +124,9 @@ behavioral oracle.
   because the selected case overlaps existing numeric coverage.
 - Bounded literal-separator `join` (`c5dbcd9`) passes its 3/3 oracle shard and
   package suite. The full catalog is now 122/522 (400 remaining); dynamic
-  separators and jq's broader member coercions remain deferred.
+  separators and jq's number/boolean member coercions remain deferred.
 - Package validation and the full Odin package test suite pass on the
-  integration worktree. The CLI harness reports 315 subprocess checks and 41
+  integration worktree. The CLI harness reports 316 subprocess checks and 41
   differential checks.
 - The jq catalog moved from 90/522 passing filters at the baseline to 93/522
   after static indexing; 429 catalog cases still fail. The catalog report is
