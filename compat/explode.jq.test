@@ -1,0 +1,4 @@
+# Bounded ASCII explode compatibility lane.
+explode
+"ABC"
+[65,66,67]

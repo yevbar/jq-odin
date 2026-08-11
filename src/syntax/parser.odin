@@ -38,6 +38,8 @@ Node_Kind :: enum {
 	Reverse,
 	// Implode is appended to preserve existing AST discriminants.
 	Implode,
+	// Explode is appended to preserve existing AST discriminants.
+	Explode,
 }
 
 Node_Id :: distinct int
@@ -665,6 +667,8 @@ parse_pipe :: proc(
 					kind = .Reverse
 				} else if spelling == "implode" {
 					kind = .Implode
+				} else if spelling == "explode" {
+					kind = .Explode
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

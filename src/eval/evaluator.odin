@@ -1885,6 +1885,19 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if value.constructor_error_kind(&constructor_error) != .None { return {}, .None, .Out_Of_Memory }
 		return result, .None, nil
 	}
+	if opcode == .Explode {
+		if kind != .String do return {}, .Cannot_Iterate, nil
+		text, text_ok := value.string_borrowed(input)
+		if !text_ok do return {}, .Cannot_Iterate, nil
+		result, array_error := value.array_value(allocator)
+		if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+		for byte in text {
+			item := value.number_value(f64(byte))
+			_, append_error := value.array_append_take(&result, &item)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+		}
+		return result, .None, nil
+	}
 	if opcode == .Ascii_Downcase || opcode == .Ascii_Upcase {
 		if kind != .String do return {}, .Cannot_Trim, nil
 		text, text_ok := value.string_borrowed(input)
@@ -2352,7 +2365,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode:
+			case .Length, .Keys, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
