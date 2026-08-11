@@ -2743,6 +2743,71 @@ csv_format_text :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (s
 	return strings.to_string(builder), true, nil
 }
 
+@(private)
+tsv_append_field :: proc(builder: ^strings.Builder, input: ^value.Value) -> bool {
+	switch value.kind_of(input) {
+	case .Null:
+		return true
+	case .Boolean:
+		boolean, ok := value.boolean_value_get(input)
+		if !ok do return false
+		text := "true" if boolean else "false"
+		return strings.write_string(builder, text) == len(text)
+	case .Number:
+		spelling, literal := value.literal_spelling_borrowed(input)
+		if literal do return text_append_json_number(builder, spelling)
+		number, ok := value.number_value_get(input)
+		if !ok do return false
+		buffer: [64]byte
+		formatted := strconv.write_float(buffer[:], number, 'f', -1, 64)
+		return strings.write_string(builder, formatted) == len(formatted)
+	case .String:
+		text, ok := value.string_borrowed(input)
+		if !ok do return false
+		for b in transmute([]byte)text {
+			replacement := ""
+			switch b {
+			case '\\': replacement = "\\\\"
+			case '\t': replacement = "\\t"
+			case '\n': replacement = "\\n"
+			case '\r': replacement = "\\r"
+			case:
+				if strings.write_byte(builder, b) != 1 do return false
+				continue
+			}
+			if strings.write_string(builder, replacement) != len(replacement) do return false
+		}
+		return true
+	case .Invalid, .Array, .Object:
+		return false
+	}
+	return false
+}
+
+@(private)
+tsv_format_text :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, bool, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Array do return "", false, nil
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", false, init_error
+	length, length_ok := value.array_length(input)
+	if !length_ok {
+		strings.builder_destroy(&builder)
+		return "", false, nil
+	}
+	for index in 0..<length {
+		if index > 0 && strings.write_byte(&builder, '\t') != 1 { strings.builder_destroy(&builder); return "", false, nil }
+		item, item_ok := value.array_element_copy(input, index)
+		if !item_ok || !tsv_append_field(&builder, &item) {
+			if item_ok do _ = value.destroy_value(&item)
+			strings.builder_destroy(&builder)
+			return "", false, nil
+		}
+		_ = value.destroy_value(&item)
+	}
+	return strings.to_string(builder), true, nil
+}
+
 base64_text_is_valid :: proc(text: string) -> bool {
 	if len(text) == 0 do return true
 	if len(text) % 4 == 1 do return false
@@ -2998,6 +3063,16 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	}
 	if opcode == .Csv {
 		text, text_ok, text_error := csv_format_text(input, allocator)
+		if text_error != nil do return {}, .None, text_error
+		if !text_ok do return {}, .Cannot_Trim, nil
+		result, constructor_error := value.string_value(text, allocator)
+		free_error := runtime.mem_free_bytes(transmute([]byte)text, allocator)
+		if constructor_error != nil do _ = value.destroy_constructor_error(&constructor_error)
+		if constructor_error != nil || free_error != nil do return {}, .None, free_error if free_error != nil else .Out_Of_Memory
+		return result, .None, nil
+	}
+	if opcode == .Tsv {
+		text, text_ok, text_error := tsv_format_text(input, allocator)
 		if text_error != nil do return {}, .None, text_error
 		if !text_ok do return {}, .Cannot_Trim, nil
 		result, constructor_error := value.string_value(text, allocator)
@@ -4127,7 +4202,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
