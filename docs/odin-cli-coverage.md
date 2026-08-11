@@ -91,6 +91,10 @@ behavioral oracle.
   numeric rounding shards with the full package suite; the full catalog is now
   107/522 (415 remaining). Non-number/special numeric diagnostics remain
   deferred.
+- Bounded zero-argument `round` (`a7ed3ae`) passes positive and negative
+  rounding shards and the full package suite. The catalog remains 107/522
+  because the selected upstream cases overlap already-covered rounding paths;
+  non-number/special numeric diagnostics remain deferred.
 - Package validation and the full Odin package test suite pass on the
   integration worktree. The CLI harness reports 311 subprocess checks and 40
   differential checks.
