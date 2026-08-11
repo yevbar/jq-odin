@@ -312,6 +312,10 @@ behavioral oracle.
   nested values. Its focused shard passes 4/4 and package/build checks pass;
   the catalog remains **170/522 passed and 352 failed** because format
   arguments and sibling format filters remain deferred.
+- JSON exponent formatting fix (`4a1b3fd`) now emits jq-compatible uppercase
+  `E` notation with explicit positive signs (`1e20` → `1E+20`, `1e-7` →
+  `1E-7`). The expanded JSON shard passes 5/5 and numeric serializer
+  regressions remain green.
 
 ## Remaining high-value clusters
 
