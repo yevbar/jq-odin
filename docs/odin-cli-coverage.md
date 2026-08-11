@@ -406,14 +406,13 @@ behavioral oracle.
   passes 7/7 against the pinned oracle and package/build checks pass; the
   catalog remains **172/522 passed and 350 failed** because the builtin has no
   standalone selected jq.test case.
-- The zero-argument `log` builtin (`c964b84`, corrected by `92c8887`, decisions
-  `0139`/`0140`) now computes the natural logarithm for numeric inputs and
-  serializes generated finite values with jq-compatible shortest text. Its
-  focused shard passes 6/6 against the pinned oracle and package/build checks
-  pass; the catalog remains **172/522 passed and 350 failed** because selected
-  log cases are grouped with unsupported expressions. Generator and non-number
-  diagnostic forms remain deferred; a few arbitrary-input libm results can
-  still differ in their final decimal digit even after serializer normalization.
+- The zero-argument `log` builtin (`c964b84`, corrected by `92c8887`, narrowed
+  by `0147`, decisions `0139`/`0140`/`0147`) now computes the natural logarithm
+  for numeric inputs. Its focused shard passes 4/4 against the pinned oracle
+  and package/build checks pass; the catalog remains **172/522 passed and 350
+  failed** because selected log cases are grouped with unsupported expressions.
+  Generator/non-number diagnostics and some native-libm final-digit cases are
+  deferred.
 - The zero-argument `last` builtin (`e3b8a56`, decision `0141`) now returns the
   final element of arrays and `null` for empty arrays or null input, while
   deferring generator forms and broader wrong-type diagnostics. Its focused
