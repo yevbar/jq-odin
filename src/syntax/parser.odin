@@ -42,6 +42,8 @@ Node_Kind :: enum {
 	Explode,
 	// Keys_Unsorted is appended to preserve existing AST discriminants.
 	Keys_Unsorted,
+	// Tostring is appended to preserve existing AST discriminants.
+	Tostring,
 }
 
 Node_Id :: distinct int
@@ -673,6 +675,8 @@ parse_pipe :: proc(
 					kind = .Explode
 				} else if spelling == "keys_unsorted" {
 					kind = .Keys_Unsorted
+				} else if spelling == "tostring" {
+					kind = .Tostring
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false

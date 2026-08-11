@@ -1898,6 +1898,12 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		}
 		return result, .None, nil
 	}
+	if opcode == .Tostring {
+		if kind != .String do return {}, .Cannot_Trim, nil
+		result := value.clone_value(input)
+		if value.kind_of(&result) == .Invalid do return {}, .None, .Out_Of_Memory
+		return result, .None, nil
+	}
 	if opcode == .Ascii_Downcase || opcode == .Ascii_Upcase {
 		if kind != .String do return {}, .Cannot_Trim, nil
 		text, text_ok := value.string_borrowed(input)
@@ -2366,7 +2372,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
-			case .Length, .Keys, .Keys_Unsorted, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]

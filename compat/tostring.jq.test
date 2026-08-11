@@ -1,0 +1,4 @@
+# Bounded string tostring compatibility lane.
+tostring
+"hello"
+"hello"
