@@ -258,6 +258,13 @@ behavioral oracle.
   failed** because its selected `toboolean` cases are embedded in unsupported
   `map`/`try` compositions. Invalid strings, non-string diagnostics, and
   dynamic/generator forms remain deferred.
+- Empty string needles for the existing `index`/`rindex`/`indices` family
+  (`03f955f`, decision `0115`) now match jq's empty-needle behavior: string
+  inputs return `null`, `null`, and `[]`, while null input propagates null.
+  The new shard passes 3/3 and the prior index-family shard remains 10/10;
+  the exact catalog is now **161/522 passed and 361 failed**. Empty-array
+  needles, dynamic/two-argument forms, and detailed diagnostics remain
+  deferred.
 
 ## Remaining high-value clusters
 
