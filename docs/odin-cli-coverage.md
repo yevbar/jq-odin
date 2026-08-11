@@ -334,6 +334,10 @@ behavioral oracle.
   passes 3/3 and package/build checks pass; the catalog remains **170/522
   passed and 352 failed** because format arguments, sibling formats, and
   nested containers remain deferred.
+- Scalar-input `@sh` correction (`a7f39ca`) now emits one quoted field instead
+  of requiring an array, matching jq for scalar, null, and string inputs while
+  preserving array behavior. The expanded shard passes 5/5 and the full
+  catalog is now **171/522 passed and 351 failed**.
 
 ## Remaining high-value clusters
 
