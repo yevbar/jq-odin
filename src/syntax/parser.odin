@@ -1021,7 +1021,7 @@ parse_pipe :: proc(
 					kind = .IsEmpty
 				} else if spelling == "range" {
 					kind = .Range
-				} else if spelling == "strftime" {
+				} else if spelling == "strftime" || spelling == "strflocaltime" {
 					kind = .Strftime
 				} else if spelling == "strptime" {
 					kind = .Strptime
@@ -1082,7 +1082,7 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third}); if !ok { return {}, false }; term = new_term
 					}
-				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strptime" || spelling == "any" || spelling == "all") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -1128,7 +1128,7 @@ parse_pipe :: proc(
 					if spelling == "trimstr" do call_kind = .Trimstr
 					if spelling == "error" do call_kind = .Error
 					if spelling == "isempty" do call_kind = .IsEmpty
-					if spelling == "strftime" do call_kind = .Strftime
+					if spelling == "strftime" || spelling == "strflocaltime" do call_kind = .Strftime
 					if spelling == "strptime" do call_kind = .Strptime
 					if spelling == "any" && any_not_literal do call_kind = .Any_Not
 					if spelling == "all" && any_not_literal do call_kind = .All_Not
