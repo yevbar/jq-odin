@@ -125,6 +125,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return (node.has_child || node.child == 0) && no_edges && no_name && no_container_links && !node.has_value &&
 			       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
+	case .Pow:
+		return node.left >= 0 && node.right >= 0 && no_child && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 			       !node.boolean_value && no_number && !node.has_string_text &&
@@ -295,6 +297,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Last, .First:
 		if node.has_child { return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) }
 		return true
+	case .Pow:
+		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Cosh, .Acosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return true
 	case .Limit:
@@ -604,6 +608,8 @@ lower_filter :: proc(
 			if node.has_child {
 				if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 			}
+		case .Pow:
+			if !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Size_Overflow} }
 	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 			// Operand-free math/date builtins.
 		case .Limit:
@@ -993,6 +999,11 @@ lower_filter :: proc(
 			}
 		case .Log10:
 			instruction.opcode = .Log10
+		case .Pow:
+			instruction.opcode = .Pow
+			instruction.operands_count = 2
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.left)})); operand_at += 1
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)})); operand_at += 1
 		case .Log2:
 			instruction.opcode = .Log2
 		case .Exp:

@@ -215,6 +215,8 @@ Node_Kind :: enum {
 	Isinfinite,
 	// Log is appended to preserve existing AST discriminants.
 	Log,
+	// Pow is appended to preserve existing AST discriminants.
+	Pow,
 	// Limit is appended to preserve existing AST discriminants.
 	Limit,
 	// Skip is appended to preserve existing AST discriminants.
@@ -1112,6 +1114,8 @@ parse_pipe :: proc(
 					kind = .Isinfinite
 				} else if spelling == "log" {
 					kind = .Log
+				} else if spelling == "pow" {
+					kind = .Pow
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
@@ -1245,8 +1249,21 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Nth, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term
-				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "pow" || spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
 					advance(parser)
+					if spelling == "pow" {
+						left, left_ok := parse_pipe(parser, .Semicolon, false)
+						if !left_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }
+						advance(parser)
+						right, right_ok := parse_pipe(parser, .Close_Paren, false)
+						if !right_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+						close := parser.lookahead.token; advance(parser)
+						span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+						pow_term, pow_ok := append_node(parser, Node{kind=.Pow, span=span, left=left, right=right}); if !pow_ok { return {}, false }
+						term = pow_term
+						term_ready = true
+						continue
+					}
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "map" && spelling != "map_values" && spelling != "isempty")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
 						fail_from_lookahead(parser, .Close_Paren)

@@ -1,0 +1,12 @@
+# `pow(base; exponent)` computes numeric exponentiation.
+null | pow(2; 3)
+8
+
+null | pow(2; -1)
+0.5
+
+null | [pow(2; 0), pow(10; 2), pow(9; 0.5)]
+[1,100,3]
+
+null | pow(2; 3) | log2
+3

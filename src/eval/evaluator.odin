@@ -1143,7 +1143,7 @@ capture_composite_instruction :: proc(
 		_, left_ok := child_instruction(storage, instruction, 0)
 		_, right_ok := child_instruction(storage, instruction, 1)
 		if !left_ok || !right_ok do return false
-	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		if instruction.operands_count != 2 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
@@ -2260,7 +2260,7 @@ begin_terminal_misuse_owned :: proc(
 @(private)
 is_binary_opcode :: proc(opcode: program.Opcode) -> bool {
 	#partial switch opcode {
-	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		return true
 	}
 	return false
@@ -4950,6 +4950,11 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 		result, kind := value.number_modulo(left, right)
 		if kind == .Success do return result, .None, nil
 		return {}, .Cannot_Modulo, nil
+	case .Pow:
+		base, base_ok := value.number_value_get(left)
+		exponent, exponent_ok := value.number_value_get(right)
+		if !base_ok || !exponent_ok do return {}, .Cannot_Multiply, nil
+		return value.number_value(math.pow_f64(base, exponent)), .None, nil
 	case .Equal: return value.boolean_value(value.values_equal(left, right)), .None, nil
 	case .Not_Equal: return value.boolean_value(!value.values_equal(left, right)), .None, nil
 	case .Less, .Less_Equal, .Greater, .Greater_Equal:
@@ -6351,7 +6356,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Fork_Start_Left
-			case .Add, .Subtract, .Multiply, .Divide, .Modulo,
+			case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow,
 			     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 				frame.phase = .Binary_Start_Left
