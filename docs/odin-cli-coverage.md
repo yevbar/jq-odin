@@ -634,6 +634,9 @@ behavioral oracle.
   existing scalar assignment evaluator inside `try (...) catch .`; the focused
   shard passes 2/2 and package, full-unit, and repository validation remain
   green. Nested paths and dynamic assignment remain deferred.
+- Zero-catch `try` comma boundaries (decision `0256`) now stop implicit
+  `try EXP` before surrounding comma streams; the focused shard passes 3/3 and
+  package/full validation remain green. Dynamic catches remain deferred.
 
 ## Remaining high-value clusters
 

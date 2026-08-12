@@ -886,7 +886,11 @@ parse_pipe :: proc(
 				// `try EXP` is jq's implicit-error-suppression form. Keep the
 				// existing expression parser boundary so explicit catch filters
 				// and established binary expressions retain their precedence.
-				expression, expression_ok := parse_pipe(parser, closing, stop_at_comma, true)
+				// A zero-catch try ends at the surrounding comma, just like an
+				// explicit catch filter.  Otherwise `1, try error(2), 3` would
+				// absorb the trailing comma and suppress `3` with the erroring
+				// expression.
+				expression, expression_ok := parse_pipe(parser, closing, true, true)
 				if !expression_ok {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
