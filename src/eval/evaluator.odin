@@ -5509,8 +5509,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				index_text, index_text_ok := program.operand_text(storage.compiled, index_operand)
 				number_text, number_text_ok := program.operand_text(storage.compiled, number_operand)
 				if !index_text_ok || !number_text_ok do return begin_terminal_misuse(storage, .Malformed_Program)
-				array_index_i64, parse_ok := strconv.parse_i64(index_text)
-				if !parse_ok || array_index_i64 < i64(min(int)) || array_index_i64 > i64(max(int)) do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				array_index_number, parse_ok := strconv.parse_f64(index_text)
+				if !parse_ok || math.is_nan(array_index_number) || math.is_inf(array_index_number) || array_index_number < f64(min(int)) || array_index_number > f64(max(int)) do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				array_index_i64 := i64(array_index_number)
 				updated: value.Value
 				constructor_error: value.Constructor_Error
 				if strings.has_prefix(number_text, "@str:") {
