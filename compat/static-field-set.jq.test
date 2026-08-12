@@ -1,0 +1,9 @@
+# Bounded static object-field assignment of a numeric literal.
+.foo = 9
+{"foo":1,"bar":2}
+{"foo":9,"bar":2}
+
+# Preserve unrelated members and key order.
+.foo = 0
+{"bar":2,"foo":1}
+{"bar":2,"foo":0}

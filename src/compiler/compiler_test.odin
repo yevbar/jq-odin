@@ -429,6 +429,16 @@ source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-.,(.)?,.a|.
 		seen[node.kind] = true
 	}
 	testing.expect_value(t, syntax.destroy_parser(&update_parser), runtime.Allocator_Error.None)
+	set_parser: syntax.Parser
+	set_source := diagnostic.borrow_source("<set-shape>", `.foo = 1`)
+	testing.expect(t, syntax.init_parser(&set_parser, set_source, context.allocator))
+	set_parsed := syntax.parse_filter(&set_parser)
+	testing.expect_value(t, set_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&set_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&set_parser), runtime.Allocator_Error.None)
 	for kind in syntax.Node_Kind {
 		testing.expect(t, seen[kind])
 	}
@@ -1049,5 +1059,24 @@ static_field_numeric_update_lowers_to_two_owned_text_operands :: proc(t: ^testin
 	testing.expect(t, key_ok && number_ok)
 	testing.expect_value(t, key, "foo")
 	testing.expect_value(t, number, "1")
+	expect_cleanup(t, &parser, &compiled)
+}
+
+@(test)
+static_field_numeric_set_lowers_to_two_owned_text_operands :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, _, lowered := parse_and_lower(t, `.foo = 9`, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	root, root_ok := program.program_root(&compiled)
+	testing.expect(t, root_ok)
+	instruction := instruction_at(&compiled, root)
+	testing.expect_value(t, instruction.opcode, program.Opcode.Static_Field_Set_Number)
+	testing.expect_value(t, instruction.operands_count, program.Count(2))
+	key, key_ok := program.operand_text(&compiled, instruction_operand(&compiled, instruction, 0))
+	number, number_ok := program.operand_text(&compiled, instruction_operand(&compiled, instruction, 1))
+	testing.expect(t, key_ok && number_ok)
+	testing.expect_value(t, key, "foo")
+	testing.expect_value(t, number, "9")
 	expect_cleanup(t, &parser, &compiled)
 }

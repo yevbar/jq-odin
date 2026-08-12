@@ -3955,6 +3955,21 @@ static_field_numeric_update_has_a_bounded_ast_node :: proc(t: ^testing.T) {
 }
 
 @(test)
+static_field_numeric_set_has_a_bounded_ast_node :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<static-field-set>", `.foo = 9`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Static_Field_Set_Number)
+	number := parser.nodes.storage[int(root.right)]
+	testing.expect_value(t, number.kind, Node_Kind.Number)
+	testing.expect_value(t, number.number_text, "9")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 error_accepts_scalar_literals :: proc(t: ^testing.T) {
 	sources := [?]string{`error(0)`, `error(false)`, `error(null)`}
 	for source_text in sources {

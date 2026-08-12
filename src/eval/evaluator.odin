@@ -996,7 +996,7 @@ static_field_add_operands :: proc(
 	storage: ^evaluator_storage,
 	instruction: program.Instruction,
 ) -> (key, number: string, ok: bool) {
-	if instruction.opcode != .Static_Field_Add_Number || instruction.operands_count != 2 do return
+	if (instruction.opcode != .Static_Field_Add_Number && instruction.opcode != .Static_Field_Set_Number) || instruction.operands_count != 2 do return
 	key_operand, key_ok := program.program_operand(storage.compiled, instruction.operands_start)
 	number_operand, number_ok := program.program_operand(
 		storage.compiled,
@@ -5443,6 +5443,33 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Slice_Start_Child
+			case .Static_Field_Set_Number:
+				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
+				if !operands_ok || value.kind_of(&frame.input) != .Object do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				updated, constructor_error := value.literal_number_value(number_text, storage.allocator)
+				if value.constructor_error_kind(&constructor_error) != .None {
+					cleanup_error := value.destroy_constructor_error(&constructor_error)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					return resource_step(.Out_Of_Memory)
+				}
+				key, key_ok := existing_object_key_copy(&frame.input, key_text)
+				if !key_ok { _ = value.destroy_value(&updated); return begin_terminal_misuse(storage, .Malformed_Program) }
+				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &updated)
+				set_kind := value.object_error_kind(&set_error)
+				if set_kind != .None {
+					_ = value.destroy_value(&key); _ = value.destroy_value(&updated); _ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+					cleanup_error := value.destroy_object_error(&set_error)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Static_Field_Add_Number:
 				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
 				if !operands_ok || value.kind_of(&frame.input) != .Object {

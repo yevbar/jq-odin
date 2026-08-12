@@ -238,6 +238,8 @@ Node_Kind :: enum {
 	Recurse,
 	// Static_Field_Add_Number is appended to preserve existing AST discriminants.
 	Static_Field_Add_Number,
+	// Static_Field_Set_Number is appended to preserve existing AST discriminants.
+	Static_Field_Set_Number,
 }
 
 Node_Id :: distinct int
@@ -1735,6 +1737,9 @@ parse_pipe :: proc(
 				closing,
 			)
 		}
+		if token_is(parser, .Assign) {
+			return parse_static_field_set_number(parser, current if pipe_root != invalid_id else result, pipe_root, pipe_tail, closing)
+		}
 
 		// jq's `expr as $name | body` is a low-precedence lexical binding.
 		// Parse the body with a fresh precedence state so the binding covers
@@ -1900,6 +1905,27 @@ parse_static_field_add_update :: proc(
 		if pipe == pipe_tail do break
 		pipe = pipe_node.right
 	}
+	return pipe_root, true
+}
+
+@(private="package")
+parse_static_field_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tail: Node_Id, closing: Token_Kind) -> (Node_Id, bool) {
+	left_node := parser.nodes.storage[int(left)]
+	if left_node.form != .Kinded || left_node.kind != .Field || left_node.container_kind != .None || left_node.has_child || !left_node.has_name_span {
+		fail_at_current(parser, .Unexpected_Token, .Expression); return {}, false
+	}
+	advance(parser)
+	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+	if !right_ok do return {}, false
+	number := parser.nodes.storage[int(right)]
+	if number.form != .Kinded || number.kind != .Number || !number.has_number_text || number.has_child || number.has_value {
+		fail_from_lookahead(parser, .Expression); return {}, false
+	}
+	span, span_ok := spanning(parser, left_node.span, number.span); assert(span_ok)
+	update, update_ok := append_node(parser, Node{kind=.Static_Field_Set_Number, span=span, right=right, name_span=left_node.name_span, has_name_span=true})
+	if !update_ok do return {}, false
+	if int(pipe_root) < 0 do return update, true
+	tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update
 	return pipe_root, true
 }
 

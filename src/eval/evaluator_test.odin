@@ -868,6 +868,30 @@ static_field_numeric_update_replaces_one_owned_object_member :: proc(t: ^testing
 	destroy_program_test(t, &compiled)
 }
 
+@(test)
+static_field_numeric_set_replaces_one_owned_object_member :: proc(t: ^testing.T) {
+	instructions := [?]program.Instruction{{opcode = .Static_Field_Set_Number, operands_count = 2, span = {start = 0, end = 9}}}
+	operands := [?]program.Operand{text_operand(0, 3), text_operand(3, 1)}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "foo9", 0)
+	input, object_error := value.object_value(context.allocator)
+	testing.expect_value(t, value.object_error_kind(&object_error), value.Object_Error.None)
+	object_put(t, &input, "foo", value.number_value(42))
+	object_put(t, &input, "kept", value.number_value(7))
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	foo, foo_ok := value.object_get_copy(&output, "foo")
+	kept, kept_ok := value.object_get_copy(&output, "kept")
+	testing.expect(t, foo_ok && kept_ok)
+	expect_number(t, &foo, 9)
+	expect_number(t, &kept, 7)
+	testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
 @(private)
 sample_object :: proc(t: ^testing.T) -> value.Value {
 	inner, inner_error := value.object_value(context.allocator)
