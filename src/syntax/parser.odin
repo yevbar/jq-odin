@@ -1172,7 +1172,7 @@ parse_pipe :: proc(
 					}
 				} else if spelling == "limit" && token_is(parser, .Open_Paren) {
 					advance(parser)
-					count, count_ok := parse_pipe(parser, .Semicolon, true)
+					count, count_ok := parse_pipe(parser, .Semicolon, false)
 					if !count_ok || !token_is(parser, .Semicolon) {
 						fail_from_lookahead(parser, .Expression)
 						return {}, false
@@ -1186,6 +1186,14 @@ parse_pipe :: proc(
 					close := parser.lookahead.token
 					advance(parser)
 					count_node := parser.nodes.storage[int(count)]
+					if count_node.kind == .Comma {
+						sequence, sequence_ok := literal_numeric_sequence(parser, count)
+						if !sequence_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+						combined, combined_ok := numeric_count_call_sequence(parser, sequence, generator, .Limit)
+						if !combined_ok { return {}, false }; term = combined
+						term_ready = true
+						continue
+					}
 					if count_node.kind != .Number || count_node.has_child || count_node.has_value {
 						fail_from_lookahead(parser, .Expression)
 						return {}, false
@@ -1197,26 +1205,42 @@ parse_pipe :: proc(
 					term = new_term
 				} else if spelling == "skip" && token_is(parser, .Open_Paren) {
 					advance(parser)
-					count, count_ok := parse_pipe(parser, .Semicolon, true)
+					count, count_ok := parse_pipe(parser, .Semicolon, false)
 					if !count_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }
 					advance(parser)
 					generator, generator_ok := parse_pipe(parser, .Close_Paren, true)
 					if !generator_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					close := parser.lookahead.token; advance(parser)
 					count_node := parser.nodes.storage[int(count)]
+					if count_node.kind == .Comma {
+						sequence, sequence_ok := literal_numeric_sequence(parser, count)
+						if !sequence_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+						combined, combined_ok := numeric_count_call_sequence(parser, sequence, generator, .Skip)
+						if !combined_ok { return {}, false }; term = combined
+						term_ready = true
+						continue
+					}
 					if count_node.kind != .Number || count_node.has_child || count_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Skip, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term
 				} else if spelling == "nth" && token_is(parser, .Open_Paren) {
 					advance(parser)
-					count, count_ok := parse_pipe(parser, .Semicolon, true)
+					count, count_ok := parse_pipe(parser, .Semicolon, false)
 					if !count_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }
 					advance(parser)
 					generator, generator_ok := parse_pipe(parser, .Close_Paren, true)
 					if !generator_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					close := parser.lookahead.token; advance(parser)
 					count_node := parser.nodes.storage[int(count)]
+					if count_node.kind == .Comma {
+						sequence, sequence_ok := literal_numeric_sequence(parser, count)
+						if !sequence_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+						combined, combined_ok := numeric_count_call_sequence(parser, sequence, generator, .Nth)
+						if !combined_ok { return {}, false }; term = combined
+						term_ready = true
+						continue
+					}
 					if count_node.kind != .Number || count_node.has_child || count_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Nth, span=span, left=count, right=generator})
@@ -3018,6 +3042,29 @@ range_literal_cartesian :: proc(parser: ^Parser, first, second, third: Node_Id, 
 	if !span_ok { return {}, false }
 	range_node, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third})
 	return range_node, ok
+}
+
+literal_numeric_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Comma {
+		left, left_ok := literal_numeric_sequence(parser, node.left)
+		right, right_ok := literal_numeric_sequence(parser, node.right)
+		if !left_ok || !right_ok { return {}, false }
+		return append_node(parser, Node{kind=.Comma, span=node.span, left=left, right=right})
+	}
+	if node.has_child || node.has_value || (node.kind != .Number && !(node.kind == .Negate && node.has_child)) { return {}, false }
+	return node_id, true
+}
+
+numeric_count_call_sequence :: proc(parser: ^Parser, counts, generator: Node_Id, kind: Node_Kind) -> (Node_Id, bool) {
+	node := parser.nodes.storage[int(counts)]
+	if node.kind == .Comma {
+		left, left_ok := numeric_count_call_sequence(parser, node.left, generator, kind)
+		right, right_ok := numeric_count_call_sequence(parser, node.right, generator, kind)
+		if !left_ok || !right_ok { return {}, false }
+		return append_node(parser, Node{kind=.Comma, span=node.span, left=left, right=right})
+	}
+	return append_node(parser, Node{kind=kind, span=node.span, left=counts, right=generator})
 }
 
 @(private="package")
