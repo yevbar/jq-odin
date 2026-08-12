@@ -1163,7 +1163,7 @@ parse_pipe :: proc(
 					if !ok { return {}, false }; term = new_term
 				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
 					advance(parser)
-					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last")
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "map" && spelling != "map_values")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
 						fail_from_lookahead(parser, .Close_Paren)
 						return {}, false
@@ -2613,9 +2613,12 @@ append_postfix :: proc(
 	node := initial
 	ok: bool
 	for token_is(parser, .Question) || token_is(parser, .Field) || token_is(parser, .Open_Bracket) || token_is(parser, .String_Start) || token_is(parser, .Dot) {
+		dotted_bracket := false
 		if token_is(parser, .Dot) {
 			advance(parser)
-			if !token_is(parser, .String_Start) {
+			if token_is(parser, .Open_Bracket) {
+				dotted_bracket = true
+			} else if !token_is(parser, .String_Start) {
 				// Preserve jq's existing standalone-dot diagnostic boundary:
 				// the dot is consumed before a non-quoted suffix is reported.
 				fail_from_lookahead(parser, .End_Of_Input)
@@ -2646,7 +2649,7 @@ append_postfix :: proc(
 		// The canonical reduction slice uses `.[]`.  Preserve it as the
 		// identity term for now; Reduce's evaluator consumes the input array
 		// directly, while this parser acceptance keeps the source shape intact.
-		if token_is(parser, .Open_Bracket) {
+		if token_is(parser, .Open_Bracket) || dotted_bracket {
 			open := parser.lookahead.token
 			advance(parser)
 			if token_is(parser, .String_Start) {
