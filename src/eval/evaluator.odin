@@ -1342,6 +1342,48 @@ index_result :: proc(
 }
 
 @(private)
+slice_result :: proc(
+	storage: ^evaluator_storage,
+	frame: ^eval_frame,
+	instruction: program.Instruction,
+) -> (value.Value, Runtime_Error, bool) {
+	if value.kind_of(&frame.input) == .Null do return value.null_value(), {}, true
+	if value.kind_of(&frame.input) != .Array do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}, true
+	start_operand, start_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+	end_operand, end_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+2))
+	start_text, start_text_ok := program.operand_text(storage.compiled, start_operand)
+	end_text, end_text_ok := program.operand_text(storage.compiled, end_operand)
+	if !start_ok || !end_ok || !start_text_ok || !end_text_ok || start_operand.kind != .Text || end_operand.kind != .Text do return {}, {}, false
+	length, length_ok := value.array_length(&frame.input)
+	if !length_ok do return {}, {}, false
+	start, end := 0, length
+	if len(start_text) > 0 {
+		v, e := value.literal_number_value(start_text, storage.allocator)
+		if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true }
+		n, ok := value.number_value_get(&v); _ = value.destroy_value(&v)
+		if !ok || n != f64(int(n)) do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
+		start = int(n); if start < 0 { start += length }; if start < 0 { start = 0 }; if start > length { start = length }
+	}
+	if len(end_text) > 0 {
+		v, e := value.literal_number_value(end_text, storage.allocator)
+		if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true }
+		n, ok := value.number_value_get(&v); _ = value.destroy_value(&v)
+		if !ok || n != f64(int(n)) do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
+		end = int(n); if end < 0 { end += length }; if end < 0 { end = 0 }; if end > length { end = length }
+	}
+	result, array_error := value.array_value(storage.allocator)
+	if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return {}, {}, false }
+	if start > end { return result, {}, true }
+	for i in start..<end {
+		item, ok := value.array_element_copy(&frame.input, i)
+		if !ok { _ = value.destroy_value(&result); return {}, {}, false }
+		_, append_error := value.array_append_take(&result, &item)
+		if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&result); return {}, {}, false }
+	}
+	return result, {}, true
+}
+
+@(private)
 resource_step :: proc(err: runtime.Allocator_Error) -> Step_Result {
 	return {kind = .Resource_Error, resource_error = err}
 }
@@ -4966,6 +5008,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Index_Start_Child
+			case .Slice:
+				output, runtime_error, valid := slice_result(storage, frame, instruction)
+				if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
+				if runtime_error.kind != .None {
+					result, ready := raise_runtime(storage, index, runtime_error)
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Variable:
 				output, variable_ok := variable_result(storage, index, instruction)
 				if !variable_ok || value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)

@@ -223,6 +223,8 @@ Node_Kind :: enum {
 	Map,
 	// Map_Values is appended to preserve existing AST discriminants.
 	Map_Values,
+	// Slice is appended to preserve existing AST discriminants.
+	Slice,
 }
 
 Node_Id :: distinct int
@@ -2701,6 +2703,30 @@ append_postfix :: proc(
 				advance(parser)
 				negative_index = true
 			}
+			// Numeric read-only slices use the same postfix brackets as indexes.
+			if token_is(parser, .Colon) {
+				advance(parser)
+				start_index := Node_Id(-1)
+				end_index := Node_Id(-1)
+				if !token_is(parser, .Close_Bracket) {
+					end_negative := false
+					end_span := diagnostic.Span{}
+					if token_is(parser, .Minus) { end_span = parser.lookahead.token.span; advance(parser); end_negative = true }
+					if !token_is(parser, .Number) { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
+					end_number_span := parser.lookahead.token.span
+					if end_negative { end_number_span, _ = spanning(parser, end_span, end_number_span) }
+					end_index, ok = append_number_node(parser, end_number_span)
+					if !ok do return {}, false
+					advance(parser)
+				}
+				if !token_is(parser, .Close_Bracket) { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
+				close := parser.lookahead.token; advance(parser)
+				span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span); assert(span_ok)
+				new_term, slice_ok := append_node(parser, Node{kind=.Slice, span=span, child=node, has_child=true, left=start_index, right=end_index})
+				if !slice_ok do return {}, false
+				node = new_term
+				continue
+			}
 			if !token_is(parser, .Number) {
 				fail_from_lookahead(parser, .Close_Bracket)
 				return {}, false
@@ -2713,6 +2739,28 @@ append_postfix :: proc(
 			index_node, index_ok := append_number_node(parser, index_span)
 			if !index_ok do return {}, false
 			advance(parser)
+			if token_is(parser, .Colon) {
+				advance(parser)
+				end_index := Node_Id(-1)
+				if !token_is(parser, .Close_Bracket) {
+					end_negative := false
+					end_span := diagnostic.Span{}
+					if token_is(parser, .Minus) { end_span = parser.lookahead.token.span; advance(parser); end_negative = true }
+					if !token_is(parser, .Number) { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
+					end_number_span := parser.lookahead.token.span
+					if end_negative { end_number_span, _ = spanning(parser, end_span, end_number_span) }
+					end_index, ok = append_number_node(parser, end_number_span)
+					if !ok do return {}, false
+					advance(parser)
+				}
+				if !token_is(parser, .Close_Bracket) { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
+				close := parser.lookahead.token; advance(parser)
+				span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span); assert(span_ok)
+				new_term, slice_ok := append_node(parser, Node{kind=.Slice, span=span, child=node, has_child=true, left=index_node, right=end_index})
+				if !slice_ok do return {}, false
+				node = new_term
+				continue
+			}
 			// Reuse the allocated number node as the index node. Its owned
 			// spelling remains valid for the parser lifetime and is copied by
 			// the compiler into Program text storage.
