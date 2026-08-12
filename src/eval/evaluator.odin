@@ -5830,7 +5830,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
 					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
-					err.key = "strftime/1 requires parsed datetime inputs"
+					err.key = "strflocaltime/1 requires parsed datetime inputs" if instruction.format_local else "strftime/1 requires parsed datetime inputs"
 					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue

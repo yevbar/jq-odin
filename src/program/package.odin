@@ -284,6 +284,7 @@ Instruction :: struct {
 	has_literal:    bool,
 	literal_kind:   Literal_Kind,
 	literal_boolean: bool,
+	format_local:    bool,
 	operands_start: Operand_Index,
 	operands_count: Count,
 	span:           Source_Span,

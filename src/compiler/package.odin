@@ -880,6 +880,7 @@ lower_filter :: proc(
 			}
 		case .Strftime, .Strptime:
 			instruction.opcode = .Strftime if node.kind == .Strftime else .Strptime
+			instruction.format_local = node.strflocaltime
 			instruction.operands_count = 1
 			child_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind = .Instruction, instruction = program.Instruction_Index(node.child)})
 			assert(child_ok); operand_at += 1

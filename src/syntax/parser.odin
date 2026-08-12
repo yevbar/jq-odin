@@ -298,6 +298,7 @@ Node :: struct {
 	has_if_then:       bool,
 	if_else:           Node_Id,
 	has_if_else:       bool,
+	strflocaltime:     bool,
 	key:               Node_Id,
 	has_key:           bool,
 	boolean_value:     bool,
@@ -1288,7 +1289,7 @@ parse_pipe :: proc(
 						if !sequence_ok { fail_from_lookahead(parser, .Expression); return {}, false }
 						term = new_term
 					} else {
-						new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true})
+						new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=argument, has_child=true, strflocaltime=spelling == "strflocaltime"})
 						if !ok { return {}, false }
 						term = new_term
 					}
