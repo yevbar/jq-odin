@@ -688,6 +688,9 @@ parse_pipe :: proc(
 
 	for {
 		if !term_ready {
+			if closing == .Else && token_is(parser, .End) && current != invalid_id {
+				return current, true
+			}
 			if stop_at_catch && parser.lookahead.kind == .Token && parser.lookahead.token.kind == .Catch {
 				return current, current != invalid_id
 			}
@@ -838,9 +841,32 @@ parse_pipe :: proc(
 				condition, ok1 := parse_pipe(parser, .Then, false)
 				if !ok1 || !token_is(parser, .Then) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
 				then_branch, ok2 := parse_pipe(parser, .Else, false)
-				if !ok2 || !token_is(parser, .Else) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
-				else_branch, ok3 := parse_pipe(parser, .End, false)
-				if !ok3 || !token_is(parser, .End) { fail_from_lookahead(parser, .Expression); return {}, false }
+				if !ok2 { fail_from_lookahead(parser, .Expression); return {}, false }
+				else_branch: Node_Id
+				ok3: bool
+				if token_is(parser, .Else) {
+					advance(parser)
+					else_branch, ok3 = parse_pipe(parser, .End, false)
+					if !ok3 || !token_is(parser, .End) { fail_from_lookahead(parser, .Expression); return {}, false }
+				} else if token_is(parser, .Else_If) {
+					elif_token := parser.lookahead.token; advance(parser)
+					elif_condition, elif_ok := parse_pipe(parser, .Then, false)
+					if !elif_ok || !token_is(parser, .Then) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+					elif_then, elif_then_ok := parse_pipe(parser, .Else, false)
+					if !elif_then_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+					elif_else: Node_Id
+					if token_is(parser, .Else) {
+						advance(parser); elif_else_ok: bool; elif_else, elif_else_ok = parse_pipe(parser, .End, false)
+						if !elif_else_ok || !token_is(parser, .End) { fail_from_lookahead(parser, .Expression); return {}, false }
+					} else {
+						elif_else, _ = append_node(parser, Node{kind=.Empty, span=elif_token.span})
+					}
+					elif_span, _ := spanning(parser, elif_token.span, parser.lookahead.token.span)
+					else_branch, _ = append_node(parser, Node{kind=.If, span=elif_span, if_condition=elif_condition, has_if_condition=true, if_then=elif_then, has_if_then=true, if_else=elif_else, has_if_else=true})
+				} else {
+					else_branch, ok3 = append_node(parser, Node{kind=.Empty, span=if_token.span})
+					if !ok3 { return {}, false }
+				}
 				end_token := parser.lookahead.token; advance(parser)
 				span, span_ok := spanning(parser, if_token.span, end_token.span); assert(span_ok)
 				new_term, ok := append_node(parser, Node{kind=.If, span=span, if_condition=condition, has_if_condition=true, if_then=then_branch, has_if_then=true, if_else=else_branch, has_if_else=true})
