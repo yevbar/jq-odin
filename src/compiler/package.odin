@@ -117,10 +117,14 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
-	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
+	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
 			string_header_absent(node.string_text)
+	case .Add_Builtin:
+		return no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text &&
+		       string_header_absent(node.string_text) && (!node.has_child || node.child >= 0)
 	case .Last, .First:
 		return (node.has_child || node.child == 0) && no_edges && no_name && no_container_links && !node.has_value &&
 			       !node.boolean_value && no_number && !node.has_string_text &&
@@ -622,13 +626,15 @@ lower_filter :: proc(
 			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Map_Values:
 			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
+		case .Add_Builtin:
+			if node.has_child && !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Slice:
 			if !checked_count_add(&operand_count, 3) { return Lower_Outcome{kind = .Size_Overflow} }
 			if node.left >= 0 && !checked_count_add(&text_count, u64(len(nodes[int(node.left)].number_text))) { return Lower_Outcome{kind = .Size_Overflow} }
 			if node.right >= 0 && !checked_count_add(&text_count, u64(len(nodes[int(node.right)].number_text))) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Any_Not, .All_Not:
 			// Negated any/all are operand-free predicates.
-	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
+	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
 			// Builtin filters are operand-free instructions.
 		case:
 			return Lower_Outcome{kind = .Invalid_AST}
@@ -1096,7 +1102,13 @@ lower_filter :: proc(
 			case .Implode: instruction.opcode = .Implode
 			case .Explode: instruction.opcode = .Explode
 			}
-			instruction.operands_count = 0
+			if node.kind == .Add_Builtin && node.has_child {
+				instruction.operands_count = 1
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
+				operand_at += 1
+			} else {
+				instruction.operands_count = 0
+			}
 		case .Parenthesized, .Optional:
 			instruction.opcode = .Parenthesized if node.kind == .Parenthesized else .Optional if node.kind == .Optional else .Negate
 			instruction.operands_count = 1

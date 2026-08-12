@@ -1,0 +1,6 @@
+# Generator-valued add accepts an empty child stream and returns null.
+add(empty)
+null
+
+1 | add(empty)
+null

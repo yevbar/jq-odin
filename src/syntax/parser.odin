@@ -831,8 +831,7 @@ parse_pipe :: proc(
 				}
 				advance(parser)
 				// A catch filter binds through binary and pipe operators, but a
-				// comma at this level starts the surrounding query stream. Commas
-				// intended inside the catch remain available through parentheses.
+				// comma at this level starts the surrounding query stream.
 				catch_filter, catch_ok := parse_pipe(parser, closing, true, false, true, true)
 				if !catch_ok do return {}, false
 				span, span_ok := spanning(parser, parser.nodes.storage[int(expression)].span, parser.nodes.storage[int(catch_filter)].span)
@@ -1250,7 +1249,7 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Nth, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term
-				} else if (spelling == "pow" || spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "add" || spelling == "pow" || spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					if spelling == "pow" {
 						left, left_ok := parse_pipe(parser, .Semicolon, false)
@@ -1262,6 +1261,27 @@ parse_pipe :: proc(
 						span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 						pow_term, pow_ok := append_node(parser, Node{kind=.Pow, span=span, left=left, right=right}); if !pow_ok { return {}, false }
 						term = pow_term
+						term_ready = true
+						continue
+					}
+					if spelling == "add" {
+						argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
+						if !argument_ok || !token_is(parser, .Close_Paren) {
+							fail_from_lookahead(parser, .Close_Paren)
+							return {}, false
+						}
+						close := parser.lookahead.token
+						advance(parser)
+						argument_node := parser.nodes.storage[int(argument)]
+						if argument_node.kind != .Empty || argument_node.has_child || argument_node.has_value {
+							fail_from_lookahead(parser, .Expression)
+							return {}, false
+						}
+						span, span_ok := spanning(parser, token.span, close.span)
+						assert(span_ok)
+						new_term, ok := append_node(parser, Node{kind=.Add_Builtin, span=span, child=argument, has_child=true})
+						if !ok do return {}, false
+						term = new_term
 						term_ready = true
 						continue
 					}
