@@ -5984,6 +5984,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						identity_argument = true
 						continue
 					}
+					if child_instruction_value.opcode == .Identity && !child_instruction_value.has_literal {
+						number, number_ok := value.number_value_get(&frame.input)
+						if !number_ok {
+							result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Number, input_kind=value.kind_of(&frame.input), span=instruction.span, key="Range bounds must be numeric"})
+							if ready do return result
+							runtime_continuation = true
+							break
+						}
+						if offset == 0 { start = number } else if offset == 1 { end = number } else { step = number }
+						continue
+					}
 					literal, literal_error, literal_cleanup := literal_value(storage, child_instruction_value)
 					if literal_cleanup != nil || literal_error != .None { if value.kind_of(&literal) != .Invalid { _ = value.destroy_value(&literal) }; return begin_terminal_misuse(storage, .Malformed_Program) }
 					number, number_ok := value.number_value_get(&literal); _ = value.destroy_value(&literal)

@@ -7,5 +7,8 @@ that already produce streams, such as `.[]` and parenthesized literal ranges,
 reuse the same accumulator. Null and map-produced streams are covered as well;
 other dynamic arguments remain deferred.
 
+Identity bounds in multi-argument `range` forms are also covered when they use
+the current numeric input.
+
 Evidence: jq defines `add` by reducing its input in `upstream/jq/src/builtin.jq:57`;
 the empty-generator behavior is exercised by the pinned jq oracle.
