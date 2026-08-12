@@ -1,0 +1,4 @@
+# A static sequence is non-empty when its first branch yields a value.
+isempty(1,error("foo"))
+null
+false
