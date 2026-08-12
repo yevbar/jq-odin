@@ -10,3 +10,7 @@ null
 try error("boom") catch "caught"
 null
 "caught"
+
+try ["OK", (.[] | error)] catch ["KO", .]
+{"a":["b"],"c":["d"]}
+["KO",["b"]]

@@ -1820,10 +1820,17 @@ continue_suppression :: proc(storage: ^evaluator_storage) -> (Step_Result, bool)
 	if storage.suppress_try {
 		message := storage.runtime_error.key
 		catch_instruction, child_ok := child_instruction(storage, instruction, 1)
-		catch_value, value_error := value.string_value(message, storage.allocator)
-		if !child_ok || value.constructor_error_kind(&value_error) != .None {
-			_ = value.destroy_constructor_error(&value_error)
-			return begin_terminal_misuse(storage, .Malformed_Program), true
+		catch_value: value.Value
+		if value.kind_of(&storage.pending_value) != .Invalid {
+			catch_value = storage.pending_value
+			storage.pending_value = {}
+		} else {
+			new_catch_value, value_error := value.string_value(message, storage.allocator)
+			catch_value = new_catch_value
+			if !child_ok || value.constructor_error_kind(&value_error) != .None {
+				_ = value.destroy_constructor_error(&value_error)
+				return begin_terminal_misuse(storage, .Malformed_Program), true
+			}
 		}
 		free_error = release_runtime_error(storage)
 		if free_error != nil do return resource_step(free_error), true
@@ -1861,6 +1868,11 @@ raise_runtime :: proc(
 	retain_error := retain_runtime_error(storage, err)
 	if retain_error != nil do return resource_step(retain_error), true
 	if target >= 0 {
+		if err.kind == .User_Error && len(err.key) == 0 {
+			pending := value.clone_value(&storage.frames[producer].input)
+			if value.kind_of(&pending) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program), true
+			storage.pending_value = pending
+		}
 		storage.pending = .Suppress_Runtime
 		storage.suppress_at = target
 		return continue_suppression(storage)
@@ -5505,12 +5517,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				child, child_ok := child_instruction(storage, instruction, 0)
 				message_instruction, message_instruction_ok := program.program_instruction(storage.compiled, child)
 				if child_ok && message_instruction_ok && message_instruction.opcode == .Identity && !message_instruction.has_literal {
-					message, message_ok, message_error := text_coercion_text(&frame.input, storage.allocator)
-					if message_error != nil do return resource_step(message_error)
-					if !message_ok do return begin_terminal_misuse(storage, .Malformed_Program)
-					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key=message})
-					free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator)
-					if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result
 					continue
 				}
