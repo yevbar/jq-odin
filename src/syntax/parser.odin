@@ -1709,6 +1709,16 @@ parse_pipe :: proc(
 			result = pipe_root
 		}
 
+		if token_is(parser, .Assign_Pipe) {
+			return parse_static_field_add_update(
+				parser,
+				current if pipe_root != invalid_id else result,
+				pipe_root,
+				pipe_tail,
+				closing,
+			)
+		}
+
 		// jq's `expr as $name | body` is a low-precedence lexical binding.
 		// Parse the body with a fresh precedence state so the binding covers
 		// the complete remaining filter, while the caller's closing delimiter
@@ -1814,6 +1824,66 @@ parse_pipe :: proc(
 		}
 		return result, true
 	}
+}
+
+@(private="package")
+parse_static_field_add_update :: proc(
+	parser: ^Parser,
+	left, pipe_root, pipe_tail: Node_Id,
+	closing: Token_Kind,
+) -> (Node_Id, bool) {
+	left_node := parser.nodes.storage[int(left)]
+	if left_node.form != .Kinded || left_node.kind != .Field ||
+	   left_node.container_kind != .None || left_node.has_child ||
+	   !left_node.has_name_span {
+		fail_at_current(parser, .Unexpected_Token, .Expression)
+		return {}, false
+	}
+	advance(parser)
+	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+	if !right_ok do return {}, false
+	right_node := parser.nodes.storage[int(right)]
+	if right_node.form != .Binary || right_node.binary_operator != .Add ||
+	   int(right_node.left) < 0 || int(right_node.right) < 0 {
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	identity := parser.nodes.storage[int(right_node.left)]
+	number := parser.nodes.storage[int(right_node.right)]
+	if identity.form != .Kinded || identity.kind != .Identity ||
+	   identity.container_kind != .None || identity.has_child ||
+	   number.form != .Kinded || number.kind != .Number ||
+	   !number.has_number_text {
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	span, span_ok := spanning(parser, left_node.span, right_node.span)
+	assert(span_ok)
+	update, update_ok := append_node(parser, Node{
+		kind = .Static_Field_Add_Number,
+		span = span,
+		right = right_node.right,
+		name_span = left_node.name_span,
+		has_name_span = true,
+	})
+	if !update_ok do return {}, false
+	if int(pipe_root) < 0 do return update, true
+	tail := &parser.nodes.storage[int(pipe_tail)]
+	tail.right = update
+	pipe := pipe_root
+	for {
+		pipe_node := &parser.nodes.storage[int(pipe)]
+		pipe_span, pipe_span_ok := spanning(
+			parser,
+			parser.nodes.storage[int(pipe_node.left)].span,
+			parser.nodes.storage[int(update)].span,
+		)
+		assert(pipe_span_ok)
+		pipe_node.span = pipe_span
+		if pipe == pipe_tail do break
+		pipe = pipe_node.right
+	}
+	return pipe_root, true
 }
 
 @(private="package")
