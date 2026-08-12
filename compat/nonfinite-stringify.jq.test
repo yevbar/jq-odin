@@ -1,0 +1,7 @@
+# JSON-facing native non-finite values use jq's finite replacement spelling.
+nan | tostring
+null
+infinite | tojson
+"1.7976931348623157e+308"
+(-infinite) | tostring
+"-1.7976931348623157e+308"

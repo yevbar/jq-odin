@@ -3163,6 +3163,11 @@ text_append_json_value :: proc(builder: ^strings.Builder, input: ^value.Value) -
 		if literal do return text_append_json_number(builder, spelling)
 		number, ok := value.number_value_get(input)
 		if !ok do return false
+		if math.is_nan(number) do return strings.write_string(builder, "null") == 4
+		if math.is_inf(number) {
+			text := "-1.7976931348623157e+308" if number < 0 else "1.7976931348623157e+308"
+			return strings.write_string(builder, text) == len(text)
+		}
 		buffer: [64]byte
 		formatted := strconv.write_float(buffer[:], number, 'f', -1, 64)
 		normalized_formatted := formatted[1:] if len(formatted) > 0 && formatted[0] == '+' else formatted
@@ -4579,6 +4584,15 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return result, .None, nil
 	}
 	if opcode == .Tostring {
+		if kind == .Number {
+			number, number_ok := value.number_value_get(input)
+			if number_ok && math.is_inf(number) {
+				text := "-1.7976931348623157e+308" if number < 0 else "1.7976931348623157e+308"
+				result, constructor_error := value.string_value(text, allocator)
+				if value.constructor_error_kind(&constructor_error) != .None { return {}, .None, .Out_Of_Memory }
+				return result, .None, nil
+			}
+		}
 		if kind == .String {
 			result := value.clone_value(input)
 			if value.kind_of(&result) == .Invalid do return {}, .None, .Out_Of_Memory
