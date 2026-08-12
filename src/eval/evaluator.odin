@@ -5628,6 +5628,42 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .In, .Inside:
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				child, child_ok := child_instruction(storage, instruction, 0)
+				container_instruction, container_ok := program.program_instruction(storage.compiled, child)
+				needle: value.Value
+				needle_error: value.Error
+				needle_cleanup: runtime.Allocator_Error
+				if container_instruction.opcode == .Object {
+					needle, needle_error, needle_cleanup = literal_object_value(storage, container_instruction)
+				} else if container_instruction.opcode == .Array {
+					needle, needle_error, needle_cleanup = literal_array_value(storage, container_instruction)
+				} else {
+					needle, needle_error, needle_cleanup = literal_value(storage, container_instruction)
+				}
+				if !child_ok || !container_ok || needle_cleanup != nil || needle_error != .None {
+					if value.kind_of(&needle) != .Invalid do _ = value.destroy_value(&needle)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output: value.Value
+				runtime_kind: Runtime_Error_Kind
+				if instruction.opcode == .In {
+					output, runtime_kind = has_result(&needle, &frame.input)
+				} else {
+					output, runtime_kind = contains_result(&needle, &frame.input)
+				}
+				_ = value.destroy_value(&needle)
+				if runtime_kind != .None {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Has:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)

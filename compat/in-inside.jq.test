@@ -1,0 +1,15 @@
+1 | in([1,2])
+null
+true
+
+3 | in([1,2])
+null
+false
+
+[1] | inside([1,2])
+null
+true
+
+{a:1} | inside({a:1,b:2})
+null
+false
