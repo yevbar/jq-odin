@@ -659,3 +659,5 @@ CLI harness, then run the full catalog. Every new lane should add a focused
 decision/evidence note with `path:line` citations. Review lanes should compare
 only the merge-base-to-head diff and attempt to falsify the focused shard
 before integration.
+- Scalar non-string `ltrimstr`/`rtrimstr`/`trimstr` separators are now parsed
+  and produce jq-compatible catchable type errors; focused shard passes 8/8.

@@ -1,0 +1,33 @@
+# jq accepts scalar separators for trimstr builtins and raises a catchable
+# startswith()/endswith() type error at evaluation time.
+try ltrimstr(1) catch .
+"abc"
+"startswith() requires string inputs"
+
+try ltrimstr(null) catch .
+"abc"
+"startswith() requires string inputs"
+
+try ltrimstr(true) catch .
+"abc"
+"startswith() requires string inputs"
+
+try rtrimstr(1) catch .
+"abc"
+"endswith() requires string inputs"
+
+try trimstr(1) catch .
+"abc"
+"startswith() requires string inputs"
+
+try ltrimstr(-1) catch .
+"abc"
+"startswith() requires string inputs"
+
+try ltrimstr(nan) catch .
+"abc"
+"startswith() requires string inputs"
+
+try rtrimstr(infinite) catch .
+"abc"
+"endswith() requires string inputs"

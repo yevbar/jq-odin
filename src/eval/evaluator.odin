@@ -6082,9 +6082,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				child, child_ok := child_instruction(storage, instruction, 0)
 				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
+				if !child_ok || !needle_ok || (!needle_instruction.has_literal && needle_instruction.opcode != .Nan && needle_instruction.opcode != .Infinite) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				// jq accepts scalar literal separators syntactically, then raises
+				// the same user-facing type error as startswith()/endswith().
+				// Keep this a runtime error so try/catch can observe it.
+				if needle_instruction.opcode == .Nan || needle_instruction.opcode == .Infinite || needle_instruction.literal_kind != .String {
+					message := "endswith() requires string inputs" if instruction.opcode == .Rtrimstr else "startswith() requires string inputs"
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key=message})
+					if ready do return result
+					continue
+				}
 				needle_operand, operand_ok := program.program_operand(storage.compiled, needle_instruction.operands_start)
 				needle, needle_text_ok := program.operand_text(storage.compiled, needle_operand)
-				if !child_ok || !needle_ok || needle_operand.kind != .Text || !needle_instruction.has_literal || needle_instruction.literal_kind != .String || !operand_ok || !needle_text_ok {
+				if needle_operand.kind != .Text || !operand_ok || !needle_text_ok {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				output, runtime_kind, resource_error := trimstr_result(&frame.input, needle, instruction.opcode, storage.allocator)
