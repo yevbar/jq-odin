@@ -1316,7 +1316,7 @@ index_result :: proc(
 	}
 	index_number, number_ok := value.number_value_get(&index_value)
 	_ = value.destroy_value(&index_value)
-	if !number_ok || index_number != f64(int(index_number)) {
+	if !number_ok {
 		// jq rejects fractional numeric indices for strings with a typed
 		// runtime error.  Arrays retain their historical null result for an
 		// out-of-range/non-integral index in this bounded indexing contract.
