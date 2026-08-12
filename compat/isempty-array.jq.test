@@ -1,0 +1,7 @@
+isempty([])
+null
+false
+
+isempty([1,2])
+null
+false
