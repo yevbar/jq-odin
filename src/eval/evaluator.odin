@@ -4307,6 +4307,13 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return value.boolean_value(!any_truthy), .None, nil
 	}
 	if opcode == .Abs || opcode == .Sqrt || opcode == .Fabs {
+		if opcode == .Abs && kind == .Number {
+			native_number, native_ok := value.number_value_get(input)
+			if native_ok && native_number >= 0 {
+				preserved := value.clone_value(input)
+				if value.kind_of(&preserved) != .Invalid do return preserved, .None, nil
+			}
+		}
 		if (kind == .String || kind == .Array || kind == .Object) && opcode == .Abs {
 			copy := value.clone_value(input)
 			if value.kind_of(&copy) != .Invalid do return copy, .None, nil
