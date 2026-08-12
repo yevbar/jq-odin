@@ -620,6 +620,10 @@ behavioral oracle.
   suites pass, and the authoritative catalog measures **322/522 passed and
   200 failed**. Dynamic continuation forms outside the existing binary frame
   remain deferred.
+- Unary-negative one-argument `range(-2)` (decision `0253`) now parses and
+  reuses the existing empty-interval evaluator. Its focused shard passes 1/1,
+  and package/full unit tests remain green. Dynamic range bounds and
+  generator-valued operands still require a continuation-frame contract.
 
 ## Remaining high-value clusters
 
