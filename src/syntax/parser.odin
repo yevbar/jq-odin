@@ -215,6 +215,8 @@ Node_Kind :: enum {
 	Log,
 	// Limit is appended to preserve existing AST discriminants.
 	Limit,
+	// Skip is appended to preserve existing AST discriminants.
+	Skip,
 }
 
 Node_Id :: distinct int
@@ -1025,6 +1027,8 @@ parse_pipe :: proc(
 					kind = .Range
 				} else if spelling == "limit" {
 					kind = .Limit
+				} else if spelling == "skip" {
+					kind = .Skip
 				} else if spelling == "strftime" || spelling == "strflocaltime" {
 					kind = .Strftime
 				} else if spelling == "strptime" {
@@ -1111,6 +1115,19 @@ parse_pipe :: proc(
 					new_term, ok := append_node(parser, Node{kind=.Limit, span=span, left=count, right=generator})
 					if !ok { return {}, false }
 					term = new_term
+				} else if spelling == "skip" && token_is(parser, .Open_Paren) {
+					advance(parser)
+					count, count_ok := parse_pipe(parser, .Semicolon, true)
+					if !count_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }
+					advance(parser)
+					generator, generator_ok := parse_pipe(parser, .Close_Paren, true)
+					if !generator_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token; advance(parser)
+					count_node := parser.nodes.storage[int(count)]
+					if count_node.kind != .Number || count_node.has_child || count_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+					new_term, ok := append_node(parser, Node{kind=.Skip, span=span, left=count, right=generator})
+					if !ok { return {}, false }; term = new_term
 				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last")

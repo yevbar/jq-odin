@@ -178,6 +178,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Limit:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Skip:
+		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Strftime, .Strptime:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
@@ -281,6 +284,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return true
 	case .Limit:
+		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Skip:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Any_Not, .All_Not:
 		return true
@@ -576,6 +581,8 @@ lower_filter :: proc(
 		case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 			// Operand-free math/date builtins.
 		case .Limit:
+			if !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Size_Overflow} }
+		case .Skip:
 			if !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Any_Not, .All_Not:
 			// Negated any/all are operand-free predicates.
@@ -887,6 +894,14 @@ lower_filter :: proc(
 			assert(program.set_text(output, program.Byte_Offset(text_at), name)); assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text,text_start=program.Byte_Offset(text_at),text_count=program.Count(len(name))})); text_at += u32(len(name)); operand_at += 1; instruction.operands_count = 4
 		case .Limit:
 			instruction.opcode = .Limit
+			children := [2]syntax.Node_Id{node.left, node.right}
+			for child in children {
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(child)}))
+				operand_at += 1
+			}
+			instruction.operands_count = 2
+		case .Skip:
+			instruction.opcode = .Skip
 			children := [2]syntax.Node_Id{node.left, node.right}
 			for child in children {
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(child)}))

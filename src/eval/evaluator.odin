@@ -101,6 +101,7 @@ frame_phase :: enum u8 {
 	Last_Result,
 	Last_Empty,
 	Limit_Active,
+	Skip_Active,
 	Try_Start_Expression,
 	Try_Start_Catch,
 	Try_Expression_Active,
@@ -1062,7 +1063,7 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
-	case .Limit:
+	case .Limit, .Skip:
 		if instruction.operands_count != 2 do return false
 		_, count_ok := child_instruction(storage, instruction, 0)
 		_, generator_ok := child_instruction(storage, instruction, 1)
@@ -1161,6 +1162,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || (instruction.opcode != .First && instruction.opcode != .Last) do return false
 	case .Limit_Active:
 		if frame.mode != .Normal || instruction.opcode != .Limit do return false
+	case .Skip_Active:
+		if frame.mode != .Normal || instruction.opcode != .Skip do return false
 	case .Try_Expression_Active, .Try_Catch_Active:
 		if frame.mode != .Normal || instruction.opcode != .Try do return false
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
@@ -1189,7 +1192,7 @@ resumed_composite_instruction_valid :: proc(
 	}
 	expected_operand_count: u8
 	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty do expected_operand_count = 1
-	else if frame.phase == .Limit_Active do expected_operand_count = 2
+	else if frame.phase == .Limit_Active || frame.phase == .Skip_Active do expected_operand_count = 2
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
 		expected_operand_count = 2
@@ -1568,7 +1571,7 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		} else {
 			frame.phase = .Complete
 		}
-	case .Limit_Active:
+	case .Limit_Active, .Skip_Active:
 		frame.phase = .Complete
 	case .Try_Expression_Active, .Try_Catch_Active:
 		frame.phase = .Complete
@@ -1846,6 +1849,18 @@ propagate_output :: proc(
 					return resource_step(free_error), true
 				}
 				frame.phase = .Complete
+			}
+			current = parent
+			continue
+		case .Skip_Active:
+			if frame.limit_remaining > 0 {
+				frame.limit_remaining -= 1
+				free_error := value.destroy_value(owned)
+				if free_error != nil {
+					storage.pending_value = value.take_value(owned)
+					return resource_step(free_error), true
+				}
+				return {}, false
 			}
 			current = parent
 			continue
@@ -5375,6 +5390,41 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Limit_Active
 				continue
+			case .Skip:
+				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				count_child, count_ok := child_instruction(storage, instruction, 0)
+				generator_child, generator_ok := child_instruction(storage, instruction, 1)
+				count_instruction, count_instruction_ok := program.program_instruction(storage.compiled, count_child)
+				if !count_ok || !generator_ok || !count_instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				count_value, count_error, count_cleanup := literal_value(storage, count_instruction)
+				if count_cleanup != nil || count_error != .None {
+					if value.kind_of(&count_value) != .Invalid { _ = value.destroy_value(&count_value) }
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				count_number, count_number_ok := value.number_value_get(&count_value)
+				_ = value.destroy_value(&count_value)
+				if !count_number_ok || count_number < 0 || count_number != f64(int(count_number)) {
+					result, ready := raise_runtime(storage, index, Runtime_Error{
+						kind = .User_Error,
+						input_kind = value.kind_of(&frame.input),
+						span = instruction.span,
+						key = "skip doesn't support negative count",
+					})
+					if ready do return result
+					continue
+				}
+				frame.limit_remaining = u64(int(count_number))
+				if storage.frame_count == len(storage.frames) {
+					capacity_error := grow_frames(storage)
+					if capacity_error != nil do return resource_step(capacity_error)
+					frame = &storage.frames[index]
+				}
+				input_copy := value.clone_value(&frame.input)
+				if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, generator_child, index, &input_copy) {
+					return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+				}
+				frame.phase = .Skip_Active
+				continue
 			case .Range:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 				start: f64
@@ -5893,7 +5943,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			if !continuation_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 
 		case .Unary_Active, .Fork_Left_Active, .Fork_Right_Active,
-		     .Limit_Active,
+		     .Limit_Active, .Skip_Active,
 		     .Sequence_Left_Active, .Sequence_Right_Active,
 		     .Field_Child_Active, .Field_Result_Active,
 		     .Index_Child_Active, .Index_Result_Active,
