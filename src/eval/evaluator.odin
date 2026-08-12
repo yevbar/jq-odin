@@ -1206,6 +1206,11 @@ capture_composite_instruction :: proc(
 		_, left_ok := child_instruction(storage, instruction, 0)
 		_, right_ok := child_instruction(storage, instruction, 1)
 		if !left_ok || !right_ok do return false
+	case .Defined_Or:
+		if instruction.operands_count != 2 do return false
+		_, left_ok := child_instruction(storage, instruction, 0)
+		_, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok do return false
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
 		if instruction.operands_count != 2 do return false
@@ -2220,6 +2225,20 @@ propagate_output :: proc(
 			if value.kind_of(&frame.binary_left) != .Invalid {
 				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
 			}
+			if instruction.opcode == .Defined_Or {
+				kind := value.kind_of(owned)
+				truthy := kind != .Null
+				if kind == .Boolean { truthy, _ = value.boolean_value_get(owned) }
+				if truthy { return propagate_output(storage, parent, owned) }
+				_ = value.destroy_value(owned)
+				child, ok := child_instruction(storage, instruction, 1)
+				input_copy := value.clone_value(&frame.input)
+				if !ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, parent, &input_copy) {
+					return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true
+				}
+				frame.phase = .Binary_Right_Active
+				return {}, false
+			}
 			frame.binary_left = value.take_value(owned)
 			child, ok := child_instruction(storage, instruction, 1)
 			input_copy := value.clone_value(&frame.input)
@@ -2229,6 +2248,10 @@ propagate_output :: proc(
 			frame.phase = .Binary_Right_Active
 			return {}, false
 		case .Binary_Right_Active:
+			if instruction.opcode == .Defined_Or {
+				_ = value.destroy_value(&frame.binary_left)
+				return propagate_output(storage, parent, owned)
+			}
 			result, runtime_kind, resource_error := apply_binary(instruction.opcode, &frame.binary_left, owned, instruction.operator_span, storage.allocator)
 			if resource_error != nil {
 				// The right result remains owned by this evaluator frame when the
@@ -2376,6 +2399,8 @@ begin_terminal_misuse_owned :: proc(
 is_binary_opcode :: proc(opcode: program.Opcode) -> bool {
 	#partial switch opcode {
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+		return true
+	case .Defined_Or:
 		return true
 	}
 	return false
@@ -6764,7 +6789,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Fork_Start_Left
 			case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow,
-			     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+			     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Defined_Or:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 				frame.phase = .Binary_Start_Left
 			case .Array, .Object:

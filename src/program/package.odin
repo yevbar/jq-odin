@@ -270,6 +270,8 @@ Opcode :: enum u8 {
 	Static_Field_Set_Number,
 	// Static_Index_Set_Number is appended to preserve existing serialized opcodes.
 	Static_Index_Set_Number,
+	// Defined_Or is appended to preserve existing serialized opcodes.
+	Defined_Or,
 }
 
 Operand_Kind :: enum u8 {
@@ -525,7 +527,7 @@ set_root :: proc(program: ^Program, root: Instruction_Index) -> bool {
 opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	switch opcode {
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
-	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Defined_Or:
 		return true
 	case .Pow, .Identity, .If, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 	     .In, .Inside,
@@ -600,6 +602,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Slice:
 		if count != 3 { return false }; expected_count = 3
 	case .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number:
+		if count != 2 { return false }; expected_count = 2
+	case .Defined_Or:
 		if count != 2 { return false }; expected_count = 2
 	case .Range:
 		if count != 1 && count != 2 && count != 3 { return false }; expected_count = count
@@ -763,7 +767,7 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return 0
 	case .Sequence, .Fork,
 	     .Add, .Subtract, .Multiply, .Divide, .Modulo,
-	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Defined_Or:
 		return 2
 	}
 	return 0

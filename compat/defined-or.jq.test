@@ -1,0 +1,10 @@
+# jq defined-or emits the left stream when it has a truthy value, otherwise
+# evaluates the right fallback.
+null // 3
+null
+
+false // 3
+null
+
+1 // 3
+null
