@@ -1,6 +1,6 @@
-# Bounded zero-argument @html format filter coverage.  Oracle escaping is
-# anchored by upstream/jq/tests/jq.test:102-104; format interpolation remains
-# deferred in this lane.
+# Bounded @html format filter coverage. Oracle escaping is anchored by
+# upstream/jq/tests/jq.test:102-104 and literal interpolation lowering by
+# upstream/jq/src/parser.y:505-530.
 @html
 "<script>& \"quote\" 'apostrophe'</script>"
 "&lt;script&gt;&amp; &quot;quote&quot; &apos;apostrophe&apos;&lt;/script&gt;"
@@ -12,3 +12,25 @@
 @html
 42
 "42"
+
+# Literal fragments remain raw while interpolation results are HTML escaped.
+@html "<b>\(.)</b>"
+"<&\"'"
+"<b>&lt;&amp;&quot;&apos;</b>"
+
+@html "<b>\(.name)</b>"
+{"name":"μ<&"}
+"<b>μ&lt;&amp;</b>"
+
+@html "\(.left):\(.right)"
+{"left":"<", "right":"&"}
+"&lt;:&amp;"
+
+@html ""
+null
+""
+
+@html "item=\(.[])"
+["<", "&"]
+"item=&lt;"
+"item=&amp;"

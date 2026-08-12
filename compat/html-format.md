@@ -7,6 +7,9 @@ then escapes the five HTML-sensitive ASCII characters (`&`, `<`, `>`, `'`, and
 `"`) as `&amp;`, `&lt;`, `&gt;`, `&apos;`, and `&quot;`.  Other bytes, including
 valid UTF-8, pass through unchanged.
 
-The format-argument/interpolation form (`@html "..."`) and other jq format
-filters remain outside this lane; they require a separate parser/program
-contract and are intentionally not claimed by this shard.
+The bounded format-string form now accepts literal fragments and interpolation
+queries, including multiple interpolations. Literal fragments are copied
+without formatting and each interpolation result is passed through `@html`
+before the existing string-addition path concatenates the segments. Plain jq
+string interpolation and format strings for directives other than `@html`
+remain deferred.

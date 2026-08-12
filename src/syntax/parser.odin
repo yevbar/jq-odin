@@ -278,8 +278,10 @@ Binary_Operator :: enum u8 {
 // to implicit identity and therefore has no explicit child node. Container
 // nodes retain their source role in container_kind and use value/next links
 // into this same arena; these links are source syntax, not runtime Values.
-// Binary has left and right operands plus an exact operator_span; neither span
-// owns source bytes.
+// Binary has left and right operands plus an operator_span; for source binary
+// operators it is the exact operator token, while parser-lowered format-string
+// concatenation uses the source span that begins the newly joined segment.
+// Neither span owns source bytes.
 Node :: struct {
 	form:              Node_Form,
 	kind:              Node_Kind,
@@ -822,6 +824,22 @@ parse_pipe :: proc(
 				if format == "@tsv" do kind = .Tsv
 				if format == "@sh" do kind = .Sh
 				advance(parser)
+				if kind == .Html && token_is(parser, .String_Start) {
+					new_term, format_ok := append_html_string_node(
+						parser,
+						token.span,
+						parser.lookahead.token.span,
+						group_depth+minus_depth,
+						live_pipe_count,
+						live_comma_count,
+						live_binary_count,
+						term_prefix_overhead,
+						term_has_postfix,
+					)
+					if !format_ok do return {}, false
+					term = new_term
+					break
+				}
 				new_term, format_ok := append_node(parser, Node{kind = kind, span = token.span})
 				if !format_ok do return {}, false
 				term = new_term
@@ -2441,19 +2459,146 @@ append_string_node :: proc(
 	close_start, _, close_ok := diagnostic.span_offsets(parser.source, close_span)
 	assert(close_ok && close_start >= open_end)
 	contents := diagnostic.source_bytes(parser.source)[open_end:close_start]
+	span, span_ok := spanning(parser, open_span, close_span)
+	assert(span_ok)
+	node, node_ok := append_decoded_string_node(parser, contents, span, open_end)
+	if !node_ok {
+		return {}, false
+	}
+	advance(parser)
+	return node, true
+}
+
+// append_html_string_node lowers the bounded jq format-string form directly
+// into existing syntax. Literal fragments remain unformatted constants;
+// interpolation queries pipe through Html; adjacent segments concatenate with
+// Add. This preserves package boundaries and requires no new program opcode.
+@(private="package")
+append_html_string_node :: proc(
+	parser: ^Parser,
+	format_span, open_span: diagnostic.Span,
+	live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead: int,
+	has_postfix: bool,
+) -> (Node_Id, bool) {
+	invalid_id := Node_Id(-1)
+	advance(parser)
+	if parser.failed do return {}, false
+	if parser.lookahead.kind != .Lexical_Error &&
+	   parser_stack_budget_exhausted(parser,
+		live_prefix_depth,
+		live_pipe_count,
+		live_comma_count,
+		live_binary_count,
+		event_overhead+JQ_STRING_TERM_STACK_INCREMENT,
+		has_postfix,
+	) {
+		fail_resource(parser, .Out_Of_Memory)
+		return {}, false
+	}
+
+	root := invalid_id
+	join_anchor := open_span
+	close_span: diagnostic.Span
+	for {
+		segment := invalid_id
+		if token_is(parser, .String_Text) {
+			text_token := parser.lookahead.token
+			start, end, ok := diagnostic.span_offsets(parser.source, text_token.span)
+			assert(ok && end >= start)
+			contents := diagnostic.source_bytes(parser.source)[start:end]
+			segment_ok: bool
+			segment, segment_ok = append_decoded_string_node(parser, contents, text_token.span, start)
+			if !segment_ok do return {}, false
+			join_anchor = text_token.span
+			advance(parser)
+		} else if token_is(parser, .String_Interpolation_Start) {
+			interpolation_start := parser.lookahead.token
+			advance(parser)
+			query, query_ok := parse_pipe(parser, .String_Interpolation_End)
+			if !query_ok do return {}, false
+			if !token_is(parser, .String_Interpolation_End) {
+				fail_from_lookahead(parser, .Close_String)
+				return {}, false
+			}
+			interpolation_end := parser.lookahead.token
+			html, html_ok := append_node(parser, Node{kind = .Html, span = format_span})
+			if !html_ok do return {}, false
+			interpolation_span, interpolation_span_ok := spanning(parser, interpolation_start.span, interpolation_end.span)
+			assert(interpolation_span_ok)
+			segment, query_ok = append_node(parser, Node{
+				kind = .Pipe,
+				span = interpolation_span,
+				left = query,
+				right = html,
+			})
+			if !query_ok do return {}, false
+			join_anchor = interpolation_start.span
+			advance(parser)
+		} else if token_is(parser, .String_End) {
+			close_span = parser.lookahead.token.span
+			break
+		} else if parser.lookahead.kind == .End_Of_Input {
+			fail_unterminated_string(parser, open_span)
+			return {}, false
+		} else {
+			fail_from_lookahead(parser, .Close_String)
+			return {}, false
+		}
+
+		if root == invalid_id {
+			root = segment
+		} else {
+			span, span_ok := spanning(parser, parser.nodes.storage[int(root)].span, parser.nodes.storage[int(segment)].span)
+			assert(span_ok)
+			joined, joined_ok := append_node(parser, Node{
+				form = .Binary,
+				span = span,
+				left = root,
+				right = segment,
+				binary_operator = .Add,
+				operator_span = join_anchor,
+				has_operator_span = true,
+			})
+			if !joined_ok do return {}, false
+			root = joined
+		}
+	}
+
+	full_span, full_span_ok := spanning(parser, format_span, close_span)
+	assert(full_span_ok)
+	if root == invalid_id {
+		full_start, _, offsets_ok := diagnostic.span_offsets(parser.source, full_span)
+		assert(offsets_ok)
+		empty, empty_ok := append_decoded_string_node(parser, "", full_span, full_start)
+		if !empty_ok do return {}, false
+		root = empty
+	} else {
+		parser.nodes.storage[int(root)].span = full_span
+	}
+	advance(parser)
+	return root, true
+}
+
+@(private="package")
+append_decoded_string_node :: proc(
+	parser: ^Parser,
+	contents: string,
+	span: diagnostic.Span,
+	contents_start: int,
+) -> (Node_Id, bool) {
 	sizing := decoded_string_size(contents)
 	if sizing.kind == .Size_Overflow {
 		fail_resource(parser, .Out_Of_Memory)
 		return {}, false
 	}
 	if sizing.kind == .Invalid {
-		span, span_ok := diagnostic.make_span(
+		error_span, span_ok := diagnostic.make_span(
 			parser.source,
-			open_end+sizing.error_offset,
-			open_end+sizing.error_offset+1,
+			contents_start+sizing.error_offset,
+			contents_start+sizing.error_offset+1,
 		)
 		assert(span_ok)
-		fail_string(parser, span, sizing.error_message)
+		fail_string(parser, error_span, sizing.error_message)
 		return {}, false
 	}
 	decoded_count, narrow_ok := narrow_decoded_string_size(sizing.decoded_bytes)
@@ -2501,8 +2646,6 @@ append_string_node :: proc(
 		return {}, false
 	}
 
-	span, span_ok := spanning(parser, open_span, close_span)
-	assert(span_ok)
 	node, node_ok := append_node(parser, Node{
 		kind = .String,
 		span = span,
@@ -2512,7 +2655,6 @@ append_string_node :: proc(
 	if !node_ok {
 		return {}, false
 	}
-	advance(parser)
 	return node, true
 }
 

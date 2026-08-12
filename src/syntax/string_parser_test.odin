@@ -247,6 +247,82 @@ test_plain_string_rejects_interpolation_and_unterminated_forms :: proc(t: ^testi
 }
 
 @(test)
+test_html_format_string_lowers_literal_fragments_and_interpolation :: proc(t: ^testing.T) {
+	parser: Parser
+	source, outcome := parse_test_filter(t, &parser, `@html "<b>\(.name)</b>"`)
+	expect_parse_success(t, &parser, outcome)
+
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.form, Node_Form.Binary)
+	testing.expect_value(t, root.binary_operator, Binary_Operator.Add)
+	expect_span(t, source, root.span, 0, len(`@html "<b>\(.name)</b>"`))
+
+	left := parser.nodes.storage[int(root.left)]
+	testing.expect_value(t, left.form, Node_Form.Binary)
+	testing.expect_value(t, left.binary_operator, Binary_Operator.Add)
+	testing.expect_value(t, parser.nodes.storage[int(left.left)].string_text, "<b>")
+
+	interpolation := parser.nodes.storage[int(left.right)]
+	testing.expect_value(t, interpolation.kind, Node_Kind.Pipe)
+	testing.expect_value(t, parser.nodes.storage[int(interpolation.left)].kind, Node_Kind.Field)
+	testing.expect_value(t, parser.nodes.storage[int(interpolation.right)].kind, Node_Kind.Html)
+	testing.expect_value(t, parser.nodes.storage[int(root.right)].string_text, "</b>")
+	testing.expect_value(t, parser.string_allocations.count, 2)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_html_format_string_accepts_empty_literal_and_multiple_interpolations :: proc(t: ^testing.T) {
+	empty_parser: Parser
+	_, empty_outcome := parse_test_filter(t, &empty_parser, `@html ""`)
+	expect_parse_success(t, &empty_parser, empty_outcome)
+	empty := empty_parser.nodes.storage[int(empty_outcome.root)]
+	testing.expect_value(t, empty.kind, Node_Kind.String)
+	testing.expect_value(t, empty.string_text, "")
+	testing.expect_value(t, destroy_parser(&empty_parser), runtime.Allocator_Error.None)
+
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, `@html "\(.left):\(.right)"`)
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.form, Node_Form.Binary)
+	testing.expect_value(t, parser.nodes.storage[int(root.right)].kind, Node_Kind.Pipe)
+	left := parser.nodes.storage[int(root.left)]
+	testing.expect_value(t, left.form, Node_Form.Binary)
+	testing.expect_value(t, parser.nodes.storage[int(left.left)].kind, Node_Kind.Pipe)
+	testing.expect_value(t, parser.nodes.storage[int(left.right)].string_text, ":")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_html_format_string_allocation_failures_are_atomic_and_leak_free :: proc(t: ^testing.T) {
+	text :: `@html "<b>\(.name)</b>"`
+	baseline_data := Test_Allocator{backing = context.allocator, alive = true}
+	baseline: Parser
+	_, baseline_outcome := parse_test_filter(t, &baseline, text, test_allocator(&baseline_data))
+	expect_parse_success(t, &baseline, baseline_outcome)
+	allocation_points := baseline_data.request_count
+	testing.expect(t, allocation_points >= 4)
+	testing.expect_value(t, destroy_parser(&baseline), runtime.Allocator_Error.None)
+
+	for fail_at in 1..=allocation_points {
+		tracker: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&tracker, context.allocator)
+		data := Test_Allocator{
+			backing = mem.tracking_allocator(&tracker),
+			fail_at = fail_at,
+			alive = true,
+		}
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text, test_allocator(&data))
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Resource_Failure)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+		testing.expect_value(t, len(tracker.allocation_map), 0)
+		mem.tracking_allocator_destroy(&tracker)
+	}
+}
+
+@(test)
 test_genuinely_unterminated_strings_point_at_opening_delimiter :: proc(t: ^testing.T) {
 	cases := [?]string{
 		`"`,
