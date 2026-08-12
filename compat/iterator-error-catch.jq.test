@@ -1,0 +1,6 @@
+# jq preserves the typed iterator diagnostic when it is caught as a value.
+try .[] catch .
+123
+
+map(try .a[] catch ., try .a.[] catch ., .a[]?, .a.[]?)
+[{"a":[1,2]},{"a":123}]

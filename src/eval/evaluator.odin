@@ -3233,6 +3233,40 @@ runtime_value_kind_name :: proc(kind: value.Kind) -> string {
 	return "invalid"
 }
 
+// jq preserves the typed iterator failure as the catch value. Keep the
+// rendered input owned by the Runtime_Error transport so try/catch receives
+// `Cannot iterate over number (123)` (rather than an empty placeholder).
+cannot_iterate_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	text, text_ok, text_error := text_coercion_text(input, allocator)
+	if text_error != nil || !text_ok {
+		return "", text_error
+	}
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil {
+		if len(text) > 0 { _ = runtime.mem_free_bytes(transmute([]byte)text, allocator) }
+		return "", init_error
+	}
+	kind := runtime_value_kind_name(value.kind_of(input))
+	if strings.write_string(&builder, "Cannot iterate over ") != len("Cannot iterate over ") ||
+	   strings.write_string(&builder, kind) != len(kind) ||
+	   strings.write_string(&builder, " (") != 2 ||
+	   strings.write_string(&builder, text) != len(text) ||
+	   strings.write_byte(&builder, ')') != 1 {
+		strings.builder_destroy(&builder)
+		if len(text) > 0 { _ = runtime.mem_free_bytes(transmute([]byte)text, allocator) }
+		return "", nil
+	}
+	if len(text) > 0 {
+		free_error := runtime.mem_free_bytes(transmute([]byte)text, allocator)
+		if free_error != nil && free_error != .Mode_Not_Implemented {
+			strings.builder_destroy(&builder)
+			return "", free_error
+		}
+	}
+	return strings.to_string(builder), nil
+}
+
 @(private)
 fromjson_parse_runtime_key :: proc(
 	err: json.Scalar_Parse_Error,
@@ -5043,7 +5077,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if name == "" {
 					kind := value.kind_of(&frame.input)
 					if kind != .Array && kind != .Object {
-						result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=kind, span=instruction.span})
+						key, key_error := cannot_iterate_runtime_key(&frame.input, storage.allocator)
+						if key_error != nil { return resource_step(key_error) }
+						err := Runtime_Error{kind=.Cannot_Iterate, input_kind=kind, span=instruction.span, key=key}
+						result, ready := raise_runtime(storage, index, err)
+						if len(key) > 0 {
+							free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator)
+							if free_error != nil && free_error != .Mode_Not_Implemented { return resource_step(free_error) }
+						}
 						if ready do return result
 						continue
 					}

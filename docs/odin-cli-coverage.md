@@ -598,6 +598,10 @@ behavioral oracle.
   NaN opcode, covering its observable arithmetic behavior. The combined string
   arithmetic shard passes 4/4, and the authoritative catalog is **200/522
   passed and 322 failed**.
+- Iterator error catch values (`decision 0212`) now retain jq's typed
+  `Cannot iterate over <kind> (<value>)` message through `try .[] catch .`.
+  The focused shard passes 2/2, package checks and full tests pass, and a fresh
+  catalog run measures **281/522 passed and 241 failed**.
 
 ## Remaining high-value clusters
 
