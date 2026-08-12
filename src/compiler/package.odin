@@ -61,8 +61,8 @@ binary_opcode :: proc(operator: syntax.Binary_Operator) -> (program.Opcode, bool
 	case .Greater_Equal: return .Greater_Equal, true
 	case .Defined_Or:
 		return .Defined_Or, true
-	case .Or, .And:
-		return {}, false
+	case .Or: return .Or, true
+	case .And: return .And, true
 	}
 	return {}, false
 }

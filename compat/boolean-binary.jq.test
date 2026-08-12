@@ -1,0 +1,8 @@
+false or true
+null
+
+true and false
+null
+
+{x: 1 + 2, y: false or true, z: null // 3}
+null

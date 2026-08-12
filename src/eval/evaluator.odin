@@ -1212,7 +1212,7 @@ capture_composite_instruction :: proc(
 		_, right_ok := child_instruction(storage, instruction, 1)
 		if !left_ok || !right_ok do return false
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow,
-	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Or, .And:
 		if instruction.operands_count != 2 do return false
 		_, left_ok := child_instruction(storage, instruction, 0)
 		_, right_ok := child_instruction(storage, instruction, 1)
@@ -2398,7 +2398,7 @@ begin_terminal_misuse_owned :: proc(
 @(private)
 is_binary_opcode :: proc(opcode: program.Opcode) -> bool {
 	#partial switch opcode {
-	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+	case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Or, .And:
 		return true
 	case .Defined_Or:
 		return true
@@ -5114,6 +5114,12 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 		case .Greater: return value.boolean_value(comparison > 0), .None, nil
 		case .Greater_Equal: return value.boolean_value(comparison >= 0), .None, nil
 		}
+	case .Or, .And:
+		left_truthy := value.kind_of(left) != .Null
+		if value.kind_of(left) == .Boolean { left_truthy, _ = value.boolean_value_get(left) }
+		right_truthy := value.kind_of(right) != .Null
+		if value.kind_of(right) == .Boolean { right_truthy, _ = value.boolean_value_get(right) }
+		return value.boolean_value(left_truthy || right_truthy) if opcode == .Or else value.boolean_value(left_truthy && right_truthy), .None, nil
 	}
 	return {}, .None, .Out_Of_Memory
 }
@@ -6788,8 +6794,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Fork_Start_Left
-			case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow,
-			     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Defined_Or:
+		case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Pow,
+			     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Defined_Or, .Or, .And:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 				frame.phase = .Binary_Start_Left
 			case .Array, .Object:

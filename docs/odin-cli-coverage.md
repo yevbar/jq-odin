@@ -614,6 +614,10 @@ behavioral oracle.
   authoritative catalog measures **320/522 passed and 202 failed**. Comma
   composition inside zero-catch try, defined-or, and dynamic catches remain
   deferred.
+- Boolean `and`/`or` (`57e098bc`, decision `0252`) now use append-only binary
+  opcodes with jq truthiness. The focused shard passes 3/3, package and full
+  unit suites pass, and the authoritative catalog measures **322/522 passed
+  and 200 failed**. Generator short-circuit behavior remains deferred.
 
 ## Remaining high-value clusters
 
