@@ -10,3 +10,8 @@ null
 last
 null
 null
+
+# Generator form returns the final output.
+last(range(.))
+3
+2

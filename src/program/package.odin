@@ -571,7 +571,10 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Flatten:
 		if count != 0 && count != 1 do return false
 		expected_count = count
-	case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+	case .Last, .First:
+		if count > 1 { return false }
+		expected_count = count
+	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		expected_count = 0
 	case .Any_Not, .All_Not:
 		expected_count = 0
@@ -653,8 +656,10 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 @(private="package")
 instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> Count {
 	switch instruction.opcode {
-	case .Identity, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate, .Any_Not, .All_Not, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
+	case .Identity, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate, .Any_Not, .All_Not, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
 		return 0
+	case .Last, .First:
+		return instruction.operands_count
 	case .Flatten:
 		return instruction.operands_count
 	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Error, .IsEmpty, .Strftime, .Strptime:

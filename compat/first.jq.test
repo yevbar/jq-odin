@@ -10,3 +10,12 @@ null
 first
 null
 null
+
+# Generator forms consume only the first output.
+first(range(.))
+3
+0
+
+first(1,error("foo"))
+null
+1

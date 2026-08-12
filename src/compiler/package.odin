@@ -119,7 +119,11 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
 			string_header_absent(node.string_text)
-	case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+	case .Last, .First:
+		return (node.has_child || node.child == 0) && no_edges && no_name && no_container_links && !node.has_value &&
+			       !node.boolean_value && no_number && !node.has_string_text &&
+		       string_header_absent(node.string_text)
+	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 			       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
@@ -268,7 +272,10 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	}
 	switch node.kind {
-	case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+	case .Last, .First:
+		if node.has_child { return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) }
+		return true
+	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return true
 	case .Any_Not, .All_Not:
 		return true
@@ -557,8 +564,12 @@ lower_filter :: proc(
 			   !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
-		case .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
-			// Last is an operand-free builtin.
+		case .Last, .First:
+			if node.has_child {
+				if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
+			}
+		case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+			// Operand-free math/date builtins.
 		case .Any_Not, .All_Not:
 			// Negated any/all are operand-free predicates.
 	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
@@ -867,10 +878,13 @@ lower_filter :: proc(
 			}
 			name_start, name_end, _ := diagnostic.span_offsets(source, node.name_span); name := bytes[name_start:name_end]
 			assert(program.set_text(output, program.Byte_Offset(text_at), name)); assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text,text_start=program.Byte_Offset(text_at),text_count=program.Count(len(name))})); text_at += u32(len(name)); operand_at += 1; instruction.operands_count = 4
-		case .Last:
-			instruction.opcode = .Last
-		case .First:
-			instruction.opcode = .First
+		case .Last, .First:
+			instruction.opcode = program.Opcode.Last if node.kind == .Last else program.Opcode.First
+			if node.has_child {
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
+				operand_at += 1
+				instruction.operands_count = 1
+			}
 		case .Log10:
 			instruction.opcode = .Log10
 		case .Log2:

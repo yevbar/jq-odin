@@ -97,6 +97,9 @@ frame_phase :: enum u8 {
 	Enter,
 	Leaf_Yielded,
 	Unary_Active,
+	First_Empty,
+	Last_Result,
+	Last_Empty,
 	Try_Start_Expression,
 	Try_Start_Catch,
 	Try_Expression_Active,
@@ -163,6 +166,8 @@ eval_frame :: struct {
 	iterator_cursor: int,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
+	selected_value: value.Value,
+	selected_seen: bool,
 }
 
 @(private)
@@ -562,6 +567,9 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.reduce_binding)
 	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.selected_value)
+	if free_error != nil do return free_error
+	frame.selected_seen = false
 	frame.constructor_child = 0
 	frame.constructor_cursor = 0
 	frame.constructor_total = 0
@@ -1047,6 +1055,10 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
+	case .First, .Last:
+		if instruction.operands_count != 1 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
 	case .Field:
 		if instruction.operands_count != 2 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1134,9 +1146,11 @@ resumed_composite_instruction_valid :: proc(
 	#partial switch frame.phase {
 	case .Unary_Active:
 		if frame.mode != .Normal ||
-		   (instruction.opcode != .Parenthesized && instruction.opcode != .Optional && instruction.opcode != .Negate) {
+		   (instruction.opcode != .Parenthesized && instruction.opcode != .Optional && instruction.opcode != .Negate && instruction.opcode != .First && instruction.opcode != .Last) {
 			return false
 		}
+	case .First_Empty, .Last_Result, .Last_Empty:
+		if frame.mode != .Normal || (instruction.opcode != .First && instruction.opcode != .Last) do return false
 	case .Try_Expression_Active, .Try_Catch_Active:
 		if frame.mode != .Normal || instruction.opcode != .Try do return false
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
@@ -1164,7 +1178,7 @@ resumed_composite_instruction_valid :: proc(
 		return true
 	}
 	expected_operand_count: u8
-	if frame.phase == .Unary_Active do expected_operand_count = 1
+	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty do expected_operand_count = 1
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
 		expected_operand_count = 2
@@ -1536,7 +1550,13 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	if !ok || !resumed_composite_instruction_valid(storage, frame, instruction) do return false
 	#partial switch frame.phase {
 	case .Unary_Active:
-		frame.phase = .Complete
+		if instruction.opcode == .First {
+			frame.phase = .First_Empty
+		} else if instruction.opcode == .Last {
+			frame.phase = .Last_Result if frame.selected_seen else .Last_Empty
+		} else {
+			frame.phase = .Complete
+		}
 	case .Try_Expression_Active, .Try_Catch_Active:
 		frame.phase = .Complete
 	case .Fork_Left_Active:
@@ -1773,6 +1793,20 @@ propagate_output :: proc(
 				}
 				_ = value.destroy_value(owned)
 				owned^ = value.number_value(-number)
+			} else if instruction.opcode == .First {
+				storage.frames[current].phase = .Complete
+				frame.phase = .Complete
+				current = parent
+				continue
+			} else if instruction.opcode == .Last {
+				free_error := value.destroy_value(&frame.selected_value)
+				if free_error != nil {
+					storage.pending_value = value.take_value(owned)
+					return resource_step(free_error), true
+				}
+				frame.selected_value = value.take_value(owned)
+				frame.selected_seen = true
+				return {}, false
 			}
 			current = parent
 		case .Try_Catch_Active, .Fork_Left_Active, .Fork_Right_Active:
@@ -5355,6 +5389,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Try_Start_Expression
 			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+				if (instruction.opcode == .First || instruction.opcode == .Last) && instruction.operands_count == 1 {
+					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+					if storage.frame_count == len(storage.frames) {
+						capacity_error := grow_frames(storage)
+						if capacity_error != nil do return resource_step(capacity_error)
+						frame = &storage.frames[index]
+					}
+					child, child_ok := child_instruction(storage, instruction, 0)
+					input_copy := value.clone_value(&frame.input)
+					if !child_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, index, &input_copy) {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+					}
+					frame.phase = .Unary_Active
+					continue
+				}
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
@@ -5746,6 +5795,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			result, ready := propagate_output(storage, index, &output)
 			if ready do return result
 
+		case .First_Empty, .Last_Result, .Last_Empty:
+			if frame.phase == .First_Empty || frame.phase == .Last_Empty {
+				// Generator forms preserve jq's empty-stream cardinality: an
+				// empty child emits no value (unlike the zero-argument array
+				// selectors, which return null).
+				frame.phase = .Complete
+				continue
+			}
+			output := value.take_value(&frame.selected_value)
+			frame.selected_seen = false
+			frame.phase = .Complete
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
 		case .Leaf_Yielded, .Complete:
 			free_error, continuation_ok := finish_top_frame(storage)
 			if free_error != nil do return resource_step(free_error)
