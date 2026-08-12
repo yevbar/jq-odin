@@ -2470,6 +2470,73 @@ optional_suppresses_runtime_only_and_preserves_prior_outputs :: proc(t: ^testing
 }
 
 @(test)
+optional_postfix_iterator_exhausts_while_adjacent_try_catches :: proc(t: ^testing.T) {
+	// Field("a"), then the existing empty-name Field representation of `.a[]`.
+	// Optional and Try wrap that same iterator instruction without a new opcode.
+	instructions := [5]program.Instruction{
+		{opcode = .Field, operands_start = 0, operands_count = 1},
+		{opcode = .Field, operands_start = 1, operands_count = 2},
+		{opcode = .Optional, operands_start = 3, operands_count = 1},
+		{opcode = .Identity, operands_start = 4},
+		{opcode = .Try, operands_start = 4, operands_count = 2},
+	}
+	operands := [6]program.Operand{
+		text_operand(0, 1),
+		instruction_operand(0), text_operand(1, 0),
+		instruction_operand(1),
+		instruction_operand(1), instruction_operand(3),
+	}
+
+	optional_program: program.Program
+	build_program(t, &optional_program, instructions[:], operands[:], "a", 2)
+
+	items, items_error := value.array_value(context.allocator)
+	testing.expect_value(t, value.array_error_kind(&items_error), value.Array_Error.None)
+	numbers := [?]f64{1, 2}
+	for number in numbers {
+		item := value.number_value(number)
+		displaced, append_error := value.array_append_take(&items, &item)
+		testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+		testing.expect_value(t, value.destroy_value(&displaced), runtime.Allocator_Error(nil))
+	}
+	array_input, array_input_error := value.object_value(context.allocator)
+	testing.expect_value(t, value.object_error_kind(&array_input_error), value.Object_Error.None)
+	object_put(t, &array_input, "a", value.take_value(&items))
+
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &optional_program, &array_input, context.allocator).kind, Init_Error_Kind.None)
+	first := step_take(t, &evaluator)
+	second := step_take(t, &evaluator)
+	expect_number(t, &first, 1)
+	expect_number(t, &second, 2)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+
+	scalar_input, scalar_input_error := value.object_value(context.allocator)
+	testing.expect_value(t, value.object_error_kind(&scalar_input_error), value.Object_Error.None)
+	object_put(t, &scalar_input, "a", value.number_value(123))
+	testing.expect_value(t, init_evaluator(&evaluator, &optional_program, &scalar_input, context.allocator).kind, Init_Error_Kind.None)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &optional_program)
+
+	try_program: program.Program
+	build_program(t, &try_program, instructions[:], operands[:], "a", 4)
+	scalar_input, scalar_input_error = value.object_value(context.allocator)
+	testing.expect_value(t, value.object_error_kind(&scalar_input_error), value.Object_Error.None)
+	object_put(t, &scalar_input, "a", value.number_value(123))
+	testing.expect_value(t, init_evaluator(&evaluator, &try_program, &scalar_input, context.allocator).kind, Init_Error_Kind.None)
+	caught := step_take(t, &evaluator)
+	caught_text, caught_ok := value.string_borrowed(&caught)
+	testing.expect(t, caught_ok)
+	testing.expect_value(t, caught_text, "Cannot iterate over number (123)")
+	testing.expect_value(t, value.destroy_value(&caught), runtime.Allocator_Error(nil))
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &try_program)
+}
+
+@(test)
 static_error_owns_message_and_optional_suppresses_with_cleanup :: proc(t: ^testing.T) {
 	instructions := [3]program.Instruction{
 		{opcode = .Identity, operands_start = 0, operands_count = 1, has_literal = true, literal_kind = .String},

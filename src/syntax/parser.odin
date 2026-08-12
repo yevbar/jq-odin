@@ -1346,7 +1346,8 @@ parse_pipe :: proc(
 					}
 					argument_closing := Token_Kind.Close_Paren
 					if spelling == "map" || spelling == "map_values" do argument_closing = .Invalid
-					argument, argument_ok := parse_pipe(parser, argument_closing, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "isempty")
+					stop_argument_at_comma := spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "isempty" && spelling != "map" && spelling != "map_values"
+					argument, argument_ok := parse_pipe(parser, argument_closing, stop_argument_at_comma)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
 						fail_from_lookahead(parser, .Close_Paren)
 						return {}, false

@@ -2,5 +2,13 @@
 try .[] catch .
 123
 
+.a[]?, .a.[]?
+{"a":[1,2]}
+1
+2
+1
+2
+
 map(try .a[] catch ., try .a.[] catch ., .a[]?, .a.[]?)
 [{"a":[1,2]},{"a":123}]
+[1,2,1,2,1,2,1,2,"Cannot iterate over number (123)","Cannot iterate over number (123)"]

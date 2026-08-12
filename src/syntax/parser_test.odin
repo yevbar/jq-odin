@@ -3866,3 +3866,28 @@ try_catch_stops_before_surrounding_pipe :: proc(t: ^testing.T) {
 	testing.expect_value(t, second_try.kind, Node_Kind.Try)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
+
+@(test)
+map_argument_retains_try_and_optional_postfix_comma_stream :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source(
+		"<optional-postfix-map>",
+		`map(try .a[] catch ., try .a.[] catch ., .a[]?, .a.[]?)`,
+	)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Map)
+	testing.expect(t, root.has_child)
+	testing.expect_value(t, parser.nodes.storage[int(root.child)].kind, Node_Kind.Comma)
+
+	try_count, optional_count := 0, 0
+	for node in parser.nodes.storage[:parser.nodes.count] {
+		if node.kind == .Try do try_count += 1
+		if node.kind == .Optional do optional_count += 1
+	}
+	testing.expect_value(t, try_count, 2)
+	testing.expect_value(t, optional_count, 2)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
