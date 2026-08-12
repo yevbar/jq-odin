@@ -859,12 +859,12 @@ parse_pipe :: proc(
 						advance(parser); elif_else_ok: bool; elif_else, elif_else_ok = parse_pipe(parser, .End, false)
 						if !elif_else_ok || !token_is(parser, .End) { fail_from_lookahead(parser, .Expression); return {}, false }
 					} else {
-						elif_else, _ = append_node(parser, Node{kind=.Empty, span=elif_token.span})
+						elif_else, _ = append_node(parser, Node{kind=.Identity, span=elif_token.span})
 					}
 					elif_span, _ := spanning(parser, elif_token.span, parser.lookahead.token.span)
 					else_branch, _ = append_node(parser, Node{kind=.If, span=elif_span, if_condition=elif_condition, has_if_condition=true, if_then=elif_then, has_if_then=true, if_else=elif_else, has_if_else=true})
 				} else {
-					else_branch, ok3 = append_node(parser, Node{kind=.Empty, span=if_token.span})
+					else_branch, ok3 = append_node(parser, Node{kind=.Identity, span=if_token.span})
 					if !ok3 { return {}, false }
 				}
 				end_token := parser.lookahead.token; advance(parser)
