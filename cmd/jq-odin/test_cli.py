@@ -250,7 +250,10 @@ def expect_module_loading(
         if (actual.returncode, actual.stdout, actual.stderr) != wanted:
             raise AssertionError(f"field context substitution: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
         actual = run(candidate, ["-L", directory, "-n", 'include "contexts"; variable(7)'])
-        wanted = (3, b"", b"jq-odin: filter parse error\n")
+        # The module body parses successfully; the undefined `$x` is rejected
+        # during lowering after expansion, so the current pipeline correctly
+        # classifies this as a compile error.
+        wanted = (3, b"", b"jq-odin: filter compile error\n")
         if (actual.returncode, actual.stdout, actual.stderr) != wanted:
             raise AssertionError(f"variable context substitution: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
         actual = run(candidate, ["-L", directory, "-n", 'include "contexts"; format(7)'])
