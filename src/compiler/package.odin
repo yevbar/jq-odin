@@ -799,13 +799,10 @@ lower_filter :: proc(
 			}
 			name_start, name_end, _ := diagnostic.span_offsets(source, node.name_span)
 			name := node.string_text if node.string_shorthand else bytes[name_start:name_end]
-			iterator := !node.string_shorthand && len(name) == 0
-			if !iterator {
-				text_ok := program.set_text(output, program.Byte_Offset(text_at), name)
-				assert(text_ok)
-			}
+			text_ok := program.set_text(output, program.Byte_Offset(text_at), name)
+			assert(text_ok)
 			operand_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
-				kind = .Iterator if iterator else .Text,
+				kind = .Text,
 				text_start = program.Byte_Offset(text_at),
 				text_count = program.Count(len(name)),
 			})
