@@ -126,6 +126,7 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 		{".|.field", .Sequence},
 		{".?", .Optional},
 		{"..", .Recurse},
+		{"recurse", .Recurse},
 		{"atan", .Atan},
 		{"ascii_downcase", .Ascii_Downcase},
 		{"ascii_upcase", .Ascii_Upcase},

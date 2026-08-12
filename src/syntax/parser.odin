@@ -1173,6 +1173,12 @@ parse_pipe :: proc(
 					kind = .Cosh
 				} else if spelling == "acosh" {
 					kind = .Acosh
+				} else if spelling == "recurse" {
+					// jq's zero-argument recurse builtin is the same
+					// preorder traversal as the standalone `..` spelling.
+					// Keep it on the existing operand-free Recurse contract;
+					// parameterized recurse calls remain unsupported here.
+					kind = .Recurse
 				} else if spelling == "error" {
 					kind = .Error
 				} else if spelling == "in" {

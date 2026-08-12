@@ -1,0 +1,17 @@
+# The zero-argument recurse builtin is jq's named spelling for `..`.
+[recurse]
+{"a":[1,{"b":2}],"c":3}
+[{"a":[1,{"b":2}],"c":3},[1,{"b":2}],1,{"b":2},2,3]
+
+recurse
+{"a":[1,{"b":2}],"c":3}
+{"a":[1,{"b":2}],"c":3}
+[1,{"b":2}]
+1
+{"b":2}
+2
+3
+
+[recurse]
+null
+[null]

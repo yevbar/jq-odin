@@ -637,6 +637,9 @@ behavioral oracle.
 - Zero-catch `try` comma boundaries (decision `0256`) now stop implicit
   `try EXP` before surrounding comma streams; the focused shard passes 3/3 and
   package/full validation remain green. Dynamic catches remain deferred.
+- Zero-argument `recurse` (decision `0257`) now recognizes jq's named
+  recursive-descent builtin and reuses the existing explicit preorder frame;
+  its focused shard passes 3/3. Parameterized `recurse(f)` remains deferred.
 
 ## Remaining high-value clusters
 
