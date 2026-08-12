@@ -1786,6 +1786,73 @@ parse_pipe :: proc(
 			// binding body to see the pre-pipe input instead of the piped value.
 			left := current if pipe_root != invalid_id else result
 			advance(parser)
+			// A bounded, literal array destructuring form is lowered into
+			// ordinary lexical bindings over static indexes.  This keeps the
+			// existing Binding/Variable evaluator contract intact while covering
+			// the common `. as [$a, $b] | ...` jq idiom.  General patterns and
+			// object destructuring remain outside this narrow contract.
+			if token_is(parser, .Open_Bracket) {
+				if pipe_root != invalid_id || parser.nodes.storage[int(left)].kind != .Identity ||
+				   parser.nodes.storage[int(left)].has_child {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				pattern, pattern_ok := parse_container(parser, .Open_Bracket)
+				if !pattern_ok || pattern < 0 || int(pattern) >= len(parser.nodes.storage) {
+					return {}, false
+				}
+				pattern_node := parser.nodes.storage[int(pattern)]
+				if pattern_node.container_kind != .Array || !pattern_node.has_value {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				entries := parser.nodes.storage[int(pattern_node.value)]
+				if entries.kind != .Comma || entries.left < 0 || int(entries.left) >= len(parser.nodes.storage) ||
+				   entries.right < 0 || int(entries.right) >= len(parser.nodes.storage) {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				variables := [2]Node_Id{entries.left, entries.right}
+				for variable in variables {
+					if parser.nodes.storage[int(variable)].kind != .Variable {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+				}
+				if !token_is(parser, .Pipe) {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				advance(parser)
+				body, body_ok := parse_pipe(parser, closing, stop_at_comma)
+				if !body_ok do return {}, false
+				nested := body
+				for index := 1; index >= 0; index -= 1 {
+					variable := parser.nodes.storage[int(variables[index])]
+					indexed, indexed_ok := append_node(parser, Node{
+						kind = .Index,
+						span = variable.span,
+						number_text = "1" if index == 1 else "0",
+						has_number_text = true,
+						child = left,
+						has_child = true,
+					})
+					if !indexed_ok do return {}, false
+					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(indexed)].span, parser.nodes.storage[int(nested)].span)
+					assert(bound_span_ok)
+					bound, bound_ok := append_node(parser, Node{
+						kind = .Binding,
+						span = bound_span,
+						left = indexed,
+						right = nested,
+						name_span = variable.name_span,
+						has_name_span = true,
+					})
+					if !bound_ok do return {}, false
+					nested = bound
+				}
+				return nested, true
+			}
 			if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {
 				fail_from_lookahead(parser, .Expression)
 				return {}, false

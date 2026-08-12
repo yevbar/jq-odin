@@ -1,0 +1,4 @@
+# Fixed-width array destructuring binds positional values in order.
+. as [$a, $b] | [$b, $a]
+[1, 2]
+[2, 1]
