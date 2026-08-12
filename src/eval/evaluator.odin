@@ -1348,14 +1348,20 @@ slice_result :: proc(
 	instruction: program.Instruction,
 ) -> (value.Value, Runtime_Error, bool) {
 	if value.kind_of(&frame.input) == .Null do return value.null_value(), {}, true
-	if value.kind_of(&frame.input) != .Array do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}, true
+	if value.kind_of(&frame.input) != .Array && value.kind_of(&frame.input) != .String do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}, true
 	start_operand, start_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
 	end_operand, end_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+2))
 	start_text, start_text_ok := program.operand_text(storage.compiled, start_operand)
 	end_text, end_text_ok := program.operand_text(storage.compiled, end_operand)
 	if !start_ok || !end_ok || !start_text_ok || !end_text_ok || start_operand.kind != .Text || end_operand.kind != .Text do return {}, {}, false
 	length, length_ok := value.array_length(&frame.input)
-	if !length_ok do return {}, {}, false
+	text: string
+	if !length_ok {
+		text_ok: bool
+		text, text_ok = value.string_borrowed(&frame.input)
+		if !text_ok do return {}, {}, false
+		length = utf8_codepoint_length(text)
+	}
 	start, end := 0, length
 	if len(start_text) > 0 {
 		v, e := value.literal_number_value(start_text, storage.allocator)
@@ -1370,6 +1376,13 @@ slice_result :: proc(
 		n, ok := value.number_value_get(&v); _ = value.destroy_value(&v)
 		if !ok || n != f64(int(n)) do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
 		end = int(n); if end < 0 { end += length }; if end < 0 { end = 0 }; if end > length { end = length }
+	}
+	if value.kind_of(&frame.input) == .String {
+		start_byte := utf8_byte_offset_for_codepoint(text, start)
+		end_byte := utf8_byte_offset_for_codepoint(text, end)
+		result, constructor_error := value.string_value(text[start_byte:end_byte], storage.allocator)
+		if value.constructor_error_kind(&constructor_error) != .None { _ = value.destroy_constructor_error(&constructor_error); return {}, {}, false }
+		return result, {}, true
 	}
 	result, array_error := value.array_value(storage.allocator)
 	if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return {}, {}, false }
@@ -2181,6 +2194,17 @@ utf8_codepoint_offset :: proc(text: string, byte_offset: int) -> int {
 		if (text[i] & 0xc0) != 0x80 do count += 1
 	}
 	return count
+}
+
+@(private)
+utf8_byte_offset_for_codepoint :: proc(text: string, codepoint_index: int) -> int {
+	if codepoint_index <= 0 do return 0
+	count, at := 0, 0
+	for count < codepoint_index && at < len(text) {
+		at, _ = utf8_trim_next(text, at)
+		count += 1
+	}
+	return at
 }
 
 @(private)
