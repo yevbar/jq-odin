@@ -1499,6 +1499,44 @@ field_present_missing_null_and_invalid_kinds_match_jq_classes :: proc(t: ^testin
 }
 
 @(test)
+empty_string_field_read_is_distinct_from_empty_bracket_iteration :: proc(t: ^testing.T) {
+	instructions := [2]program.Instruction{
+		{opcode = .Identity},
+		{opcode = .Field, operands_count = 2},
+	}
+	operands := [2]program.Operand{instruction_operand(0), text_operand(0, 0)}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "", 1)
+
+	input, input_error := value.object_value(context.allocator)
+	testing.expect_value(t, value.object_error_kind(&input_error), value.Object_Error.None)
+	object_put(t, &input, "", value.number_value(7))
+	object_put(t, &input, "a", value.number_value(8))
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	read := step_take(t, &evaluator)
+	expect_number(t, &read, 7)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+
+	operands[1].kind = .Iterator
+	build_program(t, &compiled, instructions[:], operands[:], "", 1)
+	input, input_error = value.object_value(context.allocator)
+	testing.expect_value(t, value.object_error_kind(&input_error), value.Object_Error.None)
+	object_put(t, &input, "", value.number_value(7))
+	object_put(t, &input, "a", value.number_value(8))
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	first := step_take(t, &evaluator)
+	second := step_take(t, &evaluator)
+	expect_number(t, &first, 7)
+	expect_number(t, &second, 8)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 field_lookup_returns_an_owned_heap_backed_container_and_leaf :: proc(t: ^testing.T) {
 	// jq's string lookup returns the stored object value (upstream/jq/src/jv_aux.c:80-87).
 	// Keep the result container alive after the evaluator is destroyed: the
@@ -2668,7 +2706,7 @@ optional_suppresses_runtime_only_and_preserves_prior_outputs :: proc(t: ^testing
 
 @(test)
 optional_postfix_iterator_exhausts_while_adjacent_try_catches :: proc(t: ^testing.T) {
-	// Field("a"), then the existing empty-name Field representation of `.a[]`.
+	// Field("a"), then the Iterator-operand Field representation of `.a[]`.
 	// Optional and Try wrap that same iterator instruction without a new opcode.
 	instructions := [5]program.Instruction{
 		{opcode = .Field, operands_start = 0, operands_count = 1},
@@ -2679,7 +2717,7 @@ optional_postfix_iterator_exhausts_while_adjacent_try_catches :: proc(t: ^testin
 	}
 	operands := [6]program.Operand{
 		text_operand(0, 1),
-		instruction_operand(0), text_operand(1, 0),
+		instruction_operand(0), {kind = .Iterator},
 		instruction_operand(1),
 		instruction_operand(1), instruction_operand(3),
 	}

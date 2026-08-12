@@ -747,6 +747,34 @@ nested_groups_chained_fields_and_optional_keep_structure :: proc(t: ^testing.T) 
 }
 
 @(test)
+empty_brackets_and_quoted_empty_fields_keep_distinct_program_metadata :: proc(t: ^testing.T) {
+	Case :: struct { source: string, iterator: bool }
+	cases := [?]Case{
+		{source = `.[]`, iterator = true},
+		{source = `.[""]`, iterator = false},
+		{source = `.outer[]`, iterator = true},
+	}
+	for test_case in cases {
+		parser: syntax.Parser
+		compiled: program.Program
+		_, parsed, lowered := parse_and_lower(t, test_case.source, &parser, &compiled)
+		testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+		root := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+		testing.expect_value(t, root.opcode, program.Opcode.Field)
+		testing.expect_value(t, root.operands_count, program.Count(2))
+		key_operand := instruction_operand(&compiled, root, 1)
+		expected_kind := program.Operand_Kind.Iterator if test_case.iterator else .Text
+		testing.expect_value(t, key_operand.kind, expected_kind)
+		if !test_case.iterator {
+			key, key_ok := program.operand_text(&compiled, key_operand)
+			testing.expect(t, key_ok)
+			testing.expect_value(t, key, "")
+		}
+		expect_cleanup(t, &parser, &compiled)
+	}
+}
+
+@(test)
 instruction_spans_match_every_ast_node_and_text_is_owned :: proc(t: ^testing.T) {
 	input := make([]byte, len("(.alpha,.beta)|.gamma?"))
 	copy(input, "(.alpha,.beta)|.gamma?")
