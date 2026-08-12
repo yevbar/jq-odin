@@ -6,4 +6,5 @@ omitted-bound defaults; string bounds use code-point indexes. Array results
 own fresh storage and string results own fresh text. Assignment, deletion, and
 dynamic bounds remain deferred.
 
-Oracle evidence: `upstream/jq/tests/jq.test:466-470`.
+Oracle evidence: `upstream/jq/tests/jq.test:466-472`. Focused array regression
+coverage also lives in `compat/negative-index.jq.test`.

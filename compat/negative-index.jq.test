@@ -1,4 +1,4 @@
-# Negative array indices resolve from the end of the array.
+# Negative array indices and bounded slices resolve from the end of the array.
 .[-1]
 [1,2,3]
 3
@@ -10,3 +10,15 @@
 .[-4]
 [1,2,3]
 null
+
+.[-3:-1]
+[1,2,3]
+[1,2]
+
+.[-4:2]
+[1,2,3]
+[1,2]
+
+.[1:-1]
+[1,2,3]
+[2]

@@ -247,6 +247,106 @@ startswith_and_endswith_match_literal_string_boundaries :: proc(t: ^testing.T) {
 }
 
 @(test)
+negative_array_index_reads_resolve_from_end_and_bound_out_of_range :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		index_text:  string,
+		expected:    f64,
+		expect_null: bool,
+	}{
+		{"-1", 3, false},
+		{"-2", 2, false},
+		{"-4", 0, true},
+	}
+	for test_case in cases {
+		instructions := [?]program.Instruction{
+			{opcode = .Identity},
+			{opcode = .Index, operands_count = 2},
+		}
+		operands := [?]program.Operand{
+			instruction_operand(0),
+			text_operand(0, u32(len(test_case.index_text))),
+		}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], operands[:], test_case.index_text, 1)
+
+		input, array_error := value.array_value(context.allocator)
+		testing.expect_value(t, value.array_error_kind(&array_error), value.Array_Error.None)
+		numbers := [?]f64{1, 2, 3}
+		for number in numbers {
+			item := value.number_value(number)
+			displaced, append_error := value.array_append_take(&input, &item)
+			testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+			testing.expect_value(t, value.destroy_value(&displaced), runtime.Allocator_Error(nil))
+		}
+
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		if test_case.expect_null {
+			expect_null(t, &output)
+		} else {
+			expect_number(t, &output, test_case.expected)
+		}
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
+bounded_negative_array_slice_reads_normalize_each_bound :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		text:           string,
+		start_count:    u32,
+		expected:       [2]f64,
+		expected_count: int,
+	}{
+		{"-3-1", 2, {1, 2}, 2},
+		{"-42", 2, {1, 2}, 2},
+		{"1-1", 1, {2, 0}, 1},
+	}
+	for test_case in cases {
+		instructions := [?]program.Instruction{
+			{opcode = .Identity},
+			{opcode = .Slice, operands_count = 3},
+		}
+		operands := [?]program.Operand{
+			instruction_operand(0),
+			text_operand(0, test_case.start_count),
+			text_operand(test_case.start_count, u32(len(test_case.text))-test_case.start_count),
+		}
+		compiled: program.Program
+		build_program(t, &compiled, instructions[:], operands[:], test_case.text, 1)
+
+		input, array_error := value.array_value(context.allocator)
+		testing.expect_value(t, value.array_error_kind(&array_error), value.Array_Error.None)
+		numbers := [?]f64{1, 2, 3}
+		for number in numbers {
+			item := value.number_value(number)
+			displaced, append_error := value.array_append_take(&input, &item)
+			testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+			testing.expect_value(t, value.destroy_value(&displaced), runtime.Allocator_Error(nil))
+		}
+
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		length, length_ok := value.array_length(&output)
+		testing.expect(t, length_ok)
+		testing.expect_value(t, length, test_case.expected_count)
+		for index in 0..<test_case.expected_count {
+			item, item_ok := value.array_element_copy(&output, index)
+			testing.expect(t, item_ok)
+			expect_number(t, &item, test_case.expected[index])
+		}
+		testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+		destroy_program_test(t, &compiled)
+	}
+}
+
+@(test)
 flatten_builtin_recursively_concatenates_nested_arrays :: proc(t: ^testing.T) {
 	input, input_error := value.array_value(context.allocator)
 	testing.expect_value(t, value.array_error_kind(&input_error), value.Array_Error.None)

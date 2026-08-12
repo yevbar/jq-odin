@@ -2,8 +2,10 @@
 
 Literal negative numeric postfix indices are accepted and resolved relative to
 the end of arrays (`.[-1]` is the final element). Out-of-range negative reads
-yield `null`, matching jq. Negative index assignment, comma-separated index
-streams, fractional indices, and string code-point indexing remain deferred.
+yield `null`, matching jq. This is a read-only contract: negative index
+assignment and dynamic index expressions remain deferred. Literal slice bounds
+use the separate bounded read contract in Decision 0204.
 
-Evidence: `upstream/jq/tests/jq.test:213-229` covers negative indexing and
-assignment boundaries; this slice covers read semantics only.
+Evidence: `upstream/jq/src/jv_aux.c:93-106` specifies numeric array read
+normalization and the out-of-range `null` result. Assignment boundaries at
+`upstream/jq/tests/jq.test:213-229` are intentionally outside this slice.
