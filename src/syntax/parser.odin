@@ -236,6 +236,8 @@ Node_Kind :: enum {
 	If,
 	// Recurse is appended to preserve existing AST discriminants.
 	Recurse,
+	// Static_Field_Add_Number is appended to preserve existing AST discriminants.
+	Static_Field_Add_Number,
 }
 
 Node_Id :: distinct int
