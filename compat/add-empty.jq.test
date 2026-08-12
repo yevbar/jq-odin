@@ -43,3 +43,12 @@ null
 
 3 | add(range(0;.;2))
 2
+
+add(10,range(10))
+55
+
+add(empty,range(3))
+3
+
+add(range(2),range(2))
+2
