@@ -471,6 +471,7 @@ scalar_state :: enum u8 {
 	Exponent_Sign,
 	Exponent_Digits,
 	Literal,
+	N_Prefix,
 }
 
 container_frame :: struct {
@@ -654,10 +655,10 @@ start_scalar :: proc(framer: ^json_framer, value: byte) -> bool {
 		framer.literal_length = 5
 		framer.literal_index = 1
 	case 'n':
-		framer.scalar_state = .Literal
-		framer.literal = {'n', 'u', 'l', 'l', 0}
-		framer.literal_length = 4
-		framer.literal_index = 1
+		// jq reserves `nu...` for null and routes other n-prefixed tokens to
+		// its numeric parser. Keep the bounded CLI framer exact for the
+		// payload-free lowercase NaN spelling supported by this slice.
+		framer.scalar_state = .N_Prefix
 	case: return false
 	}
 	return true
@@ -771,6 +772,22 @@ next_value_end :: proc(
 				framer.literal_index += 1
 				continue
 			}
+			if framer.scalar_state == .N_Prefix {
+				switch byte_value {
+				case 'u':
+					framer.literal = {'n', 'u', 'l', 'l', 0}
+					framer.literal_length = 4
+					framer.literal_index = 2
+				case 'a':
+					framer.literal = {'n', 'a', 'n', 0, 0}
+					framer.literal_length = 3
+					framer.literal_index = 2
+				case:
+					return index+1, .Malformed
+				}
+				framer.scalar_state = .Literal
+				continue
+			}
 			switch framer.scalar_state {
 			case .Minus:
 				if byte_value == '0' {
@@ -810,7 +827,7 @@ next_value_end :: proc(
 				framer.scalar_state = .Exponent_Digits
 			case .Exponent_Digits:
 				if byte_value < '0' || byte_value > '9' do return index+1, .Malformed
-			case .Start, .Literal:
+			case .Start, .Literal, .N_Prefix:
 				return index+1, .Malformed
 			}
 		case .Container:

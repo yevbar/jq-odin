@@ -1,0 +1,18 @@
+# Lowercase payload-free NaN is accepted as a JSON input number.
+.
+nan
+null
+
+.
+[nan,{"nested":nan}]
+[null,{"nested":null}]
+
+# Preserve the pinned catalog composition that exposed the framing gap.
+tojson | fromjson
+{"a":nan}
+{"a":null}
+
+# NaN input reaches the existing caught evaluator diagnostic path.
+map(try implode catch .)
+[123,["a"],[nan]]
+["implode input must be an array","string (\"a\") can't be imploded, unicode codepoint needs to be numeric","number (null) can't be imploded, unicode codepoint needs to be numeric"]

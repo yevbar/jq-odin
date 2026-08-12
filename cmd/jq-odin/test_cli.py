@@ -871,6 +871,7 @@ def expect_prompt_grammar_errors(candidate: pathlib.Path) -> int:
         "literal suffix true": b"[truex",
         "literal suffix false": b"[false!",
         "literal suffix null": b"[nullx",
+        "literal suffix nan": b"[nanx",
         "invalid escape": b'["\\q',
         "invalid unicode escape": b'["\\u12x',
         "string control byte": b'["x\x01',
@@ -892,6 +893,8 @@ def expect_valid_partial_splits(candidate: pathlib.Path) -> int:
         ),
         (b'-0.125E-2 ', b'-0.00125\n'),
         (b"true ", b"true\n"),
+        (b"nan ", b"null\n"),
+        (b'{"a":nan}', b'{"a":null}\n'),
     ]
     checks = 0
     for document, wanted in cases:

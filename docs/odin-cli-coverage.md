@@ -602,6 +602,12 @@ behavioral oracle.
   `Cannot iterate over <kind> (<value>)` message through `try .[] catch .`.
   The focused shard passes 2/2, package checks and full tests pass, and a fresh
   catalog run measures **281/522 passed and 241 failed**.
+- Lowercase NaN JSON-input framing (`decision 0232`) distinguishes `nan` from
+  the shared `null` prefix without changing the owning JSON parser or
+  evaluator contracts. The focused shard passes 4/4 and the CLI split-input
+  checks pass. Catalog cases at `upstream/jq/tests/jq.test:2277` and `:2365`
+  move to pass, for an exact baseline measurement of **299/522 passed and 223
+  failed**.
 
 ## Remaining high-value clusters
 
