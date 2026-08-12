@@ -419,6 +419,16 @@ source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-.,(.)?,.a|.
 		testing.expect(t, node_payload_shape_valid(node))
 		seen[node.kind] = true
 	}
+	update_parser: syntax.Parser
+	update_source := diagnostic.borrow_source("<update-shape>", `.foo |= .+1`)
+	testing.expect(t, syntax.init_parser(&update_parser, update_source, context.allocator))
+	update_parsed := syntax.parse_filter(&update_parser)
+	testing.expect_value(t, update_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&update_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&update_parser), runtime.Allocator_Error.None)
 	for kind in syntax.Node_Kind {
 		testing.expect(t, seen[kind])
 	}
@@ -1019,4 +1029,25 @@ shared_ast_subgraphs_remain_valid :: proc(t: ^testing.T) {
 	root, root_ok := program.program_root(&compiled)
 	testing.expect(t, root_ok && root == 3)
 	testing.expect_value(t, program.destroy_program(&compiled), runtime.Allocator_Error.None)
+}
+
+@(test)
+static_field_numeric_update_lowers_to_two_owned_text_operands :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, _, lowered := parse_and_lower(t, `.foo |= .+1`, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	root, root_ok := program.program_root(&compiled)
+	testing.expect(t, root_ok)
+	instruction := instruction_at(&compiled, root)
+	testing.expect_value(t, instruction.opcode, program.Opcode.Static_Field_Add_Number)
+	testing.expect_value(t, instruction.operands_count, program.Count(2))
+	key_operand := instruction_operand(&compiled, instruction, 0)
+	number_operand := instruction_operand(&compiled, instruction, 1)
+	key, key_ok := program.operand_text(&compiled, key_operand)
+	number, number_ok := program.operand_text(&compiled, number_operand)
+	testing.expect(t, key_ok && number_ok)
+	testing.expect_value(t, key, "foo")
+	testing.expect_value(t, number, "1")
+	expect_cleanup(t, &parser, &compiled)
 }

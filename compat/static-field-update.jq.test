@@ -1,0 +1,9 @@
+# Bounded static object-field update from jq's assignment regression.
+.foo |= .+1
+{"foo":42}
+{"foo":43}
+
+# Preserve unrelated members while replacing the selected field.
+.foo |= .+3
+{"kept":7,"foo":2}
+{"kept":7,"foo":5}

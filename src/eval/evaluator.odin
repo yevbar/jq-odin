@@ -992,6 +992,40 @@ field_text :: proc(
 }
 
 @(private)
+static_field_add_operands :: proc(
+	storage: ^evaluator_storage,
+	instruction: program.Instruction,
+) -> (key, number: string, ok: bool) {
+	if instruction.opcode != .Static_Field_Add_Number || instruction.operands_count != 2 do return
+	key_operand, key_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	number_operand, number_ok := program.program_operand(
+		storage.compiled,
+		program.Operand_Index(u32(instruction.operands_start)+1),
+	)
+	if !key_ok || !number_ok || key_operand.kind != .Text || number_operand.kind != .Text do return
+	key, key_ok = program.operand_text(storage.compiled, key_operand)
+	number, number_ok = program.operand_text(storage.compiled, number_operand)
+	ok = key_ok && number_ok
+	return
+}
+
+@(private)
+existing_object_key_copy :: proc(object: ^value.Value, wanted: string) -> (value.Value, bool) {
+	length, length_ok := value.object_length(object)
+	if !length_ok do return {}, false
+	for index in 0..<length {
+		key, entry, entry_ok := value.object_entry_copy(object, index)
+		if !entry_ok do return {}, false
+		key_text, key_ok := value.string_borrowed(&key)
+		matches := key_ok && key_text == wanted
+		_ = value.destroy_value(&entry)
+		if matches do return key, true
+		_ = value.destroy_value(&key)
+	}
+	return {}, false
+}
+
+@(private)
 literal_value :: proc(
 	storage: ^evaluator_storage,
 	instruction: program.Instruction,
@@ -5409,6 +5443,70 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Slice_Start_Child
+			case .Static_Field_Add_Number:
+				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
+				if !operands_ok || value.kind_of(&frame.input) != .Object {
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				}
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				old, found := value.object_get_copy(&frame.input, key_text)
+				if !found || value.kind_of(&old) != .Number {
+					_ = value.destroy_value(&old)
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				}
+				increment, increment_error := value.literal_number_value(number_text, storage.allocator)
+				if value.constructor_error_kind(&increment_error) != .None {
+					_ = value.destroy_value(&old)
+					cleanup_error := value.destroy_constructor_error(&increment_error)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					return resource_step(.Out_Of_Memory)
+				}
+				updated, runtime_kind, allocation_error := apply_binary(
+					.Add,
+					&old,
+					&increment,
+					instruction.span,
+					storage.allocator,
+				)
+				_ = value.destroy_value(&old)
+				_ = value.destroy_value(&increment)
+				if allocation_error != nil do return resource_step(allocation_error)
+				if runtime_kind != .None {
+					_ = value.destroy_value(&updated)
+					result, ready := raise_runtime(storage, index, Runtime_Error{
+						kind = runtime_kind,
+						input_kind = .Object,
+						span = instruction.span,
+					})
+					if ready do return result
+					continue
+				}
+				if value.kind_of(&updated) != .Number {
+					_ = value.destroy_value(&updated)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				key, key_ok := existing_object_key_copy(&frame.input, key_text)
+				if !key_ok { _ = value.destroy_value(&updated); return begin_terminal_misuse(storage, .Malformed_Program) }
+				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &updated)
+				set_kind := value.object_error_kind(&set_error)
+				if set_kind != .None {
+					_ = value.destroy_value(&key)
+					_ = value.destroy_value(&updated)
+					cleanup_error := value.destroy_object_error(&set_error)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					if set_kind == .Out_Of_Memory || set_kind == .Size_Overflow || set_kind == .Allocator_Unsupported {
+						return resource_step(.Out_Of_Memory)
+					}
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				_ = value.destroy_value(&duplicate)
+				_ = value.destroy_value(&displaced)
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Variable:
 				output, variable_ok := variable_result(storage, index, instruction)
 				if !variable_ok || value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)

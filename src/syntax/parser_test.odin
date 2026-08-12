@@ -3918,3 +3918,22 @@ map_argument_retains_try_and_optional_postfix_comma_stream :: proc(t: ^testing.T
 	testing.expect_value(t, optional_count, 2)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
+
+@(test)
+static_field_numeric_update_has_a_bounded_ast_node :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<static-field-update>", `.foo |= .+1`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Static_Field_Add_Number)
+	testing.expect(t, root.has_name_span)
+	start, end, span_ok := diagnostic.span_offsets(source, root.name_span)
+	testing.expect(t, span_ok)
+	testing.expect_value(t, string(diagnostic.source_bytes(source)[start:end]), "foo")
+	number := parser.nodes.storage[int(root.right)]
+	testing.expect_value(t, number.kind, Node_Kind.Number)
+	testing.expect_value(t, number.number_text, "1")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}

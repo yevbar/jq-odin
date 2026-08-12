@@ -152,7 +152,12 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && (node.has_child || node.child == 0) && no_edges && no_container_links && !node.has_value &&
 		       node.has_name_span && !node.boolean_value && no_number &&
 		       ((!node.has_string_text && string_header_absent(node.string_text) && !node.string_shorthand) ||
-			        (node.has_string_text && node.string_shorthand && string_header_present(node.string_text)))
+		        (node.has_string_text && node.string_shorthand && string_header_present(node.string_text)))
+	case .Static_Field_Add_Number:
+		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 &&
+		       node.has_name_span && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text &&
+		       string_header_absent(node.string_text)
 	case .Index:
 		header := transmute(runtime.Raw_String)node.number_text
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
@@ -319,6 +324,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Slice:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Static_Field_Add_Number:
+		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .If:
 		return validate_binding_scopes(nodes, node.if_condition, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.if_then, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.if_else, source, scopes, depth, next_budget)
 	case .Any_Not, .All_Not:
@@ -510,6 +517,17 @@ lower_filter :: proc(
 			   !checked_count_add(&operand_count, 2) ||
 			   !checked_count_add(&text_count, u64(len(node.number_text))) {
 				return Lower_Outcome{kind = .Invalid_AST}
+			}
+		case .Static_Field_Add_Number:
+			if !node_reference_valid(node.right, len(nodes)) || nodes[int(node.right)].kind != .Number ||
+			   !nodes[int(node.right)].has_number_text {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+			if !name_ok || name_end < name_start ||
+			   !checked_count_add(&operand_count, 2) ||
+			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(len(nodes[int(node.right)].number_text))) {
+				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Flatten:
 			if node.has_child && (!node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1)) {
@@ -899,6 +917,24 @@ lower_filter :: proc(
 			for child in children {
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(child)})); operand_at += 1
 			}
+		case .Static_Field_Add_Number:
+			instruction.opcode = .Static_Field_Add_Number
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+			assert(name_ok && name_end >= name_start)
+			name := string(bytes[name_start:name_end])
+			number := nodes[int(node.right)].number_text
+			texts := [2]string{name, number}
+			for text in texts {
+				assert(program.set_text(output, program.Byte_Offset(text_at), text))
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+					kind = .Text,
+					text_start = program.Byte_Offset(text_at),
+					text_count = program.Count(len(text)),
+				}))
+				text_at += u32(len(text))
+				operand_at += 1
+			}
+			instruction.operands_count = 2
 		case .Strftime, .Strptime:
 			instruction.opcode = .Strftime if node.kind == .Strftime else .Strptime
 			instruction.format_local = node.strflocaltime
