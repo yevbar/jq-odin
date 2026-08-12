@@ -18,3 +18,7 @@ map_values(range(2))
 map_values(empty)
 {"a":1,"b":2}
 {}
+
+map_values(range(2))
+[1,2]
+[0,0]

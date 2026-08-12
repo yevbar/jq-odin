@@ -2056,14 +2056,24 @@ propagate_output :: proc(
 					return {}, false
 				}
 				frame.map_value_seen = true
-				key := value.clone_value(&frame.pending_constructor_key)
-				_, displaced, object_error := value.object_set_take(&frame.constructor_results, &key, owned)
-				_ = value.destroy_value(&displaced)
-				if value.object_error_kind(&object_error) != .None {
-					frame.pending_constructor_key = value.take_value(&key)
-					frame.pending_constructor_value = value.take_value(owned)
-					retain_constructor_object_error(frame, &object_error)
-					return resource_step(.Out_Of_Memory), true
+				if value.kind_of(&frame.input) == .Object {
+					key := value.clone_value(&frame.pending_constructor_key)
+					_, displaced, object_error := value.object_set_take(&frame.constructor_results, &key, owned)
+					_ = value.destroy_value(&displaced)
+					if value.object_error_kind(&object_error) != .None {
+						frame.pending_constructor_key = value.take_value(&key)
+						frame.pending_constructor_value = value.take_value(owned)
+						retain_constructor_object_error(frame, &object_error)
+						return resource_step(.Out_Of_Memory), true
+					}
+				} else {
+					append_error: value.Array_Operation_Error
+					_, append_error = value.array_append_take(&frame.constructor_results, owned)
+					if value.array_error_kind(&append_error) != .None {
+						frame.pending_constructor_value = value.take_value(owned)
+						retain_constructor_array_error(frame, &append_error)
+						return resource_step(.Out_Of_Memory), true
+					}
 				}
 			} else {
 				append_error: value.Array_Operation_Error
@@ -5961,7 +5971,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					array_result, array_error := value.array_value(storage.allocator)
 					if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return resource_step(.Out_Of_Memory) }
 					results = array_result
-					frame.map_values_mode = false
+					// jq's map_values keeps only the first result produced for
+					// each array element, just as it does for object values.
+					// Map itself must retain every child result.
+					frame.map_values_mode = instruction.opcode == .Map_Values
 				}
 				frame.constructor_results = value.take_value(&results)
 				frame.iterator_cursor = 0
