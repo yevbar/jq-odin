@@ -5565,7 +5565,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return resource_step(.Out_Of_Memory)
 				}
 				key, key_ok := existing_object_key_copy(&frame.input, key_text)
-				if !key_ok { _ = value.destroy_value(&updated); return begin_terminal_misuse(storage, .Malformed_Program) }
+				// Object field assignment creates a missing key (`.foo = 9`),
+				// including when the assignment is wrapped by try/catch.  The
+				// lookup helper returns no key for both absence and malformed input;
+				// the input kind was checked above, so construct the owned key on
+				// absence and let object_set_take enforce the remaining contract.
+				if !key_ok {
+					key_constructor_error: value.Constructor_Error
+					key, key_constructor_error = value.string_value(key_text, storage.allocator)
+					if value.constructor_error_kind(&key_constructor_error) != .None {
+						_ = value.destroy_value(&updated)
+						cleanup_error := value.destroy_constructor_error(&key_constructor_error)
+						if cleanup_error != nil do return resource_step(cleanup_error)
+						return resource_step(.Out_Of_Memory)
+					}
+				}
 				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &updated)
 				set_kind := value.object_error_kind(&set_error)
 				if set_kind != .None {

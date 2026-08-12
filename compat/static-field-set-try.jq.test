@@ -1,0 +1,8 @@
+# Parenthesized static assignments used by jq's try/catch assignment cases.
+try (.foo = 9) catch .
+{}
+{"foo":9}
+
+try (.foo = 0) catch .
+{"bar":2}
+{"bar":2,"foo":0}

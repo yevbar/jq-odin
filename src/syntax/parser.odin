@@ -1934,6 +1934,15 @@ parse_static_field_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 	advance(parser)
 	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
 	if !right_ok do return {}, false
+	// A static assignment nested in `try (...) catch .` is parsed while the
+	// parenthesis frame is still active, so the RHS arrives wrapped in the
+	// source-preserving Parenthesized node.  The static assignment contract is
+	// intentionally scalar-only; unwrap only these transparent wrappers and
+	// continue rejecting compound/dynamic RHS expressions below.
+	for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized &&
+		parser.nodes.storage[int(right)].has_child {
+		right = parser.nodes.storage[int(right)].child
+	}
 	number := parser.nodes.storage[int(right)]
 	if number.form != .Kinded || (number.kind != .Number && number.kind != .Boolean && number.kind != .Null && number.kind != .String) || number.has_child || number.has_value {
 		fail_from_lookahead(parser, .Expression); return {}, false
@@ -1957,6 +1966,10 @@ parse_static_index_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 	advance(parser)
 	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
 	if !right_ok do return {}, false
+	for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized &&
+		parser.nodes.storage[int(right)].has_child {
+		right = parser.nodes.storage[int(right)].child
+	}
 	number := parser.nodes.storage[int(right)]
 	if number.form != .Kinded || (number.kind != .Number && number.kind != .Boolean && number.kind != .Null && number.kind != .String) || number.has_child || number.has_value {
 		fail_from_lookahead(parser, .Expression); return {}, false

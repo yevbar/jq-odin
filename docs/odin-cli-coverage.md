@@ -630,6 +630,10 @@ behavioral oracle.
   unit tests remain green; the catalog remains **322/522** because these cases
   are embedded in larger unsupported expressions. Generator-valued bounds and
   zero-divisor diagnostic propagation remain deferred.
+- Parenthesized static object assignment (decision `0255`) now reuses the
+  existing scalar assignment evaluator inside `try (...) catch .`; the focused
+  shard passes 2/2 and package, full-unit, and repository validation remain
+  green. Nested paths and dynamic assignment remain deferred.
 
 ## Remaining high-value clusters
 

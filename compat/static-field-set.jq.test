@@ -7,3 +7,8 @@
 .foo = 0
 {"bar":2,"foo":1}
 {"bar":2,"foo":0}
+
+# Parenthesized static assignment remains an assignment, including under try.
+try (.foo = 9) catch .
+{}
+{"foo":9}
