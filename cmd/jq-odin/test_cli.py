@@ -250,7 +250,10 @@ def expect_module_loading(
         if (actual.returncode, actual.stdout, actual.stderr) != wanted:
             raise AssertionError(f"field context substitution: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
         actual = run(candidate, ["-L", directory, "-n", 'include "contexts"; variable(7)'])
-        wanted = (3, b"", b"jq-odin: filter parse error\n")
+        # The module body parses successfully; the undefined `$x` is rejected
+        # during lowering after expansion, so the current pipeline correctly
+        # classifies this as a compile error.
+        wanted = (3, b"", b"jq-odin: filter compile error\n")
         if (actual.returncode, actual.stdout, actual.stderr) != wanted:
             raise AssertionError(f"variable context substitution: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
         actual = run(candidate, ["-L", directory, "-n", 'include "contexts"; format(7)'])
@@ -304,13 +307,13 @@ def expect_module_loading(
         # part of a definition body instead of terminating the definition.
         (root / "references.jq").write_text("def helper: 42;\ndef answer: reduce .[] as $x (0; . + $x);\ndef text: \"a;b\";\n", encoding="utf-8")
         actual = run(candidate, ["-L", directory, 'include "references"; answer'], b"[1,2,3]\n")
-        # The evaluator does not yet implement reduce; the absence of a module
-        # error proves the complete nested body reached the ordinary pipeline.
-        wanted = (3, b"", b"jq-odin: filter parse error\n")
+        # The expanded definition reaches the current evaluator, which now
+        # executes the reduce body and returns the summed input.
+        wanted = (0, b"6\n", b"")
         if (actual.returncode, actual.stdout, actual.stderr) != wanted:
             raise AssertionError(f"recursive definition expansion: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
         actual = run(candidate, ["-L", directory, "-n", 'include "references"; text'])
-        wanted = (3, b"", b"jq-odin: filter compile error\n")
+        wanted = (0, b'"a;b"\n', b"")
         if (actual.returncode, actual.stdout, actual.stderr) != wanted:
             raise AssertionError(f"quoted semicolon definition: expected {wanted!r}, got {(actual.returncode, actual.stdout, actual.stderr)!r}")
 
