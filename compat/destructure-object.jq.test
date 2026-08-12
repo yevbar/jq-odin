@@ -1,0 +1,13 @@
+# Direct object destructuring binds named fields.
+. as {a:$x} | $x
+{"a":7,"b":9}
+7
+
+. as {a:$x,b:$y} | [$x,$y]
+{"a":7,"b":9}
+[7,9]
+
+# Missing object fields bind null, as in ordinary jq field access.
+. as {a:$x,b:$y} | [$x,$y]
+{}
+[null,null]

@@ -1853,6 +1853,86 @@ parse_pipe :: proc(
 				}
 				return nested, true
 			}
+			// A bounded object pattern reuses the normal Field and Binding
+			// instructions: each named entry extracts a field from the direct
+			// identity producer, then binds that result to its `$name`.  Restrict
+			// this slice to one or two simple `name:$var` entries.
+			if token_is(parser, .Open_Brace) {
+				if pipe_root != invalid_id || parser.nodes.storage[int(left)].kind != .Identity ||
+				   parser.nodes.storage[int(left)].has_child {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				pattern, pattern_ok := parse_container(parser, .Open_Brace)
+				if !pattern_ok || pattern < 0 || int(pattern) >= len(parser.nodes.storage) {
+					return {}, false
+				}
+				pattern_node := parser.nodes.storage[int(pattern)]
+				if pattern_node.container_kind != .Object || !pattern_node.has_value {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				entry_id := pattern_node.value
+				variables: [2]Node_Id
+				keys: [2]Node_Id
+				count := 0
+				for entry_id >= 0 {
+					if count >= 2 || int(entry_id) >= len(parser.nodes.storage) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					entry := parser.nodes.storage[int(entry_id)]
+					if entry.kind != .Field || entry.container_kind != .Object_Entry || !entry.has_key ||
+					   !entry.has_value || int(entry.key) >= len(parser.nodes.storage) || int(entry.value) >= len(parser.nodes.storage) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					key := parser.nodes.storage[int(entry.key)]
+					variable := parser.nodes.storage[int(entry.value)]
+					if key.kind != .Field || !key.has_name_span || variable.kind != .Variable || !variable.has_name_span {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					keys[count] = entry.key
+					variables[count] = entry.value
+					count += 1
+					entry_id = entry.next if entry.has_next else Node_Id(-1)
+				}
+				if count == 0 || !token_is(parser, .Pipe) {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				advance(parser)
+				body, body_ok := parse_pipe(parser, closing, stop_at_comma)
+				if !body_ok do return {}, false
+				nested := body
+				for index := count-1; index >= 0; index -= 1 {
+					key := parser.nodes.storage[int(keys[index])]
+					variable := parser.nodes.storage[int(variables[index])]
+					field, field_ok := append_node(parser, Node{
+						kind = .Field,
+						span = key.span,
+						child = left,
+						has_child = true,
+						name_span = key.name_span,
+						has_name_span = true,
+					})
+					if !field_ok do return {}, false
+					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(field)].span, parser.nodes.storage[int(nested)].span)
+					assert(bound_span_ok)
+					bound, bound_ok := append_node(parser, Node{
+						kind = .Binding,
+						span = bound_span,
+						left = field,
+						right = nested,
+						name_span = variable.name_span,
+						has_name_span = true,
+					})
+					if !bound_ok do return {}, false
+					nested = bound
+				}
+				return nested, true
+			}
 			if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {
 				fail_from_lookahead(parser, .Expression)
 				return {}, false
