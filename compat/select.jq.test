@@ -1,0 +1,13 @@
+# `select(f)` keeps the original input when the predicate emits a truthy value.
+select(. > 1)
+2
+
+select(. == 1)
+null
+
+[1,2,3] | map(select(. > 1))
+[2,3]
+
+[1,2,3][] | select(. > 1)
+2
+3

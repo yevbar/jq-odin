@@ -909,6 +909,22 @@ parse_pipe :: proc(
 				continue
 			case .Identifier:
 				spelling := token_spelling(parser, token)
+				if spelling == "select" {
+					advance(parser)
+					if !token_is(parser, .Open_Paren) { fail_from_lookahead(parser, .Expression); return {}, false }
+					advance(parser)
+					predicate, predicate_ok := parse_pipe(parser, .Close_Paren, true)
+					if !predicate_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token; advance(parser)
+					identity, identity_ok := append_node(parser, Node{kind=.Identity, span=token.span})
+					empty, empty_ok := append_node(parser, Node{kind=.Empty, span=close.span})
+					if !identity_ok || !empty_ok { return {}, false }
+					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+					new_term, select_ok := append_node(parser, Node{kind=.If, span=span, if_condition=predicate, has_if_condition=true, if_then=identity, has_if_then=true, if_else=empty, has_if_else=true})
+					if !select_ok do return {}, false
+					term = new_term; term_ready = true
+					continue
+				}
 				kind := Node_Kind.Null
 				boolean_value := false
 				if spelling == "true" {
