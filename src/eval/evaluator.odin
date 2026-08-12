@@ -5546,9 +5546,39 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				child, child_ok := child_instruction(storage, instruction, 0)
 				child_instruction_value, child_instruction_ok := program.program_instruction(storage.compiled, child)
 				if !child_ok || !child_instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
-				// This bounded form accepts literal child filters only. `empty`
-				// produces no value, while every scalar literal produces one value.
-				output := value.boolean_value(child_instruction_value.opcode == .Empty)
+				// Bounded static forms: `empty` produces no value, range literals
+				// produce values iff their interval is non-empty, and comma streams
+				// are non-empty when either side is a value-producing literal.
+				is_empty := child_instruction_value.opcode == .Empty
+				if child_instruction_value.opcode == .Range {
+					if child_instruction_value.operands_count == 1 {
+						bound_index, bound_ok := child_instruction(storage, child_instruction_value, 0)
+						bound_instruction, bound_valid := program.program_instruction(storage.compiled, bound_index)
+						bound_value, bound_error, bound_cleanup := literal_value(storage, bound_instruction)
+						bound, bound_numeric := value.number_value_get(&bound_value)
+						if !bound_ok || !bound_valid || bound_error != .None || bound_cleanup != nil || !bound_numeric { if value.kind_of(&bound_value) != .Invalid do _ = value.destroy_value(&bound_value); return begin_terminal_misuse(storage, .Malformed_Program) }
+						_ = value.destroy_value(&bound_value)
+						is_empty = bound <= 0
+					} else {
+						start_index, start_ok := child_instruction(storage, child_instruction_value, 0)
+						end_index, end_ok := child_instruction(storage, child_instruction_value, 1)
+						start_instruction, start_valid := program.program_instruction(storage.compiled, start_index)
+						end_instruction, end_valid := program.program_instruction(storage.compiled, end_index)
+						start_value, start_error, start_cleanup := literal_value(storage, start_instruction)
+						end_value, end_error, end_cleanup := literal_value(storage, end_instruction)
+						if !start_ok || !end_ok || !start_valid || !end_valid || start_error != .None || end_error != .None || start_cleanup != nil || end_cleanup != nil {
+							if value.kind_of(&start_value) != .Invalid do _ = value.destroy_value(&start_value)
+							if value.kind_of(&end_value) != .Invalid do _ = value.destroy_value(&end_value)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						start, start_numeric := value.number_value_get(&start_value)
+						end, end_numeric := value.number_value_get(&end_value)
+						_ = value.destroy_value(&start_value); _ = value.destroy_value(&end_value)
+						if !start_numeric || !end_numeric { return begin_terminal_misuse(storage, .Malformed_Program) }
+						is_empty = start >= end
+					}
+				}
+				output := value.boolean_value(is_empty)
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result

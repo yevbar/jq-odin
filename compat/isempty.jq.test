@@ -10,3 +10,11 @@ false
 isempty("value")
 null
 false
+
+isempty(range(3))
+null
+false
+
+isempty(1,error("foo"))
+null
+false
