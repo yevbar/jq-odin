@@ -1358,6 +1358,9 @@ index_result :: proc(
 	case .Null:
 		return value.null_value(), {}, true
 	case .Boolean, .Number, .String, .Object:
+		if value.kind_of(&frame.input) == .String {
+			return {}, Runtime_Error{kind=.User_Error, input_kind=.String, span=instruction.span, key="Cannot index string with number"}, true
+		}
 		return {}, Runtime_Error{
 			kind = .Cannot_Index_With_String,
 			input_kind = value.kind_of(&frame.input),
