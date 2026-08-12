@@ -5530,9 +5530,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				displaced, set_error := value.array_set_take(&frame.input, int(array_index_i64), &updated)
 				if value.array_error_kind(&set_error) != .None {
 					_ = value.destroy_value(&updated)
+					array_error_kind := value.array_error_kind(&set_error)
 					cleanup_error := value.destroy_array_error(&set_error)
 					if cleanup_error != nil do return resource_step(cleanup_error)
-					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					message := "Out of bounds negative array index" if array_error_kind == .Invalid_Index else "Array index too large"
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=.Array, span=instruction.span, key=message})
+					if ready do return result
+					continue
 				}
 				_ = value.destroy_value(&displaced)
 				output := value.take_value(&frame.input)
