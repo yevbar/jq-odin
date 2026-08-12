@@ -1,0 +1,4 @@
+# Negative literal flatten depth is a catchable runtime error.
+try flatten(-1) catch .
+[0,[1],[[2]],[[[3]]]]
+"flatten depth must not be negative"

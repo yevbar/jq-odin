@@ -6043,6 +6043,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
 				flatten_depth := -1
+				flatten_negative := false
 				if instruction.opcode == .Flatten && instruction.operands_count == 1 {
 					child, child_ok := child_instruction(storage, instruction, 0)
 					depth_instruction, depth_instruction_ok := program.program_instruction(storage.compiled, child)
@@ -6053,7 +6054,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						return begin_terminal_misuse(storage, .Malformed_Program)
 					}
 					flatten_depth = int(parsed_depth)
-					if flatten_depth < 0 do flatten_depth = -2
+					if flatten_depth < 0 { flatten_depth = -2; flatten_negative = true }
 				}
 				output: value.Value
 				runtime_kind: Runtime_Error_Kind
@@ -6073,6 +6074,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					}
 					if instruction.opcode == .Mktime {
 						err.key = "mktime requires parsed datetime inputs"
+					}
+					if flatten_negative && instruction.opcode == .Flatten {
+						err.kind = .User_Error
+						err.key = "flatten depth must not be negative"
 					}
 					if instruction.opcode == .Gmtime {
 						err.key = "gmtime requires a numeric timestamp"
