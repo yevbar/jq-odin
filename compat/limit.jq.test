@@ -1,0 +1,19 @@
+# `limit` bounds the number of outputs from a generator.
+limit(3; .[])
+[11,22,33,44]
+11
+22
+33
+
+limit(5; range(.))
+9
+0
+1
+2
+3
+4
+
+limit(2; range(10))
+null
+0
+1
