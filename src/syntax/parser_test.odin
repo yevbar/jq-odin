@@ -2217,6 +2217,7 @@ test_parser_postfix_dot_error_boundary_matches_jq :: proc(t: ^testing.T) {
 test_parser_1818_filter_acceptance_corpus :: proc(t: ^testing.T) {
 	accepted := [?]string{
 		".",
+		"..",
 		".a",
 		"(.)",
 		".?",
@@ -2263,7 +2264,7 @@ test_parser_1818_filter_acceptance_corpus :: proc(t: ^testing.T) {
 		}
 		delete(padding)
 	}
-	testing.expect_value(t, filter_count, 1818)
+	testing.expect_value(t, filter_count, 1919)
 }
 
 @(test)
@@ -2275,7 +2276,6 @@ test_parser_rejects_every_unsupported_token_class_and_lexer_errors :: proc(t: ^t
 	}
 	cases := [?]Case{
 		{"name", .Unexpected_Token, 0, 4},
-		{"..", .Unexpected_Token, 0, 2},
 		{"\x00.", .Lexical_Error, 0, 1},
 		{". \xff", .Lexical_Error, 2, 3},
 	}

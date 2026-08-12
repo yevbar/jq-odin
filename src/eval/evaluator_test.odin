@@ -17,6 +17,88 @@ evaluator_internal_layout_matches_public_handle :: proc(t: ^testing.T) {
 }
 
 @(test)
+recursive_descent_streams_preorder_depth_first :: proc(t: ^testing.T) {
+	// Mirrors upstream/jq/tests/jq.test:187-189. The expected kind sequence
+	// distinguishes preorder depth-first traversal from breadth-first output.
+	root, root_error := value.array_value(context.allocator)
+	testing.expect_value(t, value.array_error_kind(&root_error), value.Array_Error.None)
+	first := value.number_value(1)
+	_, append_error := value.array_append_take(&root, &first)
+	testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+	nested_inner, inner_error := value.array_value(context.allocator)
+	testing.expect_value(t, value.array_error_kind(&inner_error), value.Array_Error.None)
+	two := value.number_value(2)
+	_, append_error = value.array_append_take(&nested_inner, &two)
+	testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+	nested_outer, outer_error := value.array_value(context.allocator)
+	testing.expect_value(t, value.array_error_kind(&outer_error), value.Array_Error.None)
+	_, append_error = value.array_append_take(&nested_outer, &nested_inner)
+	testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+	_, append_error = value.array_append_take(&root, &nested_outer)
+	testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+	object, object_error := value.object_value(context.allocator)
+	testing.expect_value(t, value.object_error_kind(&object_error), value.Object_Error.None)
+	object_array, object_array_error := value.array_value(context.allocator)
+	testing.expect_value(t, value.array_error_kind(&object_array_error), value.Array_Error.None)
+	one := value.number_value(1)
+	_, append_error = value.array_append_take(&object_array, &one)
+	testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+	object_put(t, &object, "a", value.take_value(&object_array))
+	_, append_error = value.array_append_take(&root, &object)
+	testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+
+	compiled: program.Program
+	build_program(t, &compiled, []program.Instruction{{opcode=.Recurse, span={start=0, end=2}}}, nil, "", 0)
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &root, context.allocator).kind, Init_Error_Kind.None)
+	expected_kinds := [?]value.Kind{.Array, .Number, .Array, .Array, .Number, .Object, .Array, .Number}
+	expected_numbers := [?]f64{0, 1, 0, 0, 2, 0, 0, 1}
+	for expected, output_index in expected_kinds {
+		output := step_take(t, &evaluator)
+		testing.expect_value(t, value.kind_of(&output), expected)
+		if expected == .Number {
+			actual, ok := value.number_value_get(&output)
+			testing.expect(t, ok)
+			testing.expect_value(t, actual, expected_numbers[output_index])
+		}
+		testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+	}
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
+recursive_descent_uses_growable_frames_for_deep_inputs :: proc(t: ^testing.T) {
+	depth := 512
+	input := value.number_value(9)
+	for _ in 0..<depth {
+		wrapper, wrapper_error := value.array_value(context.allocator)
+		testing.expect_value(t, value.array_error_kind(&wrapper_error), value.Array_Error.None)
+		_, append_error := value.array_append_take(&wrapper, &input)
+		testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+		input = value.take_value(&wrapper)
+	}
+	compiled: program.Program
+	build_program(t, &compiled, []program.Instruction{{opcode=.Recurse}}, nil, "", 0)
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	for output_index in 0..=depth {
+		output := step_take(t, &evaluator)
+		if output_index < depth {
+			testing.expect_value(t, value.kind_of(&output), value.Kind.Array)
+		} else {
+			expect_number(t, &output, 9)
+			continue
+		}
+		testing.expect_value(t, value.destroy_value(&output), runtime.Allocator_Error(nil))
+	}
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 binary_opcodes_execute_and_replay_terminal_state :: proc(t: ^testing.T) {
 	opcodes := [?]program.Opcode{
 		.Add, .Subtract, .Multiply, .Divide, .Modulo,

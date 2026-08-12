@@ -234,6 +234,8 @@ Node_Kind :: enum {
 	Slice,
 	// If is appended to preserve existing AST discriminants.
 	If,
+	// Recurse is appended to preserve existing AST discriminants.
+	Recurse,
 }
 
 Node_Id :: distinct int
@@ -767,6 +769,16 @@ parse_pipe :: proc(
 				advance(parser)
 				new_term, ok := append_node(parser, Node{
 					kind = .Identity,
+					span = token.span,
+				})
+				if !ok {
+					return {}, false
+				}
+				term = new_term
+			case .Recurse:
+				advance(parser)
+				new_term, ok := append_node(parser, Node{
+					kind = .Recurse,
 					span = token.span,
 				})
 				if !ok {
@@ -2235,7 +2247,7 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 	}
 	token := parser.lookahead.token
 	#partial switch token.kind {
-	case .Dot, .Field, .Number, .String_Start, .Format, .Minus, .Open_Paren,
+	case .Dot, .Recurse, .Field, .Number, .String_Start, .Format, .Minus, .Open_Paren,
 	     .Open_Bracket, .Open_Brace, .Binding:
 		return true
 	case .If:

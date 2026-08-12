@@ -288,6 +288,7 @@ opcode_discriminants_preserve_serialized_values :: proc(t: ^testing.T) {
 	testing.expect_value(t, u8(Opcode.Less_Equal), u8(14))
 	testing.expect_value(t, u8(Opcode.Greater), u8(15))
 	testing.expect_value(t, u8(Opcode.Greater_Equal), u8(16))
+	testing.expect_value(t, u8(Opcode.Recurse), u8(Opcode.Slice)+1)
 }
 
 @(test)

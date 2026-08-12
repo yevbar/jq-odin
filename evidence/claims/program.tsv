@@ -85,3 +85,4 @@ program-083	generator branching	gen_both emits FORK, the left block, JUMP, and t
 program-084	core opcodes	The opcode table distinguishes INDEX, INDEX_OPT, FORK, JUMP, and BACKTRACK.	upstream/jq/src/opcode_list.h	11-20	codex-program			proposed
 program-085	bytecode widths	Upstream assigns fixed base lengths in 16-bit units and computes dynamic call length from that explicit unit scheme.	upstream/jq/src/bytecode.c	8-20,40-45	codex-program			proposed
 program-086	unary negation	The jq grammar lowers unary minus as a recursive `'-' Term` production, emitting the operand followed by an internal `_negate` call.	upstream/jq/src/parser.y	652-654	codex-program			proposed
+program-087	recursive descent	The source `..` term is compiled as a call to the zero-argument recurse definition rather than as an indexing opcode.	upstream/jq/src/parser.y;upstream/jq/src/builtin.jq	545-551;36-39	codex-eval-recurse-descent			proposed

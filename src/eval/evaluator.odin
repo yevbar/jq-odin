@@ -143,6 +143,7 @@ frame_phase :: enum u8 {
 	If_Condition_Active,
 	If_Then_Active,
 	If_Else_Active,
+	Recurse_Children,
 	Complete,
 }
 
@@ -1163,6 +1164,12 @@ capture_composite_instruction :: proc(
 		frame.saved_operand_count = 0
 		frame.has_saved_instruction = true
 		return true
+	case .Recurse:
+		if instruction.operands_count != 0 do return false
+		frame.saved_instruction = instruction
+		frame.saved_operand_count = 0
+		frame.has_saved_instruction = true
+		return true
 	case:
 		return false
 	}
@@ -1230,6 +1237,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || !is_binary_opcode(instruction.opcode) do return false
 	case .If_Condition_Active, .If_Then_Active, .If_Else_Active:
 		if frame.mode != .Normal || instruction.opcode != .If do return false
+	case .Recurse_Children:
+		if frame.mode != .Normal || instruction.opcode != .Recurse do return false
 	case:
 		return true
 	}
@@ -1237,6 +1246,7 @@ resumed_composite_instruction_valid :: proc(
 	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty || frame.phase == .Add_Active || frame.phase == .Add_Result || frame.phase == .Add_Empty do expected_operand_count = 1
 	else if frame.phase == .Limit_Active || frame.phase == .Skip_Active || frame.phase == .Nth_Active do expected_operand_count = 2
 	else if frame.phase == .Map_Start || frame.phase == .Map_Child_Active do expected_operand_count = 1
+	else if frame.phase == .Recurse_Children do expected_operand_count = 0
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
 		expected_operand_count = 2
@@ -1734,6 +1744,9 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .If_Then_Active, .If_Else_Active:
 		frame.if_branch_active = false
 		frame.phase = .If_Condition_Active
+	case .Recurse_Children:
+		// A completed child returns control to the parent's next sibling. The
+		// parent remains active until every container member has been visited.
 	case .Binding_Left_Active:
 		frame.phase = .Complete
 	case .Binding_Body_Active:
@@ -2116,6 +2129,8 @@ propagate_output :: proc(
 			frame.phase = .If_Then_Active if truthy else .If_Else_Active
 			return {}, false
 		case .If_Then_Active, .If_Else_Active:
+			current = parent
+		case .Recurse_Children:
 			current = parent
 		case .Field_Child_Active:
 			_, field_ok := field_text(storage, instruction)
@@ -5330,6 +5345,18 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Recurse:
+				if !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				output := value.clone_value(&frame.input)
+				if value.kind_of(&output) == .Invalid {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				frame.iterator_cursor = 0
+				frame.phase = .Recurse_Children
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Field:
 				if instruction.operands_count == 1 {
 					input_kind := value.kind_of(&frame.input)
@@ -6749,6 +6776,50 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			frame.iterator_cursor += 1
 			result, ready := propagate_output(storage, index, &output)
 			if ready do return result
+
+		case .Recurse_Children:
+			kind := value.kind_of(&frame.input)
+			length: int
+			length_ok := false
+			if kind == .Array {
+				length, length_ok = value.array_length(&frame.input)
+			} else if kind == .Object {
+				length, length_ok = value.object_length(&frame.input)
+			} else {
+				frame.phase = .Complete
+				continue
+			}
+			if !length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			if frame.iterator_cursor >= length {
+				frame.phase = .Complete
+				continue
+			}
+			child_input: value.Value
+			child_ok: bool
+			if kind == .Array {
+				child_input, child_ok = value.array_element_copy(&frame.input, frame.iterator_cursor)
+			} else {
+				key: value.Value
+				key, child_input, child_ok = value.object_entry_copy(&frame.input, frame.iterator_cursor)
+				_ = value.destroy_value(&key)
+			}
+			if !child_ok || value.kind_of(&child_input) == .Invalid {
+				_ = value.destroy_value(&child_input)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			recurse_instruction := frame.instruction
+			frame.iterator_cursor += 1
+			if storage.frame_count == len(storage.frames) {
+				capacity_error := grow_frames(storage)
+				if capacity_error != nil {
+					_ = value.destroy_value(&child_input)
+					return resource_step(capacity_error)
+				}
+			}
+			if !push_frame(storage, recurse_instruction, index, &child_input) {
+				_ = value.destroy_value(&child_input)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
 
 		case .First_Empty, .Last_Result, .Last_Empty:
 			if frame.phase == .First_Empty || frame.phase == .Last_Empty {
