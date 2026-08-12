@@ -1250,12 +1250,8 @@ parse_pipe :: proc(
 					}
 					if !second_ok || (token_is(parser, .Semicolon) && !has_third) || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					close := parser.lookahead.token; advance(parser)
-					first_node := parser.nodes.storage[int(first)]; second_node := parser.nodes.storage[int(second)]
-					first_identity := first_node.kind == .Identity && !first_node.has_child && !first_node.has_value && first_node.container_kind == .None
-					second_identity := second_node.kind == .Identity && !second_node.has_child && !second_node.has_value && second_node.container_kind == .None
-					first_numeric := first_identity || (first_node.kind == .Number && !first_node.has_child && !first_node.has_value) || (first_node.kind == .Negate && first_node.has_child && !first_node.has_value && parser.nodes.storage[int(first_node.child)].kind == .Number)
-					second_numeric := second_identity || (second_node.kind == .Number && !second_node.has_child && !second_node.has_value) || (second_node.kind == .Negate && second_node.has_child && !second_node.has_value && parser.nodes.storage[int(second_node.child)].kind == .Number)
-					third_node := parser.nodes.storage[int(third)] if has_third else Node{}
+					first_numeric := range_numeric_bound_node(parser, first)
+					second_numeric := range_numeric_bound_node(parser, second)
 					if parser.nodes.storage[int(first)].kind == .Comma || parser.nodes.storage[int(second)].kind == .Comma || (has_third && parser.nodes.storage[int(third)].kind == .Comma) {
 						combined, combined_ok := range_literal_cartesian(parser, first, second, third, has_third)
 						if !combined_ok { fail_from_lookahead(parser, .Expression); return {}, false }
@@ -1263,8 +1259,7 @@ parse_pipe :: proc(
 						term_ready = true
 						continue
 					}
-					third_identity := has_third && third_node.kind == .Identity && !third_node.has_child && !third_node.has_value && third_node.container_kind == .None
-					third_numeric := !has_third || third_identity || (third_node.kind == .Number && !third_node.has_child && !third_node.has_value) || (third_node.kind == .Negate && third_node.has_child && !third_node.has_value && parser.nodes.storage[int(third_node.child)].kind == .Number)
+					third_numeric := !has_third || range_numeric_bound_node(parser, third)
 					if !first_numeric || !second_numeric || !third_numeric { fail_from_lookahead(parser, .Expression); return {}, false }
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third}); if !ok { return {}, false }; term = new_term
@@ -3486,6 +3481,21 @@ range_literal_cartesian :: proc(parser: ^Parser, first, second, third: Node_Id, 
 	if !span_ok { return {}, false }
 	range_node, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third})
 	return range_node, ok
+}
+
+@(private)
+range_numeric_bound_node :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+	node := parser.nodes.storage[int(node_id)]
+	if node.has_value { return false }
+	if node.kind == .Number || (node.kind == .Identity && !node.has_child && node.container_kind == .None) { return true }
+	if node.kind == .Negate && node.has_child {
+		child := parser.nodes.storage[int(node.child)]
+		return child.kind == .Number && !child.has_child && !child.has_value
+	}
+	if node.form == .Binary && node.has_child {
+		return node.binary_operator == .Add || node.binary_operator == .Subtract || node.binary_operator == .Multiply
+	}
+	return false
 }
 
 literal_numeric_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {

@@ -1,0 +1,11 @@
+1 | range(.; .+2)
+null
+
+[1,2] | map(range(.; .+2))
+null
+
+1 | range(0; .+2)
+null
+
+1 | range(.; 3)
+null

@@ -1124,6 +1124,42 @@ literal_value :: proc(
 }
 
 @(private)
+dynamic_range_bound :: proc(storage: ^evaluator_storage, instruction: program.Instruction, input: ^value.Value) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if instruction.opcode == .Identity && !instruction.has_literal do return value.clone_value(input), .None, nil
+	if instruction.opcode == .Negate || instruction.opcode == .Parenthesized {
+		child, ok := child_instruction(storage, instruction, 0)
+		child_instruction_value, valid := program.program_instruction(storage.compiled, child)
+		if !ok || !valid { return {}, .Cannot_Number, nil }
+		result, runtime_kind, resource_error := dynamic_range_bound(storage, child_instruction_value, input)
+		if resource_error != nil || runtime_kind != .None { return {}, runtime_kind, resource_error }
+		if instruction.opcode == .Negate {
+			number, number_ok := value.number_value_get(&result)
+			if !number_ok { _ = value.destroy_value(&result); return {}, .Cannot_Number, nil }
+			_ = value.destroy_value(&result)
+			return value.number_value(-number), .None, nil
+		}
+		return result, .None, nil
+	}
+	if instruction.opcode == .Add || instruction.opcode == .Subtract || instruction.opcode == .Multiply || instruction.opcode == .Divide || instruction.opcode == .Modulo {
+		left_index, left_ok := child_instruction(storage, instruction, 0)
+		right_index, right_ok := child_instruction(storage, instruction, 1)
+		left_instruction, left_valid := program.program_instruction(storage.compiled, left_index)
+		right_instruction, right_valid := program.program_instruction(storage.compiled, right_index)
+		if !left_ok || !right_ok || !left_valid || !right_valid { return {}, .Cannot_Number, nil }
+		left, left_kind, left_error := dynamic_range_bound(storage, left_instruction, input)
+		if left_error != nil || left_kind != .None { return {}, left_kind, left_error }
+		right, right_kind, right_error := dynamic_range_bound(storage, right_instruction, input)
+		if right_error != nil || right_kind != .None { _ = value.destroy_value(&left); return {}, right_kind, right_error }
+	result, runtime_kind, resource_error := apply_binary(instruction.opcode, &left, &right, instruction.operator_span, storage.allocator)
+		_ = value.destroy_value(&left); _ = value.destroy_value(&right)
+		return result, runtime_kind, resource_error
+	}
+	literal, literal_error, cleanup_error := literal_value(storage, instruction)
+	if cleanup_error != nil || literal_error != .None { return {}, .Cannot_Number, cleanup_error }
+	return literal, .None, nil
+}
+
+@(private)
 capture_composite_instruction :: proc(
 	storage: ^evaluator_storage,
 	frame: ^eval_frame,
@@ -6394,7 +6430,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						if offset == 0 { start = number } else if offset == 1 { end = number } else { step = number }
 						continue
 					}
-					literal, literal_error, literal_cleanup := literal_value(storage, child_instruction_value)
+					literal, literal_error, literal_cleanup := dynamic_range_bound(storage, child_instruction_value, &frame.input)
 					if literal_cleanup != nil || literal_error != .None { if value.kind_of(&literal) != .Invalid { _ = value.destroy_value(&literal) }; return begin_terminal_misuse(storage, .Malformed_Program) }
 					number, number_ok := value.number_value_get(&literal); _ = value.destroy_value(&literal)
 					if !number_ok do return begin_terminal_misuse(storage, .Malformed_Program)
