@@ -1,0 +1,12 @@
+try -."very-long-string" catch .
+null
+"string (\"very-long-...) cannot be negated"
+
+"x" * range(0; 12; 2) + "☆" * 5 | try -. catch .
+null
+"string (\"☆☆☆...) cannot be negated"
+"string (\"xx☆☆...) cannot be negated"
+"string (\"xxxx☆☆...) cannot be negated"
+"string (\"xxxxxx☆...) cannot be negated"
+"string (\"xxxxxxxx...) cannot be negated"
+"string (\"xxxxxxxxxx...) cannot be negated"

@@ -3428,7 +3428,23 @@ negate_type_error_runtime_key :: proc(input: ^value.Value, allocator: runtime.Al
 		strings.builder_destroy(&builder)
 		return "", nil
 	}
-	return strings.to_string(builder), nil
+	result := strings.to_string(builder)
+	if len(result) > 32 {
+		short_builder: strings.Builder
+		_, short_init_error := strings.builder_init(&short_builder, allocator)
+		if short_init_error != nil { return result, short_init_error }
+		cut := 19
+		if len(result) > 9+10 {
+			cut = 9 + 10
+			for cut > 9 && (result[cut] & 0xc0) == 0x80 { cut -= 1 }
+		}
+		if strings.write_string(&short_builder, result[:cut]) != cut || strings.write_string(&short_builder, "...) cannot be negated") != len("...) cannot be negated") {
+			strings.builder_destroy(&short_builder)
+			return result, nil
+		}
+		result = strings.to_string(short_builder)
+	}
+	return result, nil
 }
 
 @(private)
