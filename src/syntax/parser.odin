@@ -883,15 +883,27 @@ parse_pipe :: proc(
 				term = new_term
 			case .Try:
 				advance(parser)
+				// `try EXP` is jq's implicit-error-suppression form. Keep the
+				// existing expression parser boundary so explicit catch filters
+				// and established binary expressions retain their precedence.
 				expression, expression_ok := parse_pipe(parser, closing, stop_at_comma, true)
-				if !expression_ok || !token_is(parser, .Catch) {
+				if !expression_ok {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
-				advance(parser)
-				// A catch filter binds through binary and pipe operators, but a
-				// comma at this level starts the surrounding query stream.
-				catch_filter, catch_ok := parse_pipe(parser, closing, true, false, true, true)
+				catch_filter: Node_Id
+				catch_ok: bool
+				if token_is(parser, .Catch) {
+					advance(parser)
+					// A catch filter binds through binary and pipe operators, but a
+					// comma at this level starts the surrounding query stream.
+					catch_filter, catch_ok = parse_pipe(parser, closing, true, false, true, true)
+				} else {
+					// The evaluator already treats an empty catch as suppression;
+					// materialize that existing opcode rather than adding a second
+					// try-frame contract.
+					catch_filter, catch_ok = append_node(parser, Node{kind=.Empty, span=parser.nodes.storage[int(expression)].span})
+				}
 				if !catch_ok do return {}, false
 				span, span_ok := spanning(parser, parser.nodes.storage[int(expression)].span, parser.nodes.storage[int(catch_filter)].span)
 				assert(span_ok)

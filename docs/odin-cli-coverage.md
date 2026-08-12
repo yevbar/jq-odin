@@ -608,6 +608,12 @@ behavioral oracle.
   checks pass. Catalog cases at `upstream/jq/tests/jq.test:2277` and `:2365`
   move to pass, for an exact baseline measurement of **299/522 passed and 223
   failed**.
+- Zero-catch `try EXP` (`c8edb141`, decision `0250`) now materializes jq's
+  implicit `empty` catch branch for static error suppression. Its focused
+  shard passes 2/2, package and full unit suites pass, and the current
+  authoritative catalog measures **320/522 passed and 202 failed**. Comma
+  composition inside zero-catch try, defined-or, and dynamic catches remain
+  deferred.
 
 ## Remaining high-value clusters
 

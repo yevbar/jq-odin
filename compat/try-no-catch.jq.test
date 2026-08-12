@@ -1,0 +1,7 @@
+# jq's implicit error suppression form: `try EXP` is equivalent to
+# `try EXP catch empty`.
+try error("boom")
+null
+
+try 1
+null
