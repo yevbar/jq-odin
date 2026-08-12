@@ -1,0 +1,12 @@
+# Bounded static array index assignment of numeric literals.
+.[0] = 9
+[1,2,3]
+[9,2,3]
+
+.[-1] = 8
+[1,2,3]
+[1,2,8]
+
+.[3] = 7
+[1,2,3]
+[1,2,3,7]

@@ -5470,6 +5470,34 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Static_Index_Set_Number:
+				if instruction.operands_count != 2 || value.kind_of(&frame.input) != .Array do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				index_operand, index_ok := program.program_operand(storage.compiled, instruction.operands_start)
+				number_operand, number_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+				if !index_ok || !number_ok || index_operand.kind != .Text || number_operand.kind != .Text do return begin_terminal_misuse(storage, .Malformed_Program)
+				index_text, index_text_ok := program.operand_text(storage.compiled, index_operand)
+				number_text, number_text_ok := program.operand_text(storage.compiled, number_operand)
+				if !index_text_ok || !number_text_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				array_index_i64, parse_ok := strconv.parse_i64(index_text)
+				if !parse_ok || array_index_i64 < i64(min(int)) || array_index_i64 > i64(max(int)) do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				updated, constructor_error := value.literal_number_value(number_text, storage.allocator)
+				if value.constructor_error_kind(&constructor_error) != .None {
+					cleanup_error := value.destroy_constructor_error(&constructor_error)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					return resource_step(.Out_Of_Memory)
+				}
+				displaced, set_error := value.array_set_take(&frame.input, int(array_index_i64), &updated)
+				if value.array_error_kind(&set_error) != .None {
+					_ = value.destroy_value(&updated)
+					cleanup_error := value.destroy_array_error(&set_error)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				}
+				_ = value.destroy_value(&displaced)
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Static_Field_Add_Number:
 				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
 				if !operands_ok || value.kind_of(&frame.input) != .Object {

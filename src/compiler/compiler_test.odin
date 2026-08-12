@@ -439,6 +439,16 @@ source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-.,(.)?,.a|.
 		seen[node.kind] = true
 	}
 	testing.expect_value(t, syntax.destroy_parser(&set_parser), runtime.Allocator_Error.None)
+	index_parser: syntax.Parser
+	index_source := diagnostic.borrow_source("<index-shape>", `.[0] = 1`)
+	testing.expect(t, syntax.init_parser(&index_parser, index_source, context.allocator))
+	index_parsed := syntax.parse_filter(&index_parser)
+	testing.expect_value(t, index_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&index_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&index_parser), runtime.Allocator_Error.None)
 	for kind in syntax.Node_Kind {
 		testing.expect(t, seen[kind])
 	}

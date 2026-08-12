@@ -240,6 +240,8 @@ Node_Kind :: enum {
 	Static_Field_Add_Number,
 	// Static_Field_Set_Number is appended to preserve existing AST discriminants.
 	Static_Field_Set_Number,
+	// Static_Index_Set_Number is appended to preserve existing AST discriminants.
+	Static_Index_Set_Number,
 }
 
 Node_Id :: distinct int
@@ -1738,6 +1740,9 @@ parse_pipe :: proc(
 			)
 		}
 		if token_is(parser, .Assign) {
+			if current >= 0 && parser.nodes.storage[int(current)].kind == .Index {
+				return parse_static_index_set_number(parser, current, pipe_root, pipe_tail, closing)
+			}
 			return parse_static_field_set_number(parser, current if pipe_root != invalid_id else result, pipe_root, pipe_tail, closing)
 		}
 
@@ -1926,6 +1931,28 @@ parse_static_field_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 	if !update_ok do return {}, false
 	if int(pipe_root) < 0 do return update, true
 	tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update
+	return pipe_root, true
+}
+
+@(private="package")
+parse_static_index_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tail: Node_Id, closing: Token_Kind) -> (Node_Id, bool) {
+	index_node := &parser.nodes.storage[int(left)]
+	base := parser.nodes.storage[int(index_node.child)]
+	if !index_node.has_child || index_node.container_kind != .None || !index_node.has_number_text ||
+	   base.form != .Kinded || base.kind != .Identity || base.has_child || base.has_value {
+		fail_at_current(parser, .Unexpected_Token, .Expression); return {}, false
+	}
+	advance(parser)
+	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+	if !right_ok do return {}, false
+	number := parser.nodes.storage[int(right)]
+	if number.form != .Kinded || number.kind != .Number || !number.has_number_text || number.has_child || number.has_value {
+		fail_from_lookahead(parser, .Expression); return {}, false
+	}
+	span, span_ok := spanning(parser, index_node.span, number.span); assert(span_ok)
+	index_node^ = Node{kind=.Static_Index_Set_Number, span=span, child=index_node.child, has_child=true, right=right, number_text=index_node.number_text, has_number_text=true}
+	if int(pipe_root) < 0 do return left, true
+	tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = left
 	return pipe_root, true
 }
 
