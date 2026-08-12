@@ -10,3 +10,11 @@ map_values(. + 1)
 map_values(.a)
 [{"a":1},{"a":2},{}]
 [1,2,null]
+
+map_values(range(2))
+{"a":1,"b":2}
+{"a":0,"b":0}
+
+map_values(empty)
+{"a":1,"b":2}
+{}

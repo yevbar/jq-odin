@@ -188,6 +188,7 @@ eval_frame :: struct {
 	add_seen: bool,
 	limit_remaining: u64,
 	map_values_mode: bool,
+	map_value_seen: bool,
 }
 
 @(private)
@@ -592,6 +593,7 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	frame.selected_seen = false
 	frame.limit_remaining = 0
 	frame.map_values_mode = false
+	frame.map_value_seen = false
 	frame.constructor_child = 0
 	frame.constructor_cursor = 0
 	frame.constructor_total = 0
@@ -2049,6 +2051,11 @@ propagate_output :: proc(
 			continue
 		case .Map_Child_Active:
 			if frame.map_values_mode {
+				if frame.map_value_seen {
+					_ = value.destroy_value(owned)
+					return {}, false
+				}
+				frame.map_value_seen = true
 				key := value.clone_value(&frame.pending_constructor_key)
 				_, displaced, object_error := value.object_set_take(&frame.constructor_results, &key, owned)
 				_ = value.destroy_value(&displaced)
@@ -6506,6 +6513,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if ready do return result
 				continue
 			}
+			frame.map_value_seen = false
 			child, child_ok := child_instruction(storage, instruction, 0)
 			element: value.Value
 			element_ok: bool
