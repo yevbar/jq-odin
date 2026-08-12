@@ -3690,7 +3690,8 @@ strftime_array_result :: proc(input: ^value.Value, format: string, allocator: ru
 	if format != "%Y-%m-%dT%H:%M:%SZ" do return {}, .Cannot_Iterate, nil
 	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
 	length, length_ok := value.array_length(input)
-	if !length_ok || length < 3 do return {}, .Cannot_Iterate, nil
+	// jq accepts short datetime arrays and treats omitted fields as zero.
+	if !length_ok || length < 1 do return {}, .Cannot_Iterate, nil
 	fields: [6]int
 	for i in 0..<length {
 		if i >= 6 do break
