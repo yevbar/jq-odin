@@ -1,0 +1,12 @@
+# `map` applies a child filter to each array element and collects all outputs.
+map(. + 1)
+[1,2,3]
+[2,3,4]
+
+map(.a)
+[{"a":1},{"a":2},{}]
+[1,2,null]
+
+map(.[])
+[[1,2],[3],[]]
+[1,2,3]

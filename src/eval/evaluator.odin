@@ -103,6 +103,8 @@ frame_phase :: enum u8 {
 	Limit_Active,
 	Skip_Active,
 	Nth_Active,
+	Map_Start,
+	Map_Child_Active,
 	Try_Start_Expression,
 	Try_Start_Catch,
 	Try_Expression_Active,
@@ -1069,6 +1071,10 @@ capture_composite_instruction :: proc(
 		_, count_ok := child_instruction(storage, instruction, 0)
 		_, generator_ok := child_instruction(storage, instruction, 1)
 		if !count_ok || !generator_ok do return false
+	case .Map:
+		if instruction.operands_count != 1 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
 	case .Field:
 		if instruction.operands_count != 2 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1167,6 +1173,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Skip do return false
 	case .Nth_Active:
 		if frame.mode != .Normal || instruction.opcode != .Nth do return false
+	case .Map_Start, .Map_Child_Active:
+		if frame.mode != .Normal || instruction.opcode != .Map do return false
 	case .Try_Expression_Active, .Try_Catch_Active:
 		if frame.mode != .Normal || instruction.opcode != .Try do return false
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
@@ -1196,6 +1204,7 @@ resumed_composite_instruction_valid :: proc(
 	expected_operand_count: u8
 	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty do expected_operand_count = 1
 	else if frame.phase == .Limit_Active || frame.phase == .Skip_Active || frame.phase == .Nth_Active do expected_operand_count = 2
+	else if frame.phase == .Map_Start || frame.phase == .Map_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
 		expected_operand_count = 2
@@ -1576,6 +1585,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		}
 	case .Limit_Active, .Skip_Active, .Nth_Active:
 		frame.phase = .Complete
+	case .Map_Child_Active:
+		frame.phase = .Map_Start
 	case .Try_Expression_Active, .Try_Catch_Active:
 		frame.phase = .Complete
 	case .Fork_Left_Active:
@@ -1885,6 +1896,15 @@ propagate_output :: proc(
 			frame.phase = .Complete
 			current = parent
 			continue
+		case .Map_Child_Active:
+			append_error: value.Array_Operation_Error
+			_, append_error = value.array_append_take(&frame.constructor_results, owned)
+			if value.array_error_kind(&append_error) != .None {
+				frame.pending_constructor_value = value.take_value(owned)
+				retain_constructor_array_error(frame, &append_error)
+				return resource_step(.Out_Of_Memory), true
+			}
+			return {}, false
 		case .Try_Catch_Active, .Fork_Left_Active, .Fork_Right_Active:
 			current = parent
 		case .Try_Expression_Active:
@@ -5476,6 +5496,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Nth_Active
 				continue
+			case .Map:
+				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				if value.kind_of(&frame.input) != .Array {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					if ready do return result
+					continue
+				}
+				results, array_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&array_error) != .None {
+					_ = value.destroy_array_error(&array_error)
+					return resource_step(.Out_Of_Memory)
+				}
+				frame.constructor_results = value.take_value(&results)
+				frame.iterator_cursor = 0
+				frame.phase = .Map_Start
+				continue
 			case .Range:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 				start: f64
@@ -5838,6 +5874,32 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			frame.phase = next_phase
 
 		case .Try_Expression_Active, .Try_Catch_Active:
+			return begin_terminal_misuse(storage, .Malformed_Program)
+
+		case .Map_Start:
+			length, length_ok := value.array_length(&frame.input)
+			if !length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			if frame.iterator_cursor >= length {
+				output := value.take_value(&frame.constructor_results)
+				frame.phase = .Complete
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+				continue
+			}
+			child, child_ok := child_instruction(storage, instruction, 0)
+			element, element_ok := value.array_element_copy(&frame.input, frame.iterator_cursor)
+			if !child_ok || !element_ok || value.kind_of(&element) == .Invalid {
+				_ = value.destroy_value(&element)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			frame.iterator_cursor += 1
+			if !push_frame(storage, child, index, &element) {
+				_ = value.destroy_value(&element)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			frame.phase = .Map_Child_Active
+
+		case .Map_Child_Active:
 			return begin_terminal_misuse(storage, .Malformed_Program)
 
 		case .Constructor_Start:

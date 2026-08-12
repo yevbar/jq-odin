@@ -184,6 +184,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Nth:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Map:
+		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Strftime, .Strptime:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
@@ -292,6 +295,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Nth:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Map:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Any_Not, .All_Not:
 		return true
 	case .Variable:
@@ -591,6 +596,8 @@ lower_filter :: proc(
 			if !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Nth:
 			if !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Size_Overflow} }
+		case .Map:
+			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Any_Not, .All_Not:
 			// Negated any/all are operand-free predicates.
 	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Any, .All, .Isfinite, .Isnormal:
@@ -923,6 +930,11 @@ lower_filter :: proc(
 				operand_at += 1
 			}
 			instruction.operands_count = 2
+		case .Map:
+			instruction.opcode = .Map
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
+			operand_at += 1
+			instruction.operands_count = 1
 		case .Last, .First:
 			instruction.opcode = program.Opcode.Last if node.kind == .Last else program.Opcode.First
 			if node.has_child {
