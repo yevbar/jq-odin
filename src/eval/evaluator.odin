@@ -6085,10 +6085,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				init_instruction, init_valid := program.program_instruction(storage.compiled, init_index)
 				update_instruction, update_valid := program.program_instruction(storage.compiled, update_index)
 				if !init_ok || !update_ok || !init_valid || !update_valid do return begin_terminal_misuse(storage, .Malformed_Program)
-				seed_frame := eval_frame{input = value.clone_value(&frame.input)}
-				seed, seed_error, seed_cleanup := literal_value(storage, init_instruction)
-				_ = value.destroy_value(&seed_frame.input)
-				if seed_cleanup != nil || seed_error != .None do return begin_terminal_misuse(storage, .Malformed_Program)
+				seed: value.Value
+				if init_instruction.opcode == .Identity && !init_instruction.has_literal {
+					seed = value.clone_value(&frame.input)
+				} else {
+					literal_seed, seed_error, seed_cleanup := literal_value(storage, init_instruction)
+					if seed_cleanup != nil || seed_error != .None do return begin_terminal_misuse(storage, .Malformed_Program)
+					seed = literal_seed
+				}
+				if value.kind_of(&seed) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
 				if update_instruction.opcode == .Identity {
 					frame.phase = .Leaf_Yielded
 					result, ready := propagate_output(storage, index, &seed)
