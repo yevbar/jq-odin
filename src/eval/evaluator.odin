@@ -4888,6 +4888,14 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 		if kind == .Success do return result, .None, nil
 		return {}, .Cannot_Multiply, nil
 	case .Divide:
+		if value.kind_of(left) == .String && value.kind_of(right) == .String {
+			separator, separator_ok := value.string_borrowed(right)
+			if !separator_ok do return {}, .Cannot_Divide, nil
+			result, runtime_kind, allocation_error := split_result(left, separator, allocator)
+			if allocation_error != nil do return {}, .None, allocation_error
+			if runtime_kind == .None do return result, .None, nil
+			return {}, .Cannot_Divide, nil
+		}
 		result, kind := value.number_divide(left, right)
 		if kind == .Success do return result, .None, nil
 		return {}, .Cannot_Divide, nil
