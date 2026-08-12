@@ -1246,7 +1246,7 @@ parse_pipe :: proc(
 						return {}, false
 					}
 					advance(parser)
-					generator, generator_ok := parse_pipe(parser, .Close_Paren, true)
+					generator, generator_ok := parse_pipe(parser, .Close_Paren, false)
 					if !generator_ok || !token_is(parser, .Close_Paren) {
 						fail_from_lookahead(parser, .Close_Paren)
 						return {}, false
@@ -1262,7 +1262,9 @@ parse_pipe :: proc(
 						term_ready = true
 						continue
 					}
-					if count_node.kind != .Number || count_node.has_child || count_node.has_value {
+					negative_literal := count_node.kind == .Negate && count_node.has_child &&
+						parser.nodes.storage[int(count_node.child)].kind == .Number
+					if (count_node.kind != .Number && !negative_literal) || count_node.has_value {
 						fail_from_lookahead(parser, .Expression)
 						return {}, false
 					}

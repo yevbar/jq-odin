@@ -593,6 +593,68 @@ object_constructor_computed_key_generator_emits_each_key :: proc(t: ^testing.T) 
 }
 
 @(test)
+limit_cancels_comma_generator_before_later_error :: proc(t: ^testing.T) {
+	instructions := [?]program.Instruction{
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 1, operands_count = 1},
+		{opcode = .Identity, operands_start = 2},
+		{opcode = .Error, operands_start = 2, operands_count = 1},
+		{opcode = .Fork, operands_start = 3, operands_count = 2},
+		{opcode = .Limit, operands_start = 5, operands_count = 2},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 1, kind = .Text},
+		{text_start = 1, text_count = 1, kind = .Text},
+		{kind = .Instruction, instruction = 2},
+		{kind = .Instruction, instruction = 1},
+		{kind = .Instruction, instruction = 3},
+		{kind = .Instruction, instruction = 0},
+		{kind = .Instruction, instruction = 4},
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "11", 5)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	expect_number(t, &output, 1)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
+negative_literal_limit_errors_before_generator :: proc(t: ^testing.T) {
+	instructions := [?]program.Instruction{
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Identity, operands_start = 1},
+		{opcode = .Error, operands_start = 1, operands_count = 1},
+		{opcode = .Limit, operands_start = 2, operands_count = 2},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 2, kind = .Text},
+		{kind = .Instruction, instruction = 1},
+		{kind = .Instruction, instruction = 0},
+		{kind = .Instruction, instruction = 2},
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "-1", 3)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	result := step_evaluator(&evaluator)
+	testing.expect_value(t, result.kind, Step_Kind.Runtime_Error)
+	testing.expect_value(t, result.runtime_error.kind, Runtime_Error_Kind.User_Error)
+	testing.expect_value(t, result.runtime_error.key, "limit doesn't support negative count")
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Runtime_Error)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 array_constructor_preserves_child_stream_cardinality :: proc(t: ^testing.T) {
 	// [(1, 2)] must yield one array containing both stream values.
 	instructions := [?]program.Instruction{

@@ -17,3 +17,17 @@ limit(2; range(10))
 null
 0
 1
+
+# A satisfied limit cancels the generator before a later error branch.
+limit(1; 1, error)
+null
+1
+
+# Zero likewise never starts the generator.
+limit(0; error)
+"badness"
+
+# A negative literal count fails before the generator is evaluated.
+try limit(-1; error) catch .
+null
+"limit doesn't support negative count"

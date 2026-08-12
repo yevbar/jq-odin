@@ -851,6 +851,33 @@ test_unary_minus_grouped_query_structure_preserves_precedence_and_associativity 
 }
 
 @(test)
+test_limit_accepts_comma_generator_and_negative_literal_count :: proc(t: ^testing.T) {
+	comma_parser: Parser
+	_, comma_outcome := parse_test_filter(t, &comma_parser, "limit(1; 1, error)")
+	expect_parse_success(t, &comma_parser, comma_outcome)
+	limit := comma_parser.nodes.storage[int(comma_outcome.root)]
+	testing.expect_value(t, limit.kind, Node_Kind.Limit)
+	testing.expect_value(t, comma_parser.nodes.storage[int(limit.left)].kind, Node_Kind.Number)
+	generator := comma_parser.nodes.storage[int(limit.right)]
+	testing.expect_value(t, generator.kind, Node_Kind.Comma)
+	testing.expect_value(t, comma_parser.nodes.storage[int(generator.left)].kind, Node_Kind.Number)
+	testing.expect_value(t, comma_parser.nodes.storage[int(generator.right)].kind, Node_Kind.Error)
+	testing.expect_value(t, destroy_parser(&comma_parser), runtime.Allocator_Error.None)
+
+	negative_parser: Parser
+	_, negative_outcome := parse_test_filter(t, &negative_parser, "limit(-1; error)")
+	expect_parse_success(t, &negative_parser, negative_outcome)
+	negative_limit := negative_parser.nodes.storage[int(negative_outcome.root)]
+	testing.expect_value(t, negative_limit.kind, Node_Kind.Limit)
+	negative := negative_parser.nodes.storage[int(negative_limit.left)]
+	testing.expect_value(t, negative.kind, Node_Kind.Negate)
+	testing.expect(t, negative.has_child)
+	testing.expect_value(t, negative_parser.nodes.storage[int(negative.child)].kind, Node_Kind.Number)
+	testing.expect_value(t, negative_parser.nodes.storage[int(negative_limit.right)].kind, Node_Kind.Error)
+	testing.expect_value(t, destroy_parser(&negative_parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_unary_minus_does_not_broaden_identifier_or_unsupported_term_subset :: proc(t: ^testing.T) {
 	Case :: struct { text: string, start, end: int, actual: Token_Kind }
 	cases := [?]Case{
