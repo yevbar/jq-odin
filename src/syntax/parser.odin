@@ -668,6 +668,7 @@ parse_pipe :: proc(
 	stop_at_pipe := false,
 ) -> (Node_Id, bool) {
 	invalid_id := Node_Id(-1)
+	entry_frame_depth := parser.frames.count
 	current, pipe_root, pipe_tail := invalid_id, invalid_id, invalid_id
 	term := invalid_id
 	term_ready := false
@@ -1665,7 +1666,7 @@ parse_pipe :: proc(
 			return bound, true
 		}
 
-		if (closing != .Invalid && token_is(parser, closing) && parser.frames.count == 0) ||
+		if (closing != .Invalid && token_is(parser, closing) && parser.frames.count == entry_frame_depth) ||
 		   (stop_at_comma && token_is(parser, .Comma)) {
 			return result, true
 		}
