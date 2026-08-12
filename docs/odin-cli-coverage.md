@@ -626,7 +626,7 @@ behavioral oracle.
   generator-valued operands still require a continuation-frame contract.
 - Dynamic arithmetic `range` bounds (decision `0254`) now evaluate bounded
   identity/literal/unary/arithmetic expressions against the current input,
-  including `map(range(.; .+2))`. The focused shard passes 4/4 and package/full
+  including `map(range(.; .+2))`. The focused shard passes 6/6 and package/full
   unit tests remain green; the catalog remains **322/522** because these cases
   are embedded in larger unsupported expressions. Generator-valued bounds and
   zero-divisor diagnostic propagation remain deferred.
