@@ -4,4 +4,5 @@ The append-only `Or` and `And` opcodes implement jq truthiness (`null` and
 `false` are falsey; all other values are truthy) using the existing binary
 continuation and owned value cleanup.
 
-Evidence: `upstream/jq/tests/jq.test:1472`.
+Evidence: `upstream/jq/tests/jq.test:1472`; short-circuit probes also cover
+the observable stream behavior of `error(0)` on the right-hand side.

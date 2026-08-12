@@ -2225,6 +2225,17 @@ propagate_output :: proc(
 			if value.kind_of(&frame.binary_left) != .Invalid {
 				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
 			}
+			if instruction.opcode == .Or || instruction.opcode == .And {
+				kind := value.kind_of(owned)
+				truthy := kind != .Null
+				if kind == .Boolean { truthy, _ = value.boolean_value_get(owned) }
+				short_circuit := (instruction.opcode == .Or && truthy) || (instruction.opcode == .And && !truthy)
+				if short_circuit {
+					_ = value.destroy_value(owned)
+					result := value.boolean_value(truthy)
+					return propagate_output(storage, parent, &result)
+				}
+			}
 			if instruction.opcode == .Defined_Or {
 				kind := value.kind_of(owned)
 				truthy := kind != .Null

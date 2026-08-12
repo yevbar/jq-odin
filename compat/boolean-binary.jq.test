@@ -6,3 +6,15 @@ null
 
 {x: 1 + 2, y: false or true, z: null // 3}
 null
+
+true or error(0)
+null
+
+false and error(0)
+null
+
+false, true or error(0)
+null
+
+true, false and error(0)
+null
