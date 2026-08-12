@@ -90,6 +90,7 @@ frame_mode :: enum u8 {
 	Normal,
 	Field_Only,
 	Index_Only,
+	Slice_Only,
 }
 
 @(private)
@@ -122,6 +123,9 @@ frame_phase :: enum u8 {
 	Index_Start_Child,
 	Index_Child_Active,
 	Index_Result_Active,
+	Slice_Start_Child,
+	Slice_Child_Active,
+	Slice_Result_Active,
 	Iterator_Active,
 	Binding_Start_Left,
 	Binding_Left_Active,
@@ -1058,7 +1062,7 @@ capture_composite_instruction :: proc(
 	frame: ^eval_frame,
 	instruction: program.Instruction,
 ) -> bool {
-	if frame.mode != .Normal && frame.mode != .Field_Only && frame.mode != .Index_Only do return false
+	if frame.mode != .Normal && frame.mode != .Field_Only && frame.mode != .Index_Only && frame.mode != .Slice_Only do return false
 	#partial switch instruction.opcode {
 	case .Parenthesized, .Optional, .Negate:
 		if instruction.operands_count != 1 do return false
@@ -1087,6 +1091,14 @@ capture_composite_instruction :: proc(
 		_, child_ok := child_instruction(storage, instruction, 0)
 		index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
 		if !child_ok || !index_ok || index_operand.kind != .Text do return false
+	case .Slice:
+		if instruction.operands_count != 3 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		for offset in 1..<3 {
+			operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(offset)))
+			if !operand_ok || operand.kind != .Text do return false
+		}
+		if !child_ok do return false
 	case .Try:
 		if instruction.operands_count != 2 do return false
 		_, expression_ok := child_instruction(storage, instruction, 0)
@@ -1187,6 +1199,8 @@ resumed_composite_instruction_valid :: proc(
 		}
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
+	case .Slice_Start_Child, .Slice_Child_Active, .Slice_Result_Active:
+		if frame.mode != .Normal && frame.mode != .Slice_Only || instruction.opcode != .Slice do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
 	case .Sequence_Start_Left, .Sequence_Left_Active, .Sequence_Right_Active:
@@ -1210,6 +1224,9 @@ resumed_composite_instruction_valid :: proc(
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
 		expected_operand_count = 2
+	}
+	else if frame.phase == .Slice_Start_Child || frame.phase == .Slice_Child_Active || frame.phase == .Slice_Result_Active {
+		expected_operand_count = 3
 	}
 	else if frame.phase == .Constructor_Start || frame.phase == .Constructor_Child_Active || frame.phase == .Constructor_Emit {
 		expected_operand_count = u8(instruction.operands_count)
@@ -1377,6 +1394,16 @@ slice_result :: proc(
 		if !ok || n != f64(int(n)) do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
 		end = int(n); if end < 0 { end += length }; if end < 0 { end = 0 }; if end > length { end = length }
 	}
+	if start > end {
+		if value.kind_of(&frame.input) == .String {
+			result, constructor_error := value.string_value("", storage.allocator)
+			if value.constructor_error_kind(&constructor_error) != .None { _ = value.destroy_constructor_error(&constructor_error); return {}, {}, false }
+			return result, {}, true
+		}
+		result, array_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return {}, {}, false }
+		return result, {}, true
+	}
 	if value.kind_of(&frame.input) == .String {
 		start_byte := utf8_byte_offset_for_codepoint(text, start)
 		end_byte := utf8_byte_offset_for_codepoint(text, end)
@@ -1386,7 +1413,6 @@ slice_result :: proc(
 	}
 	result, array_error := value.array_value(storage.allocator)
 	if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return {}, {}, false }
-	if start > end { return result, {}, true }
 	for i in start..<end {
 		item, ok := value.array_element_copy(&frame.input, i)
 		if !ok { _ = value.destroy_value(&result); return {}, {}, false }
@@ -1662,6 +1688,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Index_Result_Active:
 		frame.phase = .Index_Child_Active
+	case .Slice_Child_Active:
+		frame.phase = .Complete
+	case .Slice_Result_Active:
+		frame.phase = .Slice_Child_Active
 	case .Iterator_Active:
 		frame.phase = .Complete
 	case .Binary_Left_Active:
@@ -2006,8 +2036,16 @@ propagate_output :: proc(
 			}
 			frame.phase = .Index_Result_Active
 			return {}, false
-		case .Index_Result_Active:
-			current = parent
+	case .Index_Result_Active:
+		current = parent
+	case .Slice_Child_Active:
+		if !push_frame(storage, frame.instruction, parent, owned, .Slice_Only) {
+			return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+		}
+		frame.phase = .Slice_Result_Active
+		return {}, false
+	case .Slice_Result_Active:
+		current = parent
 		case .Iterator_Active:
 			current = parent
 		case .Binary_Left_Active:
@@ -4955,6 +4993,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if ready do return result
 				continue
 			}
+			if frame.mode == .Slice_Only {
+				output, runtime_error, valid := slice_result(storage, frame, instruction)
+				if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
+				if runtime_error.kind != .None {
+					result, ready := raise_runtime(storage, index, runtime_error)
+					if ready do return result
+					continue
+				}
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+				continue
+			}
 
 			switch instruction.opcode {
 			case .Identity:
@@ -5033,16 +5084,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Index_Start_Child
 			case .Slice:
-				output, runtime_error, valid := slice_result(storage, frame, instruction)
-				if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
-				if runtime_error.kind != .None {
-					result, ready := raise_runtime(storage, index, runtime_error)
-					if ready do return result
-					continue
+				if !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
-				frame.phase = .Leaf_Yielded
-				result, ready := propagate_output(storage, index, &output)
-				if ready do return result
+				frame.phase = .Slice_Start_Child
 			case .Variable:
 				output, variable_ok := variable_result(storage, index, instruction)
 				if !variable_ok || value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
@@ -5941,7 +5986,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
+		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -5958,6 +6003,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				offset, next_phase = 0, .Field_Child_Active
 			case .Index_Start_Child:
 				offset, next_phase = 0, .Index_Child_Active
+			case .Slice_Start_Child:
+				offset, next_phase = 0, .Slice_Child_Active
 			case .Fork_Start_Left:
 				offset, next_phase = 0, .Fork_Left_Active
 			case .Fork_Start_Right:
@@ -5983,6 +6030,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			frame.phase = next_phase
 
 		case .Try_Expression_Active, .Try_Catch_Active:
+			return begin_terminal_misuse(storage, .Malformed_Program)
+		case .Slice_Child_Active, .Slice_Result_Active:
 			return begin_terminal_misuse(storage, .Malformed_Program)
 
 		case .Map_Start:
