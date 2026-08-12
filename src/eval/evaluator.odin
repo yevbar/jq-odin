@@ -986,8 +986,20 @@ field_text :: proc(
 		storage.compiled,
 		program.Operand_Index(u32(instruction.operands_start)+offset),
 	)
-	if !ok || operand.kind != .Text do return "", false
+	if !ok do return "", false
+	if operand.kind == .Iterator do return "", true
+	if operand.kind != .Text do return "", false
 	return program.operand_text(storage.compiled, operand)
+}
+
+@(private)
+field_is_iterator :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> bool {
+	if instruction.opcode != .Field || instruction.operands_count != 2 do return false
+	operand, ok := program.program_operand(
+		storage.compiled,
+		program.Operand_Index(u32(instruction.operands_start)+1),
+	)
+	return ok && operand.kind == .Iterator
 }
 
 @(private)
@@ -5235,9 +5247,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if instruction.opcode != .Field {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
-				name, name_ok := field_text(storage, instruction)
+				_, name_ok := field_text(storage, instruction)
 				if !name_ok do return begin_terminal_misuse(storage, .Malformed_Program)
-				if name == "" {
+				if field_is_iterator(storage, instruction) {
 					kind := value.kind_of(&frame.input)
 					if kind != .Array && kind != .Object {
 						key, key_error := cannot_iterate_runtime_key(&frame.input, storage.allocator)
@@ -5349,12 +5361,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					result, ready := propagate_output(storage, index, &output)
 					if ready do return result
 				} else if instruction.operands_count == 2 {
-					// An empty field name is the parser's representation of `.[]`.
+					// The explicit field iterator flag represents `.[]`; a quoted
+					// empty field remains an ordinary read of the empty-string key.
 					// Keep the source value owned by this frame and yield one owned
 					// element per step, matching jq's generator cardinality.
-					name, name_ok := field_text(storage, instruction)
+					_, name_ok := field_text(storage, instruction)
 					if !name_ok do return begin_terminal_misuse(storage, .Malformed_Program)
-					if name == "" {
+					if field_is_iterator(storage, instruction) {
 						// Empty-field postfixes have a child (`.a[]` or `.[]`).
 						// Evaluate that child first; the child result is re-entered
 						// through this same instruction by propagate_output, where the
