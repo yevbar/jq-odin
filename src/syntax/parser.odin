@@ -1143,13 +1143,13 @@ parse_pipe :: proc(
 						// `range(n)` is the shorthand for `range(0;n)`.
 					} else {
 						if !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; advance(parser)
-					second, second_ok := parse_pipe(parser, .Close_Paren, true)
+					second, second_ok := parse_pipe(parser, .Close_Paren, false)
 					third := Node_Id(-1)
 					has_third := false
 					if token_is(parser, .Semicolon) {
 						advance(parser)
 						third_ok: bool
-						third, third_ok = parse_pipe(parser, .Close_Paren, true)
+						third, third_ok = parse_pipe(parser, .Close_Paren, false)
 						has_third = third_ok
 					}
 					if !second_ok || (token_is(parser, .Semicolon) && !has_third) || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
@@ -1158,6 +1158,13 @@ parse_pipe :: proc(
 					first_numeric := (first_node.kind == .Number && !first_node.has_child && !first_node.has_value) || (first_node.kind == .Negate && first_node.has_child && !first_node.has_value && parser.nodes.storage[int(first_node.child)].kind == .Number)
 					second_numeric := (second_node.kind == .Number && !second_node.has_child && !second_node.has_value) || (second_node.kind == .Negate && second_node.has_child && !second_node.has_value && parser.nodes.storage[int(second_node.child)].kind == .Number)
 					third_node := parser.nodes.storage[int(third)] if has_third else Node{}
+					if parser.nodes.storage[int(first)].kind == .Comma || parser.nodes.storage[int(second)].kind == .Comma || (has_third && parser.nodes.storage[int(third)].kind == .Comma) {
+						combined, combined_ok := range_literal_cartesian(parser, first, second, third, has_third)
+						if !combined_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+						term = combined
+						term_ready = true
+						continue
+					}
 					third_numeric := !has_third || (third_node.kind == .Number && !third_node.has_child && !third_node.has_value) || (third_node.kind == .Negate && third_node.has_child && !third_node.has_value && parser.nodes.storage[int(third_node.child)].kind == .Number)
 					if !first_numeric || !second_numeric || !third_numeric { fail_from_lookahead(parser, .Expression); return {}, false }
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
@@ -2968,6 +2975,49 @@ literal_call_sequence :: proc(parser: ^Parser, node_id: Node_Id, call_kind: Node
 	}
 	needle, needle_ok := append_node(parser, Node{kind=call_kind, span=node.span, child=node_id, has_child=true})
 	return needle, needle_ok
+}
+
+// range_literal_cartesian expands comma-separated literal range arguments
+// into the ordered Cartesian stream jq produces. Dynamic arguments remain
+// outside this bounded parser slice.
+range_literal_cartesian :: proc(parser: ^Parser, first, second, third: Node_Id, has_third: bool) -> (Node_Id, bool) {
+	first_node := parser.nodes.storage[int(first)]
+	if first_node.kind == .Comma {
+		left, left_ok := range_literal_cartesian(parser, first_node.left, second, third, has_third)
+		right, right_ok := range_literal_cartesian(parser, first_node.right, second, third, has_third)
+		if !left_ok || !right_ok { return {}, false }
+		combined, ok := append_node(parser, Node{kind=.Comma, span=first_node.span, left=left, right=right})
+		return combined, ok
+	}
+	second_node := parser.nodes.storage[int(second)]
+	if second_node.kind == .Comma {
+		left, left_ok := range_literal_cartesian(parser, first, second_node.left, third, has_third)
+		right, right_ok := range_literal_cartesian(parser, first, second_node.right, third, has_third)
+		if !left_ok || !right_ok { return {}, false }
+		combined, ok := append_node(parser, Node{kind=.Comma, span=second_node.span, left=left, right=right})
+		return combined, ok
+	}
+	if has_third {
+		third_node := parser.nodes.storage[int(third)]
+		if third_node.kind == .Comma {
+			left, left_ok := range_literal_cartesian(parser, first, second, third_node.left, true)
+			right, right_ok := range_literal_cartesian(parser, first, second, third_node.right, true)
+			if !left_ok || !right_ok { return {}, false }
+			combined, ok := append_node(parser, Node{kind=.Comma, span=third_node.span, left=left, right=right})
+			return combined, ok
+		}
+	}
+	candidates := [3]Node_Id{first, second, third}
+	for candidate_index in 0..<3 {
+		if !has_third && candidate_index == 2 { continue }
+		candidate := candidates[candidate_index]
+		node := parser.nodes.storage[int(candidate)]
+		if node.has_value || (node.kind != .Number && !(node.kind == .Negate && node.has_child)) { return {}, false }
+	}
+	span, span_ok := spanning(parser, parser.nodes.storage[int(first)].span, parser.nodes.storage[int(second)].span)
+	if !span_ok { return {}, false }
+	range_node, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=second, reduce_update=third, has_reduce_update=has_third})
+	return range_node, ok
 }
 
 @(private="package")
