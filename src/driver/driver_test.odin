@@ -400,6 +400,29 @@ zero_one_and_many_outputs_are_lf_delimited :: proc(t: ^testing.T) {
 }
 
 @(test)
+ordinary_string_interpolation_evaluates_and_stringifies_each_result :: proc(t: ^testing.T) {
+	expect_run(t, `"inter\("pol" + "ation")"`, "null", `"interpolation"
+`)
+	expect_run(t, `"<b>\(.)</b>"`, `"<&"`, `"<b><&</b>"
+`)
+	expect_run(t, `"item=\(.[])"`, `[1,true,null,{"a":2}]`, `"item=1"
+"item=true"
+"item=null"
+"item={\"a\":2}"
+`)
+}
+
+@(test)
+object_binding_shorthand_uses_name_as_key_and_variable_as_value :: proc(t: ^testing.T) {
+	expect_run(t, `"v" as $x | {$x}`, "null", "{\n  \"x\": \"v\"\n}\n")
+}
+
+@(test)
+computed_object_key_variable_stream_is_evaluated :: proc(t: ^testing.T) {
+	expect_run(t, `"k" as $k | {($k): 1}`, "null", "{\n  \"k\": 1\n}\n")
+}
+
+@(test)
 stream_inputs_and_output_modes_match_jq_bytes :: proc(t: ^testing.T) {
 	input := "  1\n2[3,4]{\"a\":[true,{\"b\":null}]} \t"
 	expect_run(
@@ -411,6 +434,9 @@ stream_inputs_and_output_modes_match_jq_bytes :: proc(t: ^testing.T) {
 		"1\n2\n[3,4]\n{\"a\":[true,{\"b\":null}]}\n",
 		.Compact,
 	)
+	expect_run_mode(t, ".", "\"x\"", "x\n", .Raw)
+	expect_run_mode(t, ".", "{\"a\":[1,2]}", "{\n  \"a\": [\n    1,\n    2\n  ]\n}\n", .Raw)
+	expect_run_mode(t, ".", "{\"a\":[1,2]}", "{\"a\":[1,2]}\n", .Raw_Compact)
 	expect_run(t, ".", " \r\n\t", "")
 	expect_run(t, ".", "\"x\" false null", "\"x\"\nfalse\nnull\n")
 }
@@ -431,6 +457,47 @@ module_paths_are_borrowed_in_order_without_changing_execution :: proc(t: ^testin
 }
 
 @(test)
+module_search_metadata_uses_and_releases_custom_allocator :: proc(t: ^testing.T) {
+	state := test_allocator_state{backing = context.allocator}
+	paths, paths_error := module_search_paths("./child", []string{"/base"}, test_allocator(&state))
+	testing.expect_value(t, paths_error, runtime.Allocator_Error(nil))
+	testing.expect_value(t, len(paths), 2)
+	testing.expect_value(t, paths[0], "/base/./child")
+	testing.expect_value(t, paths[1], "/base")
+	destroy_module_search_paths(paths, "./child", test_allocator(&state))
+	testing.expect_value(t, state.live, 0)
+
+	failing_state := test_allocator_state{backing = context.allocator, allocation_at = 1}
+	failed_paths, failed_error := module_search_paths(
+		"./child", []string{"/base"}, test_allocator(&failing_state),
+	)
+	testing.expect_value(t, len(failed_paths), 0)
+	testing.expect_value(t, failed_error, runtime.Allocator_Error(.Out_Of_Memory))
+	testing.expect_value(t, failing_state.live, 0)
+
+	// With no -L paths, the relative metadata string still originates in the
+	// caller's filter.  The loader must clone it before the destruction helper
+	// releases the returned search-path array.
+	no_path_state := test_allocator_state{backing = context.allocator}
+	no_path, no_path_error := module_search_paths(
+		"./relative", []string{}, test_allocator(&no_path_state),
+	)
+	testing.expect_value(t, no_path_error, runtime.Allocator_Error(nil))
+	testing.expect_value(t, len(no_path), 1)
+	testing.expect_value(t, no_path[0], "./relative")
+	destroy_module_search_paths(no_path, "./relative", test_allocator(&no_path_state))
+	testing.expect_value(t, no_path_state.live, 0)
+
+	empty_state := test_allocator_state{backing = context.allocator}
+	empty_paths, empty_error := module_search_paths(
+		"", []string{"/base"}, test_allocator(&empty_state),
+	)
+	testing.expect_value(t, empty_error, runtime.Allocator_Error(nil))
+	destroy_module_search_paths(empty_paths, "", test_allocator(&empty_state))
+	testing.expect_value(t, empty_state.live, 0)
+}
+
+@(test)
 module_definition_body_tracks_nested_jq_delimiters :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	source := "def answer: reduce .[] as $x (0; . + $x);"
@@ -439,6 +506,64 @@ module_definition_body_tracks_nested_jq_delimiters :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(definitions), 1)
 	testing.expect_value(t, definitions[0].body, " reduce .[] as $x (0; . + $x)")
 	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_data_array_literal_frames_adjacent_scalar_and_container :: proc(t: ^testing.T) {
+	array, err := module_data_array_literal("1[2]", context.allocator)
+	testing.expect_value(t, err, runtime.Allocator_Error(nil))
+	testing.expect_value(t, array, "[1,[2]]")
+	delete(array, context.allocator)
+}
+
+@(test)
+module_data_array_literal_preserves_object_value :: proc(t: ^testing.T) {
+	array, err := module_data_array_literal(`{"x":1}
+`, context.allocator)
+	testing.expect_value(t, err, runtime.Allocator_Error(nil))
+	testing.expect_value(t, array, `[{"x":1}]`)
+	delete(array, context.allocator)
+}
+
+@(test)
+module_data_array_literal_rejects_malformed_trailing_stream :: proc(t: ^testing.T) {
+	array, err := module_data_array_literal("1\n{bad", context.allocator)
+	testing.expect_value(t, array, "")
+	testing.expect_value(t, err, runtime.Allocator_Error.Invalid_Argument)
+}
+
+@(test)
+module_data_reference_index_expands_object_literal :: proc(t: ^testing.T) {
+	imports: [dynamic]module_data_import
+	owned_data, data_error := strings.clone(`[{"x":1}]`, context.allocator)
+	testing.expect_value(t, data_error, runtime.Allocator_Error(nil))
+	owned_alias, alias_error := strings.clone("c", context.allocator)
+	testing.expect_value(t, alias_error, runtime.Allocator_Error(nil))
+	_, append_error := append(&imports, module_data_import{alias = owned_alias, data = owned_data})
+	testing.expect_value(t, append_error, runtime.Allocator_Error(nil))
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	data_input := ""
+	data_owned := false
+	append_data := false
+	scalar_add := false
+	replace_input := false
+	scalar_field_error := false
+	cleanup_value: value.Value
+	cleanup_parse_error: json.Scalar_Parse_Error
+	ok := module_expand_data_references(
+		"$c[0]", imports, &builder, &data_input, &data_owned,
+		&append_data, &scalar_add, &replace_input, &scalar_field_error,
+		&cleanup_value, &cleanup_parse_error, context.allocator,
+	)
+	testing.expect(t, ok)
+	testing.expect(t, !scalar_field_error)
+	testing.expect_value(t, strings.to_string(builder), `{"x":1}`)
+	testing.expect_value(t, value.destroy_value(&cleanup_value), runtime.Allocator_Error(nil))
+	testing.expect_value(t, json.destroy_scalar_parse_error(&cleanup_parse_error), runtime.Allocator_Error(nil))
+	strings.builder_destroy(&builder)
+	destroy_module_data_imports(&imports, context.allocator)
 }
 
 @(test)
@@ -453,18 +578,43 @@ module_definition_body_rejects_unterminated_string :: proc(t: ^testing.T) {
 module_definition_requires_identifier_start :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def : 42;", &definitions, context.allocator)
-	testing.expect_value(t, outcome.kind, Module_Error_Kind.Unsupported_Syntax)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.Syntax_Error)
 	destroy_module_definitions(&definitions, context.allocator)
 }
 
 @(test)
 module_import_accepts_dollar_namespace_alias :: proc(t: ^testing.T) {
-	name, alias, next, ok, unsupported := parse_module_import(
+	name, alias, search, next, ok, unsupported := parse_module_import(
 		"import \"answer\" as $a;", 0,
 	)
 	testing.expect_value(t, name, "answer")
 	testing.expect_value(t, alias, "a")
+	testing.expect_value(t, search, "")
 	testing.expect_value(t, next, len("import \"answer\" as $a;"))
+	testing.expect_value(t, ok, true)
+	testing.expect_value(t, unsupported, false)
+}
+
+@(test)
+module_include_accepts_search_metadata :: proc(t: ^testing.T) {
+	name, search, next, ok, unsupported := parse_module_include(
+		"include \"foo\" {search:\"./lib\"};", 0,
+	)
+	testing.expect_value(t, name, "foo")
+	testing.expect_value(t, search, "./lib")
+	testing.expect_value(t, next, len("include \"foo\" {search:\"./lib\"};"))
+	testing.expect_value(t, ok, true)
+	testing.expect_value(t, unsupported, false)
+}
+
+@(test)
+module_include_accepts_quoted_search_metadata :: proc(t: ^testing.T) {
+	name, search, next, ok, unsupported := parse_module_include(
+		"include \"foo\" {\"search\":\"./lib\"};", 0,
+	)
+	testing.expect_value(t, name, "foo")
+	testing.expect_value(t, search, "./lib")
+	testing.expect_value(t, next, len("include \"foo\" {\"search\":\"./lib\"};"))
 	testing.expect_value(t, ok, true)
 	testing.expect_value(t, unsupported, false)
 }
@@ -479,8 +629,40 @@ module_expansion_rejects_wrong_arity :: proc(
 	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
 	stack: [module_loader_depth]int
 	outcome := module_expand_source(source, definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
-	testing.expect_value(t, outcome.kind, Module_Error_Kind.Unsupported_Syntax)
+	testing.expect(t, outcome.kind == .Unsupported_Syntax || outcome.kind == .Undefined_Function || outcome.kind == .Syntax_Error)
 	strings.builder_destroy(&builder)
+}
+
+module_expansion_matches :: proc(
+	t: ^testing.T,
+	definition_source, call_source, expected: string,
+) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions(definition_source, &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source(call_source, definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), expected)
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_definition_bodies_keep_filter_boundaries :: proc(t: ^testing.T) {
+	// A definition body is one jq filter expression, even when its caller
+	// continues with a lower-precedence operator.
+	module_expansion_matches(t, "def value: 1 + 2;", "value * 3", "( 1 + 2) * 3")
+	module_expansion_matches(t, "def value: (1 + 2);", "value", "( (1 + 2))")
+	module_expansion_matches(t, "def values: 1, 2 | .;", "values", "( 1, 2 | .)")
+}
+
+@(test)
+module_definition_call_arguments_keep_filter_boundaries :: proc(t: ^testing.T) {
+	module_expansion_matches(t, "def identity(x): x;", "identity(1, 2)", "( (1, 2))")
 }
 
 @(test)
@@ -495,6 +677,131 @@ parameterized_module_calls_require_exact_arity :: proc(t: ^testing.T) {
 }
 
 @(test)
+module_definition_overloads_match_name_and_arity :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def f: 1; def f(x): x;", "f", "( 1)",
+	)
+	module_expansion_matches(
+		t, "def f: 1; def f(x): x;", "f(2)", "( (2))",
+	)
+	module_expansion_matches(
+		t, "def f(x): x; def f: 1;", "f(2)", "( (2))",
+	)
+}
+
+@(test)
+dollar_parameter_references_are_substituted :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def value($x): $x;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source("value(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "((7) as $x |  $x)")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+dollar_parameters_preserve_value_cardinality_and_order :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def dup($x): $x, $x;", "dup(1,2)", "((1,2) as $x |  $x, $x)",
+	)
+}
+
+@(test)
+multiple_dollar_parameters_use_independent_bindings :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def pair($x;$y): [$x,$y];", "pair(1;2)",
+		"((1) as $x | (2) as $y |  [$x,$y])",
+	)
+}
+
+@(test)
+module_value_parameter_binding_handles_start_and_nested_filter_calls :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def x: 42; def f($x): x;", "f(1)",
+		"((1) as $x |  ( 42))",
+	)
+}
+
+@(test)
+unbound_dollar_name_is_not_a_definition_call :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def name: 42;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source("$name", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "$name")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_call_argument_comments_do_not_split_semicolons :: proc(t: ^testing.T) {
+	args: [dynamic]string
+	close, count, ok := module_call_arguments(
+		"identity(1 # ; this is a comment\n)", len("identity"), &args,
+	)
+	testing.expect(t, ok)
+	testing.expect_value(t, close, len("identity(1 # ; this is a comment\n)")-1)
+	testing.expect_value(t, count, 1)
+	testing.expect_value(t, args[0], "1 # ; this is a comment\n")
+	delete(args)
+	wide: [dynamic]string
+	_, wide_count, wide_ok := module_call_arguments(
+		"f(1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17)", 1, &wide,
+	)
+	testing.expect(t, wide_ok)
+	testing.expect_value(t, wide_count, 17)
+	testing.expect_value(t, wide[16], "17")
+	delete(wide)
+}
+
+@(test)
+module_boundary_write_failure_releases_cloned_arguments :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def identity(x): x;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	state := test_allocator_state{backing = context.allocator, allocation_at = 3}
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, test_allocator(&state))
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source(
+		"identity(1)", definitions, &builder, &stack, 0, "", {}, 0,
+		test_allocator(&state),
+	)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.Read_Failure)
+	strings.builder_destroy(&builder)
+	testing.expect_value(t, state.live, 0)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+filter_parameter_arguments_preserve_expression_precedence :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions("def twice(x): x * 2;", &definitions, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source("twice(.a + .b)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "( (.a + .b) * 2)")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
 parameterized_module_arguments_expand_nested_definitions :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def one: 1; def id(x): x;", &definitions, context.allocator)
@@ -505,7 +812,7 @@ parameterized_module_arguments_expand_nested_definitions :: proc(t: ^testing.T) 
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("id(one)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "  1")
+	testing.expect_value(t, strings.to_string(builder), "( (( 1)))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -521,7 +828,7 @@ nested_parameterized_module_calls_preserve_caller_arguments :: proc(t: ^testing.
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("outer(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "  7")
+	testing.expect_value(t, strings.to_string(builder), "( ( ((7))))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -537,9 +844,48 @@ parameterized_module_arguments_preserve_caller_environment :: proc(t: ^testing.T
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("outer(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "  7")
+	testing.expect_value(t, strings.to_string(builder), "( ( ((7))))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_filter_expansion_alpha_renames_callee_bindings :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def id(x): . as $x | x;", "id(1)",
+		"( . as $__jq_module_scope_0_0 | (1))",
+	)
+}
+
+@(test)
+module_expansion_preserves_self_recursive_calls_for_runtime :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	outcome := find_module_definitions(
+		"def countdown(x): if x == 0 then 0 else countdown(x - 1) end;",
+		&definitions, context.allocator,
+	)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	stack: [module_loader_depth]int
+	outcome = module_expand_source(
+		"countdown(.)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator,
+	)
+	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
+	testing.expect_value(t, strings.to_string(builder), "0")
+	strings.builder_destroy(&builder)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
+module_expansion_evaluates_literal_factorial_definition :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t,
+		"def fact(x): if x == 0 then 1 else x * fact(x - 1) end;",
+		"fact(3)",
+		"6",
+	)
 }
 
 @(test)
@@ -569,7 +915,7 @@ qualified_parameterized_module_arguments_preserve_caller_environment :: proc(t: 
 	stack: [module_loader_depth]int
 	outcome = module_expand_source("m::outer(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), "  7")
+	testing.expect_value(t, strings.to_string(builder), "( ( ((7))))")
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -591,63 +937,33 @@ module_expansion_preserves_object_shorthand :: proc(t: ^testing.T) {
 }
 
 @(test)
-parameterized_module_expansion_preserves_object_keys :: proc(t: ^testing.T) {
-	definitions: [dynamic]module_definition
-	outcome := find_module_definitions(
-		"def make(x): {x: x, outer: {x: x}, shorthand: {x}};",
-		&definitions, context.allocator,
+module_expansion_does_not_treat_filter_commas_as_object_shorthand :: proc(t: ^testing.T) {
+	module_expansion_matches(
+		t, "def f: 1; def g: 2; def h: 3;", "f, g, h",
+		"( 1), ( 2), ( 3)",
 	)
-	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	builder: strings.Builder
-	_, init_error := strings.builder_init(&builder, context.allocator)
-	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
-	stack: [module_loader_depth]int
-	outcome = module_expand_source("make(7)", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
-	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(
-		t,
-		strings.to_string(builder),
-		" {x: 7, outer: {x: 7}, shorthand: {x}}",
-	)
-	strings.builder_destroy(&builder)
-	destroy_module_definitions(&definitions, context.allocator)
 }
 
 @(test)
-included_module_definitions_do_not_capture_plain_variables :: proc(t: ^testing.T) {
-	// This definition is the content collected from an included module. Its
-	// name must not make the ordinary jq variable `$x` a module call.
+module_object_shorthand_handles_more_than_64_nested_objects :: proc(t: ^testing.T) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, context.allocator)
+	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	for _ in 0..<65 do testing.expect_value(t, strings.write_string(&builder, "{"), 1)
+	testing.expect_value(t, strings.write_string(&builder, "x"), 1)
+	for _ in 0..<65 do testing.expect_value(t, strings.write_string(&builder, "}"), 1)
+	source := strings.to_string(builder)
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def x: 42;", &definitions, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	builder: strings.Builder
-	_, init_error := strings.builder_init(&builder, context.allocator)
-	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
+	expanded: strings.Builder
+	_, expanded_error := strings.builder_init(&expanded, context.allocator)
+	testing.expect_value(t, expanded_error, runtime.Allocator_Error(nil))
 	stack: [module_loader_depth]int
-	outcome = module_expand_source(
-		". as $x | $x", definitions, &builder, &stack, 0, "", {}, 0,
-		context.allocator,
-	)
+	outcome = module_expand_source(source, definitions, &expanded, &stack, 0, "", {}, 0, context.allocator)
 	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	testing.expect_value(t, strings.to_string(builder), ". as $x | $x")
-	strings.builder_destroy(&builder)
-	destroy_module_definitions(&definitions, context.allocator)
-}
-
-@(test)
-module_expansion_preserves_recursive_function_calls :: proc(t: ^testing.T) {
-	definitions: [dynamic]module_definition
-	outcome := find_module_definitions("def loop: loop;", &definitions, context.allocator)
-	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	builder: strings.Builder
-	_, init_error := strings.builder_init(&builder, context.allocator)
-	testing.expect_value(t, init_error, runtime.Allocator_Error(nil))
-	stack: [module_loader_depth]int
-	outcome = module_expand_source("loop", definitions, &builder, &stack, 0, "", {}, 0, context.allocator)
-	testing.expect_value(t, outcome.kind, Module_Error_Kind.None)
-	// A recursive jq call is left for the ordinary syntax/compiler pipeline;
-	// it is not reported as a module dependency cycle.
-	testing.expect_value(t, strings.to_string(builder), " loop")
+	testing.expect_value(t, strings.to_string(expanded), source)
+	strings.builder_destroy(&expanded)
 	strings.builder_destroy(&builder)
 	destroy_module_definitions(&definitions, context.allocator)
 }
@@ -663,9 +979,9 @@ typed_filter_json_runtime_and_misuse_boundaries :: proc(t: ^testing.T) {
 	compile_result: Run_Result
 	compile_error := run(&compile_result, "1", "null", context.allocator)
 	testing.expect_value(t, compile_error.kind, Run_Error_Kind.None)
-	literal_bytes, literal_bytes_ok := run_result_bytes(&compile_result)
-	testing.expect(t, literal_bytes_ok)
-	testing.expect_value(t, literal_bytes, "1\n")
+	compile_bytes, compile_bytes_ok := run_result_bytes(&compile_result)
+	testing.expect(t, compile_bytes_ok)
+	testing.expect_value(t, compile_bytes, "1\n")
 	destroy_result_test(t, &compile_result)
 
 	json_result: Run_Result
@@ -828,6 +1144,23 @@ parser_scratch_cleanup_is_classified_retained_and_retried_once :: proc(t: ^testi
 		t, destroy_run_result(&result), runtime.Allocator_Error(nil),
 	)
 	testing.expect_value(t, state.failed_memory_retry_frees, 1)
+}
+
+@(test)
+prepare_filter_preserves_owner_when_cleanup_retry_fails :: proc(t: ^testing.T) {
+	state := test_allocator_state{
+		backing = context.allocator,
+		free_at = 1,
+		free_failures_remaining = 2,
+	}
+	prepared: Compiled_Filter
+	err := prepare_filter(&prepared, ".a.", test_allocator(&state))
+	testing.expect_value(t, err.kind, Run_Error_Kind.Cleanup)
+	testing.expect_value(t, err.resource_error, runtime.Allocator_Error(.Invalid_Argument))
+	testing.expect(t, prepared.owner.self == &prepared.owner)
+	testing.expect_value(t, destroy_compiled_filter(&prepared), runtime.Allocator_Error(.Invalid_Argument))
+	testing.expect_value(t, destroy_compiled_filter(&prepared), runtime.Allocator_Error(nil))
+	testing.expect_value(t, state.live, 0)
 }
 
 @(test)

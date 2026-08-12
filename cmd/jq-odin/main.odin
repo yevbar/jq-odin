@@ -1,10 +1,12 @@
 package main
 
 import "base:runtime"
+import "core:fmt"
 import "core:io"
 import "core:os"
 import "core:sys/posix"
 import driver "jq:driver"
+import value "jq:value"
 
 CANDIDATE_VERSION :: "jq-1.8.1\n"
 
@@ -32,6 +34,7 @@ parsed_arguments :: struct {
 	input_paths:  [dynamic]string,
 	module_paths: [dynamic]string,
 	compact:      bool,
+	raw:          bool,
 	null_input:   bool,
 	version:      bool,
 	status:       int,
@@ -51,8 +54,28 @@ parse_arguments :: proc(args: []cstring) -> parsed_arguments {
 			parsed.version = true
 			return parsed
 		}
+		if !options_done && len(arg) > 2 && arg[0] == '-' && arg[1] != '-' && arg[1] != 'L' {
+			for option in arg[1:] {
+				switch option {
+				case 'c': parsed.compact = true
+				case 'r': parsed.raw = true
+				case 'n': parsed.null_input = true
+				case:
+					_ = write_all(os.stderr, "jq-odin: unsupported option: ")
+					_ = write_all(os.stderr, arg)
+					_ = write_all(os.stderr, "\n")
+					parsed.status = 2
+					return parsed
+				}
+			}
+			continue
+		}
 		if !options_done && (arg == "-c" || arg == "--compact-output") {
 			parsed.compact = true
+			continue
+		}
+		if !options_done && (arg == "-r" || arg == "--raw-output") {
+			parsed.raw = true
 			continue
 		}
 		if !options_done && (arg == "-n" || arg == "--null-input") {
@@ -146,10 +169,182 @@ error_status :: proc(kind: driver.Run_Error_Kind) -> int {
 	return 2
 }
 
-write_driver_error :: proc(err: driver.Run_Error) -> bool {
-	ok := write_all(os.stderr, "jq-odin: ")
+json_kind_name :: proc(kind: value.Kind) -> string {
+	switch kind {
+	case .Null: return "null"
+	case .Boolean: return "boolean"
+	case .Number: return "number"
+	case .String: return "string"
+	case .Array: return "array"
+	case .Object: return "object"
+	case .Invalid: return "invalid"
+	}
+	return "invalid"
+}
+
+write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
+	if err.kind == .Runtime && len(err.runtime_key) > 0 &&
+	   (err.runtime_kind == .Cannot_Add || err.runtime_kind == .Cannot_Subtract) {
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): ") && ok
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\n") && ok
+		return ok
+	}
+	if err.kind == .Runtime && len(err.runtime_key) > len("__jq_odin_subtraction__") &&
+	   err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): ") && ok
+		ok = write_all(os.stderr, json_kind_name(err.runtime_input_kind)) && ok
+		ok = write_all(os.stderr, " (") && ok
+		ok = write_all(os.stderr, err.runtime_key[len("__jq_odin_subtraction__"):]) && ok
+		ok = write_all(os.stderr, ") and number (1) cannot be subtracted\n") && ok
+		return ok
+	}
+	if err.kind == .Runtime && err.runtime_module_scalar_field {
+		// Data-module postfixes are evaluated against an imported JSON scalar.
+		// jq reports this as an input-independent type error (and uses the
+		// `<unknown>` location), unlike the older generic runtime diagnostic for
+		// ordinary filter field access.
+		ok := write_all(os.stderr, "jq: error (at <unknown>): Cannot index ")
+		ok = write_all(os.stderr, json_kind_name(err.runtime_input_kind)) && ok
+		ok = write_all(os.stderr, " with string \"") && ok
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\"\n") && ok
+		return ok
+	}
+	if err.kind == .Runtime && err.runtime_kind == .User_Error {
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): ") && ok
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\n") && ok
+		return ok
+	}
+	if err.kind == .Runtime && err.runtime_input_kind == .Number && len(err.runtime_key) > 0 {
+		// Ordinary field access on a numeric input uses jq's typed diagnostic,
+		// including the current input path and line. Keep this narrow
+		// to string-key indexing so numeric-index failures retain their generic
+		// runtime wording until their own parity slice is implemented.
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): Cannot index number with string \"")
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\"\n") && ok
+		return ok
+	}
+	if err.kind == .Runtime && err.runtime_input_kind != .Number && len(err.runtime_key) > 0 {
+		// String-key access on containers and strings retains jq's specific
+		// container wording. Numeric-looking keys are reserved for the bounded
+		// numeric-index path above and continue through the generic formatter.
+		numeric_key := true
+		for ch in err.runtime_key {
+			if ch < '0' || ch > '9' {
+				numeric_key = false
+				break
+			}
+		}
+		if !numeric_key {
+			path := err.runtime_input_path
+			if len(path) == 0 || path == "-" do path = "<stdin>"
+			line := err.runtime_input_line
+			if line <= 0 do line = 1
+			ok := write_all(os.stderr, "jq: error (at ")
+			ok = write_all(os.stderr, path) && ok
+			ok = write_all(os.stderr, ":") && ok
+			ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+			ok = write_all(os.stderr, "): Cannot index ")
+			ok = write_all(os.stderr, json_kind_name(err.runtime_input_kind)) && ok
+			ok = write_all(os.stderr, " with string \"") && ok
+			ok = write_all(os.stderr, err.runtime_key) && ok
+			ok = write_all(os.stderr, "\"\n") && ok
+			return ok
+		}
+	}
+	ok := true
+	if err.kind == .Module && (err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error) {
+		column := 1
+		for at := 0; at+len(err.module_name) <= len(source); at += 1 {
+			if source[at:at+len(err.module_name)] == err.module_name { column = at+1; break }
+		}
+		if err.module_kind == .Undefined_Function {
+			ok = write_all(os.stderr, "jq: error: ") && ok
+			ok = write_all(os.stderr, err.module_name) && ok
+			ok = write_all(os.stderr, fmt.tprintf("/%d is not defined at <top-level>, line 1, column %d:\n    ", err.module_arity, column)) && ok
+			ok = write_all(os.stderr, source) && ok
+			ok = write_all(os.stderr, "\n    ") && ok
+			for _ in 1..<column do ok = write_all(os.stderr, " ") && ok
+			ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
+			return ok
+		}
+		unexpected := ")"
+		if err.module_arity < 0 { unexpected = ":" }
+		ok = write_all(os.stderr, "jq: error: syntax error, unexpected '") && ok
+		ok = write_all(os.stderr, unexpected) && ok
+		ok = write_all(os.stderr, "' at <top-level>, line 1, column ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d:\n    ", column+2)) && ok
+		ok = write_all(os.stderr, source) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 1..<(column+2) do ok = write_all(os.stderr, " ") && ok
+		ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
+		return ok
+	}
+	ok = write_all(os.stderr, "jq-odin: ") && ok
 	ok = write_all(os.stderr, kind_name(err.kind)) && ok
 	if err.kind == .Module {
+		if err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error {
+			// Module call failures are compile diagnostics in jq, including the
+			// source excerpt and caret. The module name borrows the original filter.
+			column := 1
+			if len(err.module_name) > 0 {
+				for at := 0; at+len(err.module_name) <= len(source); at += 1 {
+					if source[at:at+len(err.module_name)] == err.module_name { column = at+1; break }
+				}
+			}
+			if err.module_kind == .Undefined_Function {
+				ok = write_all(os.stderr, "jq: error: ") && ok
+				ok = write_all(os.stderr, err.module_name) && ok
+				ok = write_all(os.stderr, fmt.tprintf("/%d is not defined at <top-level>, line 1, column %d:\n    ", err.module_arity, column)) && ok
+				ok = write_all(os.stderr, source) && ok
+				ok = write_all(os.stderr, "\n    ") && ok
+				for _ in 1..<column do ok = write_all(os.stderr, " ") && ok 
+				ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
+				return ok
+			}
+			ok = write_all(os.stderr, "jq: error: syntax error, unexpected ')' at <top-level>, line 1, column ") && ok
+			ok = write_all(os.stderr, fmt.tprintf("%d:\n    ", column+1)) && ok
+			ok = write_all(os.stderr, source) && ok
+			ok = write_all(os.stderr, "\n    ") && ok
+			for _ in 1..<column do ok = write_all(os.stderr, " ") && ok 
+			ok = write_all(os.stderr, " ^\njq: 1 compile error\n") && ok
+			return ok
+		}
 		message := ""
 		switch err.module_kind {
 		case .Not_Found: message = ": module file not found"
@@ -159,14 +354,24 @@ write_driver_error :: proc(err: driver.Run_Error) -> bool {
 		case .Depth_Overflow: message = ": module dependency depth exceeded"
 		case .Duplicate_Definition: message = ": duplicate module definition"
 		case .Cycle: message = ": cyclic module dependency"
+		case .Undefined_Function, .Syntax_Error: message = ""
 		case .None:
 		}
 		ok = write_all(os.stderr, message) && ok
 	}
 	if err.kind == .Runtime && len(err.runtime_key) > 0 {
-		ok = write_all(os.stderr, ": cannot index with string \"") && ok
-		ok = write_all(os.stderr, err.runtime_key) && ok
-		ok = write_all(os.stderr, "\"") && ok
+		if len(err.runtime_key) > len("__jq_odin_subtraction__") &&
+			err.runtime_key[:len("__jq_odin_subtraction__")] == "__jq_odin_subtraction__" {
+			// Module expansion currently reports this jq type error through a
+			// private runtime key. The exact framing is handled above.
+			ok = write_all(os.stderr, ": string (") && ok
+			ok = write_all(os.stderr, err.runtime_key[len("__jq_odin_subtraction__"):]) && ok
+			ok = write_all(os.stderr, ") and number (1) cannot be subtracted") && ok
+		} else {
+			ok = write_all(os.stderr, ": cannot index with string \"") && ok
+			ok = write_all(os.stderr, err.runtime_key) && ok
+			ok = write_all(os.stderr, "\"") && ok
+		}
 	}
 	ok = write_all(os.stderr, "\n") && ok
 	return ok
@@ -195,19 +400,26 @@ emit_stdout :: proc(data: rawptr, bytes: string) -> bool {
 }
 
 run_input :: proc(
-	filter, input: string,
+	input: string,
+	input_path: string,
+	input_line: int,
 	compact: bool,
-	module_paths: []string,
+	raw: bool,
+	prepared: ^driver.Compiled_Filter,
 	sink: ^output_sink,
 ) -> int {
 	mode := driver.Output_Mode.Pretty
 	if compact do mode = .Compact
+	if raw do mode = .Raw
+	if compact && raw do mode = .Raw_Compact
 	result: driver.Run_Result
 	err := driver.run_with_options(
-		&result, filter, input, context.allocator,
+		&result, "", input, context.allocator,
 		{
 			output_mode = mode,
-			module_paths = module_paths,
+			input_path = input_path,
+			input_line = input_line,
+			compiled_filter = prepared,
 			emitter = emit_stdout,
 			emitter_data = sink,
 		},
@@ -259,6 +471,7 @@ scalar_state :: enum u8 {
 	Exponent_Sign,
 	Exponent_Digits,
 	Literal,
+	N_Prefix,
 }
 
 container_frame :: struct {
@@ -442,10 +655,10 @@ start_scalar :: proc(framer: ^json_framer, value: byte) -> bool {
 		framer.literal_length = 5
 		framer.literal_index = 1
 	case 'n':
-		framer.scalar_state = .Literal
-		framer.literal = {'n', 'u', 'l', 'l', 0}
-		framer.literal_length = 4
-		framer.literal_index = 1
+		// jq reserves `nu...` for null and routes other n-prefixed tokens to
+		// its numeric parser. Keep the bounded CLI framer exact for the
+		// payload-free lowercase NaN spelling supported by this slice.
+		framer.scalar_state = .N_Prefix
 	case: return false
 	}
 	return true
@@ -559,6 +772,22 @@ next_value_end :: proc(
 				framer.literal_index += 1
 				continue
 			}
+			if framer.scalar_state == .N_Prefix {
+				switch byte_value {
+				case 'u':
+					framer.literal = {'n', 'u', 'l', 'l', 0}
+					framer.literal_length = 4
+					framer.literal_index = 2
+				case 'a':
+					framer.literal = {'n', 'a', 'n', 0, 0}
+					framer.literal_length = 3
+					framer.literal_index = 2
+				case:
+					return index+1, .Malformed
+				}
+				framer.scalar_state = .Literal
+				continue
+			}
 			switch framer.scalar_state {
 			case .Minus:
 				if byte_value == '0' {
@@ -598,7 +827,7 @@ next_value_end :: proc(
 				framer.scalar_state = .Exponent_Digits
 			case .Exponent_Digits:
 				if byte_value < '0' || byte_value > '9' do return index+1, .Malformed
-			case .Start, .Literal:
+			case .Start, .Literal, .N_Prefix:
 				return index+1, .Malformed
 			}
 		case .Container:
@@ -723,8 +952,10 @@ consume_prefix :: proc(buffer: ^input_buffer, count: int) {
 process_available :: proc(
 	buffer: ^input_buffer,
 	filter: string,
-	compact, eof, had_open_error: bool,
-	module_paths: []string,
+	input_path: string,
+	input_line: ^int,
+	compact, raw, eof, had_open_error: bool,
+	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
 	sink: ^output_sink,
 ) -> (status: int, stop: bool) {
@@ -732,6 +963,11 @@ process_available :: proc(
 		whitespace := 0
 		for whitespace < buffer.length &&
 		   is_json_whitespace(buffer.memory[whitespace]) {
+			// The framer intentionally leaves delimiters and inter-value
+			// whitespace in the buffer after a scalar.  Account for those
+			// consumed newlines before reporting the next value's source line;
+			// counting only bytes in [:end] would miss this leading region.
+			if input_line != nil && buffer.memory[whitespace] == '\n' do input_line^ += 1
 			whitespace += 1
 		}
 		if whitespace > 0 {
@@ -791,9 +1027,17 @@ process_available :: proc(
 			_ = write_all(os.stderr, "jq-odin: JSON input error\n")
 			return 4, true
 		}
+		line := 1
+		if input_line != nil do line = input_line^
 		status = run_input(
-			filter, transmute(string)buffer.memory[:end], compact, module_paths, sink,
+			transmute(string)buffer.memory[:end], input_path, line,
+			compact, raw, prepared, sink,
 		)
+		if status == 0 && input_line != nil {
+			for byte_value in buffer.memory[:end] {
+				if byte_value == '\n' do input_line^ += 1
+			}
+		}
 		consume_prefix(buffer, end)
 		reset_framer(&buffer.framer)
 		buffer.bom_eligible = false
@@ -808,8 +1052,10 @@ process_available :: proc(
 read_source :: proc(
 	file: ^os.File,
 	filter: string,
-	compact, had_open_error: bool,
-	module_paths: []string,
+	input_path: string,
+	input_line: ^int,
+	compact, raw, had_open_error: bool,
+	prepared: ^driver.Compiled_Filter,
 	values_after_open_error: ^int,
 	buffer: ^input_buffer,
 	sink: ^output_sink,
@@ -820,7 +1066,7 @@ read_source :: proc(
 		if count > 0 {
 			if !append_input(buffer, chunk[:count]) do return 2, true, false
 			status, stop = process_available(
-				buffer, filter, compact, false, had_open_error, module_paths,
+				buffer, filter, input_path, input_line, compact, raw, false, had_open_error, prepared,
 				values_after_open_error, sink,
 			)
 			if stop do return status, true, true
@@ -831,7 +1077,7 @@ read_source :: proc(
 	}
 }
 
-run_main :: proc() -> int {
+run_main :: proc() -> (result: int) {
 	// Convert a closed stdout/stderr pipe into an ordinary write error so the
 	// command can retire driver-owned state and return the documented I/O status.
 	_ = posix.signal(.SIGPIPE, auto_cast posix.SIG_IGN)
@@ -844,28 +1090,41 @@ run_main :: proc() -> int {
 		return 0 if write_all(os.stdout, CANDIDATE_VERSION) else 2
 	}
 	sink: output_sink
-	if parsed.null_input {
-		return run_input(parsed.filter, "null", parsed.compact, parsed.module_paths[:], &sink)
+	prepared: driver.Compiled_Filter
+	prepare_error := driver.prepare_filter(
+		&prepared, parsed.filter, context.allocator,
+		{module_paths = parsed.module_paths[:]},
+	)
+	if prepare_error.kind != .None {
+		status := error_status(prepare_error.kind)
+		if !write_driver_error(prepare_error, parsed.filter) do status = 2
+		if cleanup_error := driver.destroy_compiled_filter(&prepared); cleanup_error != nil {
+			result = 2
+			_ = write_all(os.stderr, "jq-odin: cleanup error\n")
+		}
+		return status
 	}
-	// jq compiles its filter before pulling the first input. Preserve filter
-	// diagnostics for empty/whitespace-only sources with one empty preflight.
-	if preflight_status := run_input(
-		parsed.filter, "", parsed.compact, parsed.module_paths[:], &sink,
-	);
-	   preflight_status != 0 {
-		return preflight_status
+	defer {
+		if driver.destroy_compiled_filter(&prepared) != nil {
+			result = 2
+			_ = write_all(os.stderr, "jq-odin: cleanup error\n")
+		}
+	}
+	if parsed.null_input {
+		return run_input("null", "", 1, parsed.compact, parsed.raw, &prepared, &sink)
 	}
 
 	if len(parsed.input_paths) == 0 {
 		buffer := input_buffer{bom_eligible = true}
+		input_line := 1
 		status, _, read_ok := read_source(
-			os.stdin, parsed.filter, parsed.compact, false, parsed.module_paths[:],
+			os.stdin, parsed.filter, "", &input_line, parsed.compact, parsed.raw, false, &prepared,
 			nil, &buffer, &sink,
 		)
 		if status == 0 && read_ok {
 			status, _ = process_available(
-				&buffer, parsed.filter, parsed.compact, true, false,
-				parsed.module_paths[:], nil, &sink,
+				&buffer, parsed.filter, "", &input_line, parsed.compact, parsed.raw, true, false,
+				&prepared, nil, &sink,
 			)
 		}
 		if !read_ok {
@@ -882,8 +1141,10 @@ run_main :: proc() -> int {
 	status := 0
 	had_open_error := false
 	values_after_open_error := 0
+	input_line := 1
 	buffer := input_buffer{bom_eligible = true}
 	for arg in parsed.input_paths {
+		input_line = 1
 		file := os.stdin
 		opened := true
 		if arg != "-" {
@@ -904,8 +1165,8 @@ run_main :: proc() -> int {
 			continue
 		}
 		file_status, stop, read_ok := read_source(
-			file, parsed.filter, parsed.compact, had_open_error,
-			parsed.module_paths[:], &values_after_open_error, &buffer, &sink,
+			file, parsed.filter, arg, &input_line, parsed.compact, parsed.raw, had_open_error,
+			&prepared, &values_after_open_error, &buffer, &sink,
 		)
 		if arg != "-" {
 			if close_error := os.close(file); close_error != nil {
@@ -924,8 +1185,8 @@ run_main :: proc() -> int {
 	}
 	if status == 0 || status == 2 && had_open_error && values_after_open_error == 0 {
 		final_status, _ := process_available(
-			&buffer, parsed.filter, parsed.compact, true, had_open_error,
-			parsed.module_paths[:], &values_after_open_error, &sink,
+			&buffer, parsed.filter, "", &input_line, parsed.compact, parsed.raw, true, had_open_error,
+			&prepared, &values_after_open_error, &sink,
 		)
 		if final_status != 0 do status = final_status
 	}

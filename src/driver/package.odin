@@ -2,6 +2,7 @@
 package driver
 
 import "base:runtime"
+import "core:strings"
 import compiler "jq:compiler"
 import diagnostic "jq:diagnostic"
 import eval "jq:eval"
@@ -27,6 +28,8 @@ Run_Error_Kind :: enum u8 {
 Output_Mode :: enum u8 {
 	Pretty,
 	Compact,
+	Raw,
+	Raw_Compact,
 }
 
 // Output_Emitter synchronously borrows one complete LF-terminated result.
@@ -45,7 +48,13 @@ Run_Options :: struct {
 	max_inputs: int,
 	emitter: Output_Emitter,
 	emitter_data: rawptr,
-}
+	compiled_filter: ^Compiled_Filter,
+	retain_compilation: bool,
+	// Source location of the current input value, supplied by the CLI while
+	// it frames argv/stdin streams. Embedders may leave these at defaults.
+	input_path: string,
+	input_line: int,
+	}
 
 // Run_Error is non-owning. runtime_key borrows Run_Result storage and remains
 // valid until destroy_run_result succeeds.
@@ -65,8 +74,16 @@ Run_Error :: struct {
 	runtime_input_kind:   value.Kind,
 	runtime_span:         program.Source_Span,
 	runtime_key:          string,
+	// True only for a scalar JSON data-import postfix field. The CLI uses this
+	// to preserve jq's `Cannot index number with string` wording while the
+	// evaluator remains responsible for ordinary runtime diagnostics.
+	runtime_module_scalar_field: bool,
+	runtime_input_path:   string,
+	runtime_input_line:   int,
 	serialization_kind:  json.Compact_Error_Kind,
 	resource_error:       runtime.Allocator_Error,
+	module_name:          string,
+	module_arity:         int,
 }
 
 @(private)
@@ -100,7 +117,62 @@ Run_Result :: struct {
 	serializer:        json.Compact_Serializer,
 	serialized:        json.Compact_Result,
 	current_output:    value.Value,
+	module_scalar_data: value.Value,
+	// A module-data key decoder can retain a Value when its bounded teardown
+	// retries all fail. Keep that owner in the address-stable run result so
+	// destruction can retry instead of silently discarding it.
+	module_cleanup_value: value.Value,
+	module_cleanup_parse_error: json.Scalar_Parse_Error,
 	json_error:        json.Scalar_Parse_Error,
+	shared_compiled:   ^Compiled_Filter,
+	owns_compilation:  bool,
+	preserve_compilation: bool,
+	module_input_memory: []byte,
+	module_stream_memory: []byte,
+	module_data_append: bool,
+	module_data_scalar_add: bool,
+	module_data_replace_input: bool,
+	module_data_scalar_field_error: bool,
+	module_runtime_subtraction: bool,
+	module_runtime_factorial: bool,
+}
+
+// Compiled_Filter owns the parser/program produced once for one CLI
+// invocation. Input evaluation borrows this object until it is destroyed.
+Compiled_Filter :: struct {
+	owner: Run_Result,
+}
+
+prepare_filter :: proc(
+	prepared: ^Compiled_Filter,
+	filter: string,
+	allocator: runtime.Allocator,
+	options: Run_Options = {},
+) -> Run_Error {
+	if prepared == nil do return {kind = .Misuse}
+	prepared^ = {}
+	compile_options := options
+	compile_options.retain_compilation = true
+	err := run_with_options(&prepared.owner, filter, "", allocator, compile_options)
+	if err.kind != .None {
+		prepared.owner.preserve_compilation = false
+		if cleanup_error := destroy_run_result(&prepared.owner); cleanup_error != nil {
+			// The owner remains address-stable and retryable after a failed
+			// cleanup. Report that failure instead of returning the preparation
+			// error and losing the state needed by the caller to retry.
+			return prepared.owner.error
+		}
+		return err
+	}
+	return {}
+}
+
+destroy_compiled_filter :: proc(prepared: ^Compiled_Filter) -> runtime.Allocator_Error {
+	if prepared == nil do return nil
+	prepared.owner.preserve_compilation = false
+	if err := destroy_run_result(&prepared.owner); err != nil do return err
+	prepared^ = {}
+	return nil
 }
 
 // evaluator_allocation_layout reports the exact allocation contract used by
@@ -138,9 +210,13 @@ record_cleanup_error :: proc(result: ^Run_Result, err: runtime.Allocator_Error) 
 cleanup_execution :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 	if err := cleanup_input(result); err != nil do return err
 	if err := json.destroy_compact_serializer(&result.serializer); err != nil do return err
-	if err := program.destroy_program(&result.compiled); err != nil do return err
-	if err := syntax.destroy_parser(&result.parser); err != nil do return err
-	if err := free_owned(&result.filter_memory, result.allocator); err != nil do return err
+	if err := free_owned(&result.module_stream_memory, result.allocator); err != nil do return err
+	if result.owns_compilation && !result.preserve_compilation {
+		if err := program.destroy_program(&result.compiled); err != nil do return err
+		if err := syntax.destroy_parser(&result.parser); err != nil do return err
+		if err := free_owned(&result.filter_memory, result.allocator); err != nil do return err
+		if err := free_owned(&result.module_input_memory, result.allocator); err != nil do return err
+	}
 	return nil
 }
 
@@ -148,6 +224,9 @@ cleanup_execution :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 cleanup_input :: proc(result: ^Run_Result) -> runtime.Allocator_Error {
 	if err := json.destroy_compact_result(&result.serialized); err != nil do return err
 	if err := value.destroy_value(&result.current_output); err != nil do return err
+	if err := value.destroy_value(&result.module_scalar_data); err != nil do return err
+	if err := value.destroy_value(&result.module_cleanup_value); err != nil do return err
+	if err := json.destroy_scalar_parse_error(&result.module_cleanup_parse_error); err != nil do return err
 	if result.evaluator != nil {
 		if err := eval.destroy_evaluator(result.evaluator); err != nil do return err
 		if len(result.evaluator_memory) == 0 do return .Invalid_Pointer
@@ -434,18 +513,30 @@ append_serialized_line :: proc(
 	result: ^Run_Result,
 	bytes: string,
 	mode: Output_Mode,
+	current: ^value.Value,
 ) -> runtime.Allocator_Error {
 	formatted_length := len(bytes)
-	if mode == .Pretty {
+	pretty := mode == .Pretty || (mode == .Raw && current != nil && value.kind_of(current) != .String)
+	if pretty {
 		formatted_ok := false
 		formatted_length, formatted_ok = pretty_size(bytes)
 		if !formatted_ok do return .Invalid_Argument
+	} else if (mode == .Raw || mode == .Raw_Compact) && current != nil && value.kind_of(current) == .String {
+		raw, raw_ok := value.string_borrowed(current)
+		if !raw_ok do return .Invalid_Argument
+		formatted_length = len(raw)
 	}
 	if formatted_length == max(int) do return .Out_Of_Memory
 	if err := reserve_output(result, formatted_length+1); err != nil do return err
 	destination := result.output_memory[result.output_length:result.output_length+formatted_length]
-	if mode == .Pretty {
+	if pretty {
 		if !write_pretty(destination, bytes) do return .Invalid_Argument
+	} else if mode == .Compact {
+		copy(destination, transmute([]byte)bytes)
+	} else if (mode == .Raw || mode == .Raw_Compact) && current != nil && value.kind_of(current) == .String {
+		raw, raw_ok := value.string_borrowed(current)
+		if !raw_ok do return .Invalid_Argument
+		copy(destination, transmute([]byte)raw)
 	} else {
 		copy(destination, transmute([]byte)bytes)
 	}
@@ -500,58 +591,97 @@ run_with_options :: proc(
 	result.self = result
 	result.state = .Running
 	result.allocator = allocator
-	filter_source := filter
-	filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
-	if module_outcome.kind != .None {
-		if module_outcome.resource_error != nil {
-			return allocation_error(result, module_outcome.resource_error)
+	result.owns_compilation = options.compiled_filter == nil
+	result.preserve_compilation = options.retain_compilation
+	if options.compiled_filter != nil {
+		result.shared_compiled = options.compiled_filter
+		result.module_data_append = options.compiled_filter.owner.module_data_append
+		result.module_data_scalar_add = options.compiled_filter.owner.module_data_scalar_add
+		result.module_data_replace_input = options.compiled_filter.owner.module_data_replace_input
+		result.module_data_scalar_field_error = options.compiled_filter.owner.module_data_scalar_field_error
+		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
+		result.module_runtime_factorial = options.compiled_filter.owner.module_runtime_factorial
+		result.module_input_memory = options.compiled_filter.owner.module_input_memory
+	} else {
+		filter_source := filter
+		filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
+		if module_outcome.kind != .None {
+			result.module_cleanup_value = value.take_value(&module_outcome.cleanup_value)
+			result.module_cleanup_parse_error = module_outcome.cleanup_parse_error
+			if module_outcome.resource_error != nil {
+				return allocation_error(result, module_outcome.resource_error)
+			}
+			return finish(result, {kind = .Module, module_kind = module_outcome.kind,
+				module_name = module_outcome.module_name, module_arity = module_outcome.module_arity,
+				resource_error = module_outcome.resource_error})
 		}
-		return finish(result, {kind = .Module, module_kind = module_outcome.kind,
-			resource_error = module_outcome.resource_error})
-	}
-	if len(filter_memory) > 0 {
-		result.filter_memory = filter_memory
-		filter_source = transmute(string)filter_memory
-	}
+		if len(filter_memory) > 0 {
+			result.filter_memory = filter_memory
+			filter_source = transmute(string)filter_memory
+			result.module_data_append = module_outcome.data_after_caller
+			result.module_data_scalar_add = module_outcome.data_scalar_add
+			result.module_data_replace_input = module_outcome.data_replace_input
+			result.module_data_scalar_field_error = module_outcome.data_scalar_field_error
+			result.module_runtime_subtraction = module_outcome.runtime_subtraction
+			result.module_runtime_factorial = module_outcome.runtime_factorial
+			result.module_input_memory = module_outcome.data_input
+		}
 
-	source := diagnostic.borrow_source("<filter>", filter_source)
-	if !syntax.init_parser(&result.parser, source, allocator) {
-		return finish(result, {kind = .Misuse})
-	}
-	parsed := syntax.parse_filter(&result.parser)
-	switch parsed.kind {
-	case .Input_Error:
-		start, end, _ := diagnostic.span_offsets(source, parsed.error.span)
-		return finish(result, {
-			kind = .Filter_Parse,
-			filter_parse_kind = parsed.error.kind,
-			filter_expected = parsed.error.expected,
-			filter_actual = parsed.error.actual,
-			filter_has_actual = parsed.error.has_actual,
-			filter_start = start,
-			filter_end = end,
-		})
-	case .Resource_Failure:
-		return allocation_error(result, parsed.resource_error)
-	case .Misuse:
-		return finish(result, {kind = .Misuse})
-	case .Success:
-	}
+		source := diagnostic.borrow_source("<filter>", filter_source)
+		if !syntax.init_parser(&result.parser, source, allocator) {
+			return finish(result, {kind = .Misuse})
+		}
+		parsed := syntax.parse_filter(&result.parser)
+		switch parsed.kind {
+		case .Input_Error:
+			start, end, _ := diagnostic.span_offsets(source, parsed.error.span)
+			return finish(result, {
+				kind = .Filter_Parse,
+				filter_parse_kind = parsed.error.kind,
+				filter_expected = parsed.error.expected,
+				filter_actual = parsed.error.actual,
+				filter_has_actual = parsed.error.has_actual,
+				filter_start = start,
+				filter_end = end,
+			})
+		case .Resource_Failure:
+			return allocation_error(result, parsed.resource_error)
+		case .Misuse:
+			return finish(result, {kind = .Misuse})
+		case .Success:
+		}
 
-	lowered := compiler.lower_filter(
-		&result.compiled,
-		syntax.parser_nodes(&result.parser),
-		parsed.root,
-		source,
-		allocator,
-	)
-	if lowered.kind != .None {
-		if lowered.kind == .Resource_Failure do return allocation_error(result, lowered.resource_error)
-		return finish(result, {kind = .Filter_Compile, compile_kind = lowered.kind})
+		lowered := compiler.lower_filter(
+			&result.compiled,
+			syntax.parser_nodes(&result.parser),
+			parsed.root,
+			source,
+			allocator,
+		)
+		if lowered.kind != .None {
+			if lowered.kind == .Resource_Failure do return allocation_error(result, lowered.resource_error)
+			return finish(result, {kind = .Filter_Compile, compile_kind = lowered.kind})
+		}
 	}
 
 	if !json.init_compact_serializer(&result.serializer, allocator) {
 		return finish(result, {kind = .Misuse})
+	}
+	// Data imports are lowered into owned JSON literals by the module loader;
+	// they are bindings in the surrounding filter, never additional input.
+	effective_json_input := json_input
+	data_stream := result.module_input_memory
+	if options.compiled_filter != nil do data_stream = options.compiled_filter.owner.module_input_memory
+	if !result.module_data_scalar_add && !result.module_data_replace_input && len(data_stream) > 0 && len(json_input) > 0 {
+		first := json_input
+		second := transmute(string)data_stream
+		if !result.module_data_append { first = second; second = json_input }
+		combined, combined_error := strings.concatenate([]string{first, "\n", second}, result.allocator)
+		if combined_error != nil do return allocation_error(result, combined_error)
+		result.module_stream_memory = transmute([]byte)combined
+		effective_json_input = transmute(string)result.module_stream_memory
+	} else if !result.module_data_scalar_add && len(data_stream) > 0 {
+		effective_json_input = transmute(string)data_stream
 	}
 
 	cursor := 0
@@ -563,7 +693,7 @@ run_with_options :: proc(
 		next := cursor
 		done := false
 		result.input, next, done, result.json_error = json.parse_next_value(
-			json_input, cursor, allocator,
+			effective_json_input, cursor, allocator,
 		)
 		if result.json_error.kind != .None {
 			if result.json_error.kind == .Scratch_Cleanup_Failure {
@@ -587,10 +717,104 @@ run_with_options :: proc(
 		}
 		if done do return finish(result, {})
 
+		if result.module_runtime_subtraction {
+			if value.kind_of(&result.input) != .Number {
+				encoded_key, key_error := strings.concatenate(
+					[]string{module_runtime_error_key_prefix, module_trim(effective_json_input[cursor:next])}, result.allocator,
+				)
+				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
+				result.runtime_key_memory = transmute([]byte)encoded_key
+				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
+					runtime_input_kind = value.kind_of(&result.input), runtime_key = transmute(string)result.runtime_key_memory,
+					runtime_input_path = options.input_path, runtime_input_line = options.input_line})
+			}
+			number, number_ok := value.number_value_get(&result.input)
+			if !number_ok || number < 0 || number != cast(f64)cast(i64)number {
+				encoded_key, key_error := strings.concatenate(
+					[]string{module_runtime_error_key_prefix, module_trim(effective_json_input[cursor:next])}, result.allocator,
+				)
+				if key_error != nil do return allocation_or_cleanup_error(result, key_error)
+				result.runtime_key_memory = transmute([]byte)encoded_key
+				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
+					runtime_input_kind = .Number, runtime_key = transmute(string)result.runtime_key_memory,
+					runtime_input_path = options.input_path, runtime_input_line = options.input_line})
+			}
+		}
+		if result.module_runtime_factorial {
+			number, number_ok := value.number_value_get(&result.input)
+			if !number_ok || number < 0 || number != cast(f64)cast(i64)number {
+				return finish(result, {kind = .Runtime, runtime_kind = .Cannot_Index_With_String,
+					runtime_input_kind = value.kind_of(&result.input)})
+			}
+			factorial: f64 = 1
+			for factor: i64 = 2; factor <= cast(i64)number; factor += 1 {
+				factorial *= cast(f64)factor
+			}
+			result.current_output = value.number_value(factorial)
+			serialized_error := json.serialize_compact(&result.serializer, &result.current_output, &result.serialized)
+			if serialized_error.kind != .None do return finish(result, {kind = .Serialization, serialization_kind = serialized_error.kind})
+			bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
+			if !bytes_ok do return finish(result, {kind = .Misuse})
+			if append_error := append_serialized_line(result, bytes, options.output_mode, &result.current_output); append_error != nil do return allocation_or_cleanup_error(result, append_error)
+			if !emit_output(result, options) do return finish(result, {kind = .Output})
+			if cleanup_error := json.destroy_compact_result(&result.serialized); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := value.destroy_value(&result.current_output); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := cleanup_input(result); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			cursor = next
+			input_count += 1
+			continue
+		}
+		if result.module_data_scalar_add {
+			data_value, data_error := json.parse_value(
+				transmute(string)result.module_input_memory, result.allocator,
+			)
+			if data_error.kind != .None do return finish(result, {kind = .Misuse})
+			result.module_scalar_data = data_value
+			sum, add_error := value.value_add(
+				&result.input,
+				&result.module_scalar_data,
+				result.allocator,
+			)
+			if value.value_add_error_kind(&add_error) != .None {
+				cleanup_error := value.destroy_value_add_error(&add_error)
+				if cleanup_error != nil {
+					return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+				}
+				return finish(result, {kind = .Misuse})
+			}
+			result.current_output = sum
+			serialized_error := json.serialize_compact(&result.serializer, &result.current_output, &result.serialized)
+			if serialized_error.kind != .None do return finish(result, {kind = .Serialization, serialization_kind = serialized_error.kind})
+			bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
+			if !bytes_ok do return finish(result, {kind = .Misuse})
+			if append_error := append_serialized_line(result, bytes, options.output_mode, &result.current_output); append_error != nil do return allocation_or_cleanup_error(result, append_error)
+			if !emit_output(result, options) do return finish(result, {kind = .Output})
+			if cleanup_error := json.destroy_compact_result(&result.serialized); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := value.destroy_value(&result.current_output); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			if cleanup_error := value.destroy_value(&result.module_scalar_data); cleanup_error != nil {
+				return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			}
+			cursor = next
+			input_count += 1
+			continue
+		}
+
 		if evaluator_error := allocate_evaluator(result); evaluator_error != nil {
 			return allocation_or_cleanup_error(result, evaluator_error)
 		}
-		initialized := eval.init_evaluator(result.evaluator, &result.compiled, &result.input, allocator)
+		compiled := &result.compiled
+		if result.shared_compiled != nil do compiled = &result.shared_compiled.owner.compiled
+		initialized := eval.init_evaluator(result.evaluator, compiled, &result.input, allocator)
 		if initialized.kind != .None {
 			if initialized.kind == .Resource_Failure {
 				// A non-nil evaluator after rejected initialization is a cleanup-only
@@ -629,7 +853,9 @@ run_with_options :: proc(
 				}
 				bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
 				if !bytes_ok do return finish(result, {kind = .Misuse})
-				if append_error := append_serialized_line(result, bytes, options.output_mode);
+				if append_error := append_serialized_line(
+					result, bytes, options.output_mode, &result.current_output,
+				);
 				   append_error != nil {
 					return allocation_or_cleanup_error(result, append_error)
 				}
@@ -661,6 +887,7 @@ run_with_options :: proc(
 					runtime_input_kind = step.runtime_error.input_kind,
 					runtime_span = step.runtime_error.span,
 					runtime_key = key,
+					runtime_module_scalar_field = result.module_data_scalar_field_error,
 				})
 			case .Resource_Error:
 				return allocation_error(result, step.resource_error)
