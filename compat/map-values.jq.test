@@ -1,0 +1,12 @@
+# `map_values` transforms array elements and object values while preserving keys.
+map_values(. + 1)
+[1,2,3]
+[2,3,4]
+
+map_values(. + 1)
+{"a":1,"b":2}
+{"a":2,"b":3}
+
+map_values(.a)
+[{"a":1},{"a":2},{}]
+[1,2,null]

@@ -174,6 +174,7 @@ eval_frame :: struct {
 	selected_value: value.Value,
 	selected_seen: bool,
 	limit_remaining: u64,
+	map_values_mode: bool,
 }
 
 @(private)
@@ -577,6 +578,7 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	if free_error != nil do return free_error
 	frame.selected_seen = false
 	frame.limit_remaining = 0
+	frame.map_values_mode = false
 	frame.constructor_child = 0
 	frame.constructor_cursor = 0
 	frame.constructor_total = 0
@@ -1071,7 +1073,7 @@ capture_composite_instruction :: proc(
 		_, count_ok := child_instruction(storage, instruction, 0)
 		_, generator_ok := child_instruction(storage, instruction, 1)
 		if !count_ok || !generator_ok do return false
-	case .Map:
+	case .Map, .Map_Values:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
@@ -1174,7 +1176,7 @@ resumed_composite_instruction_valid :: proc(
 	case .Nth_Active:
 		if frame.mode != .Normal || instruction.opcode != .Nth do return false
 	case .Map_Start, .Map_Child_Active:
-		if frame.mode != .Normal || instruction.opcode != .Map do return false
+		if frame.mode != .Normal || (instruction.opcode != .Map && instruction.opcode != .Map_Values) do return false
 	case .Try_Expression_Active, .Try_Catch_Active:
 		if frame.mode != .Normal || instruction.opcode != .Try do return false
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
@@ -1897,12 +1899,24 @@ propagate_output :: proc(
 			current = parent
 			continue
 		case .Map_Child_Active:
-			append_error: value.Array_Operation_Error
-			_, append_error = value.array_append_take(&frame.constructor_results, owned)
-			if value.array_error_kind(&append_error) != .None {
-				frame.pending_constructor_value = value.take_value(owned)
-				retain_constructor_array_error(frame, &append_error)
-				return resource_step(.Out_Of_Memory), true
+			if frame.map_values_mode {
+				key := value.clone_value(&frame.pending_constructor_key)
+				_, displaced, object_error := value.object_set_take(&frame.constructor_results, &key, owned)
+				_ = value.destroy_value(&displaced)
+				if value.object_error_kind(&object_error) != .None {
+					frame.pending_constructor_key = value.take_value(&key)
+					frame.pending_constructor_value = value.take_value(owned)
+					retain_constructor_object_error(frame, &object_error)
+					return resource_step(.Out_Of_Memory), true
+				}
+			} else {
+				append_error: value.Array_Operation_Error
+				_, append_error = value.array_append_take(&frame.constructor_results, owned)
+				if value.array_error_kind(&append_error) != .None {
+					frame.pending_constructor_value = value.take_value(owned)
+					retain_constructor_array_error(frame, &append_error)
+					return resource_step(.Out_Of_Memory), true
+				}
 			}
 			return {}, false
 		case .Try_Catch_Active, .Fork_Left_Active, .Fork_Right_Active:
@@ -5496,17 +5510,25 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.phase = .Nth_Active
 				continue
-			case .Map:
+			case .Map, .Map_Values:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
-				if value.kind_of(&frame.input) != .Array {
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Array && !(instruction.opcode == .Map_Values && input_kind == .Object) {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result
 					continue
 				}
-				results, array_error := value.array_value(storage.allocator)
-				if value.array_error_kind(&array_error) != .None {
-					_ = value.destroy_array_error(&array_error)
-					return resource_step(.Out_Of_Memory)
+				results: value.Value
+				if input_kind == .Object {
+					object_result, object_error := value.object_value(storage.allocator)
+					if value.object_error_kind(&object_error) != .None { _ = value.destroy_object_error(&object_error); return resource_step(.Out_Of_Memory) }
+					results = object_result
+					frame.map_values_mode = true
+				} else {
+					array_result, array_error := value.array_value(storage.allocator)
+					if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return resource_step(.Out_Of_Memory) }
+					results = array_result
+					frame.map_values_mode = false
 				}
 				frame.constructor_results = value.take_value(&results)
 				frame.iterator_cursor = 0
@@ -5878,6 +5900,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		case .Map_Start:
 			length, length_ok := value.array_length(&frame.input)
+			if !length_ok && frame.map_values_mode { length, length_ok = value.object_length(&frame.input) }
 			if !length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 			if frame.iterator_cursor >= length {
 				output := value.take_value(&frame.constructor_results)
@@ -5887,7 +5910,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				continue
 			}
 			child, child_ok := child_instruction(storage, instruction, 0)
-			element, element_ok := value.array_element_copy(&frame.input, frame.iterator_cursor)
+			element: value.Value
+			element_ok: bool
+			if value.kind_of(&frame.input) == .Object {
+				key: value.Value
+				key, element, element_ok = value.object_entry_copy(&frame.input, frame.iterator_cursor)
+				if element_ok { frame.pending_constructor_key = value.take_value(&key) } else { _ = value.destroy_value(&key) }
+			} else {
+				element, element_ok = value.array_element_copy(&frame.input, frame.iterator_cursor)
+			}
 			if !child_ok || !element_ok || value.kind_of(&element) == .Invalid {
 				_ = value.destroy_value(&element)
 				return begin_terminal_misuse(storage, .Malformed_Program)

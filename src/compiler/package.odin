@@ -187,6 +187,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Map:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Map_Values:
+		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
+		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Strftime, .Strptime:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
@@ -296,6 +299,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Nth:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Map:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Map_Values:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Any_Not, .All_Not:
 		return true
@@ -597,6 +602,8 @@ lower_filter :: proc(
 		case .Nth:
 			if !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Map:
+			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
+		case .Map_Values:
 			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Any_Not, .All_Not:
 			// Negated any/all are operand-free predicates.
@@ -932,6 +939,11 @@ lower_filter :: proc(
 			instruction.operands_count = 2
 		case .Map:
 			instruction.opcode = .Map
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
+			operand_at += 1
+			instruction.operands_count = 1
+		case .Map_Values:
+			instruction.opcode = .Map_Values
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
 			operand_at += 1
 			instruction.operands_count = 1

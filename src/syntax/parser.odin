@@ -221,6 +221,8 @@ Node_Kind :: enum {
 	Nth,
 	// Map is appended to preserve existing AST discriminants.
 	Map,
+	// Map_Values is appended to preserve existing AST discriminants.
+	Map_Values,
 }
 
 Node_Id :: distinct int
@@ -1037,6 +1039,8 @@ parse_pipe :: proc(
 					kind = .Nth
 				} else if spelling == "map" {
 					kind = .Map
+				} else if spelling == "map_values" {
+					kind = .Map_Values
 				} else if spelling == "strftime" || spelling == "strflocaltime" {
 					kind = .Strftime
 				} else if spelling == "strptime" {
@@ -1149,7 +1153,7 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Nth, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term
-				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "join" || spelling == "contains" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -1159,7 +1163,7 @@ parse_pipe :: proc(
 					close := parser.lookahead.token
 					advance(parser)
 					argument_node := parser.nodes.storage[int(argument)]
-					stream_selector := spelling == "first" || spelling == "last" || spelling == "map"
+					stream_selector := spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values"
 					bsearch_comma := spelling == "bsearch" && argument_node.kind == .Comma
 					join_comma := spelling == "join" && argument_node.kind == .Comma
 					flatten_comma := spelling == "flatten" && argument_node.kind == .Comma
@@ -1208,6 +1212,7 @@ parse_pipe :: proc(
 					if spelling == "first" do call_kind = .First
 					if spelling == "last" do call_kind = .Last
 					if spelling == "map" do call_kind = .Map
+					if spelling == "map_values" do call_kind = .Map_Values
 					if spelling == "strftime" || spelling == "strflocaltime" do call_kind = .Strftime
 					if spelling == "strptime" do call_kind = .Strptime
 					if spelling == "any" && any_not_literal do call_kind = .Any_Not
