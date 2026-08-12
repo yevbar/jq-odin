@@ -1265,7 +1265,9 @@ parse_pipe :: proc(
 						term_ready = true
 						continue
 					}
-					argument, argument_ok := parse_pipe(parser, .Close_Paren, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "isempty")
+					argument_closing := Token_Kind.Close_Paren
+					if spelling == "map" || spelling == "map_values" do argument_closing = .Invalid
+					argument, argument_ok := parse_pipe(parser, argument_closing, spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "isempty")
 					if !argument_ok || !token_is(parser, .Close_Paren) {
 						fail_from_lookahead(parser, .Close_Paren)
 						return {}, false
