@@ -1,0 +1,20 @@
+# Bounded ordinary quoted-string interpolation. The lowering is anchored by
+# upstream/jq/src/parser.y:505-530.
+"inter\("pol" + "ation")"
+null
+"interpolation"
+
+"<b>\(.)</b>"
+"<&"
+"<b><&</b>"
+
+"\(.left):\(.right)"
+{"left":"a", "right":2}
+"a:2"
+
+"item=\(.[])"
+[1,true,null,{"a":2}]
+"item=1"
+"item=true"
+"item=null"
+"item={\"a\":2}"

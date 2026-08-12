@@ -929,6 +929,35 @@ binary_and_cross_form_nodes_never_activate_program_output :: proc(t: ^testing.T)
 }
 
 @(test)
+plain_string_interpolation_reuses_add_sequence_and_tostring :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, _, lowered := parse_and_lower(
+		t,
+		`"inter\("pol" + "ation")"`,
+		&parser,
+		&compiled,
+	)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+
+	root, root_ok := program.program_root(&compiled)
+	testing.expect(t, root_ok)
+	joined := instruction_at(&compiled, root)
+	testing.expect_value(t, joined.opcode, program.Opcode.Add)
+	testing.expect_value(
+		t,
+		instruction_child(&compiled, joined, 0).literal_kind,
+		program.Literal_Kind.String,
+	)
+	interpolation := instruction_child(&compiled, joined, 1)
+	testing.expect_value(t, interpolation.opcode, program.Opcode.Sequence)
+	testing.expect_value(t, instruction_child(&compiled, interpolation, 0).opcode, program.Opcode.Add)
+	testing.expect_value(t, instruction_child(&compiled, interpolation, 1).opcode, program.Opcode.Tostring)
+
+	expect_cleanup(t, &parser, &compiled)
+}
+
+@(test)
 cyclic_asts_never_return_an_active_program :: proc(t: ^testing.T) {
 	source := diagnostic.borrow_source("bad", ".")
 	span, _ := diagnostic.make_span(source, 0, 1)

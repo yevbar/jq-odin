@@ -10,6 +10,6 @@ valid UTF-8, pass through unchanged.
 The bounded format-string form now accepts literal fragments and interpolation
 queries, including multiple interpolations. Literal fragments are copied
 without formatting and each interpolation result is passed through `@html`
-before the existing string-addition path concatenates the segments. Plain jq
-string interpolation and format strings for directives other than `@html`
-remain deferred.
+before the existing string-addition path concatenates the segments. Ordinary
+jq string interpolation is covered separately by `string-interpolation`; format
+strings for directives other than `@html` remain deferred.

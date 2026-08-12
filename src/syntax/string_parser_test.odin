@@ -33,6 +33,7 @@ test_plain_string_decodes_every_escape_unicode_and_exact_spans :: proc(t: ^testi
 	expect_string_filter(t, `"plain"`, "plain")
 	expect_string_filter(t, `""`, "")
 	expect_string_filter(t, `"\"\\\/\b\f\n\r\t"`, "\"\\/\b\f\n\r\t")
+	expect_string_filter(t, `"\\("`, `\(`)
 	expect_string_filter(t, `"\u0041\u03bc"`, "Aμ")
 	expect_string_filter(t, `"\ud83d\ude00"`, "😀")
 	expect_string_filter(t, `"raw μ 😀"`, "raw μ 😀")
@@ -229,10 +230,9 @@ test_grouped_string_escape_diagnostics :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_plain_string_rejects_interpolation_and_unterminated_forms :: proc(t: ^testing.T) {
+test_plain_string_rejects_unterminated_forms :: proc(t: ^testing.T) {
 	Case :: struct { text: string, start, end: int, kind: Parse_Error_Kind, message: string }
 	cases := [?]Case{
-		{`"a\(.)b"`, 2, 4, .Unexpected_Token, "string interpolation is not supported"},
 		{`"abc\`, 4, 5, .Lexical_Error, "Invalid escape"},
 	}
 	for test_case in cases {
@@ -244,6 +244,53 @@ test_plain_string_rejects_interpolation_and_unterminated_forms :: proc(t: ^testi
 		expect_span(t, source, outcome.error.span, test_case.start, test_case.end)
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
+}
+
+@(test)
+test_plain_string_interpolation_lowers_query_through_tostring :: proc(t: ^testing.T) {
+	parser: Parser
+	source, outcome := parse_test_filter(t, &parser, `"inter\("pol" + "ation")"`)
+	expect_parse_success(t, &parser, outcome)
+
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.form, Node_Form.Binary)
+	testing.expect_value(t, root.binary_operator, Binary_Operator.Add)
+	expect_span(t, source, root.span, 0, len(`"inter\("pol" + "ation")"`))
+	testing.expect_value(t, parser.nodes.storage[int(root.left)].string_text, "inter")
+
+	interpolation := parser.nodes.storage[int(root.right)]
+	testing.expect_value(t, interpolation.kind, Node_Kind.Pipe)
+	query := parser.nodes.storage[int(interpolation.left)]
+	testing.expect_value(t, query.form, Node_Form.Binary)
+	testing.expect_value(t, query.binary_operator, Binary_Operator.Add)
+	testing.expect_value(t, parser.nodes.storage[int(query.left)].string_text, "pol")
+	testing.expect_value(t, parser.nodes.storage[int(query.right)].string_text, "ation")
+	testing.expect_value(t, parser.nodes.storage[int(interpolation.right)].kind, Node_Kind.Tostring)
+	testing.expect_value(t, parser.string_allocations.count, 3)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+test_plain_string_interpolation_accepts_identity_and_multiple_results :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, `"<b>\(.)</b>", "item=\(.[])"`)
+	expect_parse_success(t, &parser, outcome)
+
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Comma)
+	markup := parser.nodes.storage[int(root.left)]
+	testing.expect_value(t, markup.form, Node_Form.Binary)
+	testing.expect_value(t, parser.nodes.storage[int(markup.right)].string_text, "</b>")
+	markup_left := parser.nodes.storage[int(markup.left)]
+	identity_pipe := parser.nodes.storage[int(markup_left.right)]
+	testing.expect_value(t, parser.nodes.storage[int(identity_pipe.left)].kind, Node_Kind.Identity)
+	testing.expect_value(t, parser.nodes.storage[int(identity_pipe.right)].kind, Node_Kind.Tostring)
+
+	stream := parser.nodes.storage[int(root.right)]
+	stream_pipe := parser.nodes.storage[int(stream.right)]
+	testing.expect_value(t, parser.nodes.storage[int(stream_pipe.left)].kind, Node_Kind.Field)
+	testing.expect_value(t, parser.nodes.storage[int(stream_pipe.right)].kind, Node_Kind.Tostring)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
 
 @(test)

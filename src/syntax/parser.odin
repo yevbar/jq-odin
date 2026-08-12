@@ -794,16 +794,34 @@ parse_pipe :: proc(
 				}
 				term = new_term
 			case .String_Start:
-				new_term, string_ok := append_string_node(
-					parser,
-					token.span,
-					group_depth+minus_depth,
-					live_pipe_count,
-					live_comma_count,
-					live_binary_count,
-					term_prefix_overhead,
-					term_has_postfix,
-				)
+				new_term: Node_Id
+				string_ok: bool
+				if string_has_interpolation(parser, token.span) {
+					new_term, string_ok = append_interpolated_string_node(
+						parser,
+						{},
+						token.span,
+						.Tostring,
+						false,
+						group_depth+minus_depth,
+						live_pipe_count,
+						live_comma_count,
+						live_binary_count,
+						term_prefix_overhead,
+						term_has_postfix,
+					)
+				} else {
+					new_term, string_ok = append_string_node(
+						parser,
+						token.span,
+						group_depth+minus_depth,
+						live_pipe_count,
+						live_comma_count,
+						live_binary_count,
+						term_prefix_overhead,
+						term_has_postfix,
+					)
+				}
 				if !string_ok {
 					return {}, false
 				}
@@ -825,10 +843,12 @@ parse_pipe :: proc(
 				if format == "@sh" do kind = .Sh
 				advance(parser)
 				if kind == .Html && token_is(parser, .String_Start) {
-					new_term, format_ok := append_html_string_node(
+					new_term, format_ok := append_interpolated_string_node(
 						parser,
 						token.span,
 						parser.lookahead.token.span,
+						.Html,
+						true,
 						group_depth+minus_depth,
 						live_pipe_count,
 						live_comma_count,
@@ -2469,14 +2489,38 @@ append_string_node :: proc(
 	return node, true
 }
 
-// append_html_string_node lowers the bounded jq format-string form directly
-// into existing syntax. Literal fragments remain unformatted constants;
-// interpolation queries pipe through Html; adjacent segments concatenate with
-// Add. This preserves package boundaries and requires no new program opcode.
+// string_has_interpolation only selects between two parser implementations;
+// the scanner remains the authority for tokenization and diagnostics. Skipping
+// one byte after a non-interpolation backslash is sufficient because neither
+// byte can be an unescaped quote or the start of a later interpolation.
 @(private="package")
-append_html_string_node :: proc(
+string_has_interpolation :: proc(parser: ^Parser, open_span: diagnostic.Span) -> bool {
+	_, at, ok := diagnostic.span_offsets(parser.source, open_span)
+	assert(ok)
+	bytes := diagnostic.source_bytes(parser.source)
+	for at < len(bytes) {
+		if bytes[at] == '"' do return false
+		if bytes[at] == '\\' {
+			if at+1 < len(bytes) && bytes[at+1] == '(' do return true
+			at += 2
+			continue
+		}
+		at += 1
+	}
+	return false
+}
+
+// append_interpolated_string_node lowers a quoted jq string directly into
+// existing syntax. Literal fragments remain constants; interpolation queries
+// pipe through format_kind; adjacent segments concatenate with Add. Plain jq
+// strings use Tostring while the bounded @html form uses Html. This preserves
+// package boundaries and requires no new program opcode.
+@(private="package")
+append_interpolated_string_node :: proc(
 	parser: ^Parser,
 	format_span, open_span: diagnostic.Span,
+	format_kind: Node_Kind,
+	has_format: bool,
 	live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead: int,
 	has_postfix: bool,
 ) -> (Node_Id, bool) {
@@ -2502,15 +2546,25 @@ append_html_string_node :: proc(
 	for {
 		segment := invalid_id
 		if token_is(parser, .String_Text) {
-			text_token := parser.lookahead.token
-			start, end, ok := diagnostic.span_offsets(parser.source, text_token.span)
+			first_token := parser.lookahead.token
+			start, end, ok := diagnostic.span_offsets(parser.source, first_token.span)
 			assert(ok && end >= start)
+			text_span := first_token.span
+			advance(parser)
+			for token_is(parser, .String_Text) {
+				text_token := parser.lookahead.token
+				_, next_end, next_ok := diagnostic.span_offsets(parser.source, text_token.span)
+				assert(next_ok && next_end >= end)
+				end = next_end
+				text_span, next_ok = spanning(parser, text_span, text_token.span)
+				assert(next_ok)
+				advance(parser)
+			}
 			contents := diagnostic.source_bytes(parser.source)[start:end]
 			segment_ok: bool
-			segment, segment_ok = append_decoded_string_node(parser, contents, text_token.span, start)
+			segment, segment_ok = append_decoded_string_node(parser, contents, text_span, start)
 			if !segment_ok do return {}, false
-			join_anchor = text_token.span
-			advance(parser)
+			join_anchor = first_token.span
 		} else if token_is(parser, .String_Interpolation_Start) {
 			interpolation_start := parser.lookahead.token
 			advance(parser)
@@ -2521,15 +2575,17 @@ append_html_string_node :: proc(
 				return {}, false
 			}
 			interpolation_end := parser.lookahead.token
-			html, html_ok := append_node(parser, Node{kind = .Html, span = format_span})
-			if !html_ok do return {}, false
+			formatter_span := interpolation_start.span
+			if has_format do formatter_span = format_span
+			formatter, formatter_ok := append_node(parser, Node{kind = format_kind, span = formatter_span})
+			if !formatter_ok do return {}, false
 			interpolation_span, interpolation_span_ok := spanning(parser, interpolation_start.span, interpolation_end.span)
 			assert(interpolation_span_ok)
 			segment, query_ok = append_node(parser, Node{
 				kind = .Pipe,
 				span = interpolation_span,
 				left = query,
-				right = html,
+				right = formatter,
 			})
 			if !query_ok do return {}, false
 			join_anchor = interpolation_start.span
@@ -2564,7 +2620,9 @@ append_html_string_node :: proc(
 		}
 	}
 
-	full_span, full_span_ok := spanning(parser, format_span, close_span)
+	full_start_span := open_span
+	if has_format do full_start_span = format_span
+	full_span, full_span_ok := spanning(parser, full_start_span, close_span)
 	assert(full_span_ok)
 	if root == invalid_id {
 		full_start, _, offsets_ok := diagnostic.span_offsets(parser.source, full_span)

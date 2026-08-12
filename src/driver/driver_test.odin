@@ -400,6 +400,19 @@ zero_one_and_many_outputs_are_lf_delimited :: proc(t: ^testing.T) {
 }
 
 @(test)
+ordinary_string_interpolation_evaluates_and_stringifies_each_result :: proc(t: ^testing.T) {
+	expect_run(t, `"inter\("pol" + "ation")"`, "null", `"interpolation"
+`)
+	expect_run(t, `"<b>\(.)</b>"`, `"<&"`, `"<b><&</b>"
+`)
+	expect_run(t, `"item=\(.[])"`, `[1,true,null,{"a":2}]`, `"item=1"
+"item=true"
+"item=null"
+"item={\"a\":2}"
+`)
+}
+
+@(test)
 object_binding_shorthand_uses_name_as_key_and_variable_as_value :: proc(t: ^testing.T) {
 	expect_run(t, `"v" as $x | {$x}`, "null", "{\n  \"x\": \"v\"\n}\n")
 }

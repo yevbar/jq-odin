@@ -1429,6 +1429,7 @@ def expect_differential(candidate: pathlib.Path, oracle: pathlib.Path) -> int:
         (["-c", "add"], b'[]'),
         (["-c", ".a[]"], b'{"a":[1,2]}'),
         (["-c", ".a[] + 1"], b'{"a":[1,2]}'),
+        (["-c", r'"inter\("pol" + "ation")", "<b>\(.)</b>"'], b'"<&"'),
     ]
     for args, stdin in cases:
         reference = run_program(oracle, args, stdin)
@@ -1762,6 +1763,14 @@ def main() -> int:
         ("isfinite numeric predicate", ["-c", "isfinite"], b"1", 0, b"true\n", b""),
         ("flatten nested arrays", ["-c", "flatten"], b"[1,[2,[3]],4]", 0, b"[1,2,3,4]\n", b""),
         ("ceil numeric rounding", ["-c", "ceil"], b"1.2 -1.2 2", 0, b"2\n-1\n2\n", b""),
+        (
+            "ordinary string interpolation",
+            ["-c", r'"inter\("pol" + "ation")", "<b>\(.)</b>"'],
+            b'"<&"',
+            0,
+            b'"interpolation"\n"<b><&</b>"\n',
+            b"",
+        ),
         ("bundled short options", ["-nc", "."], b"", 0, b"null\n", b""),
         ("JSON input", ["."], b"{", 4, b"", b"jq-odin: JSON input error\n"),
         (
