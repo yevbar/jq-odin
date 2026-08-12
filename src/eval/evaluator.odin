@@ -1395,15 +1395,15 @@ slice_result :: proc(
 		v, e := value.literal_number_value(start_text, storage.allocator)
 		if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true }
 		n, ok := value.number_value_get(&v); _ = value.destroy_value(&v)
-		if !ok || n != f64(int(n)) do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
-		start = int(n); if start < 0 { start += length }; if start < 0 { start = 0 }; if start > length { start = length }
+		if !ok do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
+		start = int(math.floor(n)); if start < 0 { start += length }; if start < 0 { start = 0 }; if start > length { start = length }
 	}
 	if len(end_text) > 0 {
 		v, e := value.literal_number_value(end_text, storage.allocator)
 		if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true }
 		n, ok := value.number_value_get(&v); _ = value.destroy_value(&v)
-		if !ok || n != f64(int(n)) do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
-		end = int(n); if end < 0 { end += length }; if end < 0 { end = 0 }; if end > length { end = length }
+		if !ok do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
+		end = int(math.ceil(n)); if end < 0 { end += length }; if end < 0 { end = 0 }; if end > length { end = length }
 	}
 	if start > end {
 		if value.kind_of(&frame.input) == .String {
