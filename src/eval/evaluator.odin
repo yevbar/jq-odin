@@ -6519,7 +6519,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			element_ok: bool
 			if value.kind_of(&frame.input) == .Object {
 				key: value.Value
-				key, element, element_ok = value.object_entry_copy(&frame.input, frame.iterator_cursor)
+				entry_index := frame.iterator_cursor
+				if frame.map_values_mode {
+					object_length, object_length_ok := value.object_length(&frame.input)
+					if !object_length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					entry_index = object_length - 1 - frame.iterator_cursor
+				}
+				key, element, element_ok = value.object_entry_copy(&frame.input, entry_index)
 				if element_ok { frame.pending_constructor_key = value.take_value(&key) } else { _ = value.destroy_value(&key) }
 			} else {
 				element, element_ok = value.array_element_copy(&frame.input, frame.iterator_cursor)
