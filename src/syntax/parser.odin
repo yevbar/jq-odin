@@ -1272,11 +1272,6 @@ parse_pipe :: proc(
 						}
 						close := parser.lookahead.token
 						advance(parser)
-						argument_node := parser.nodes.storage[int(argument)]
-						if argument_node.kind != .Empty && argument_node.kind != .Range {
-							fail_from_lookahead(parser, .Expression)
-							return {}, false
-						}
 						span, span_ok := spanning(parser, token.span, close.span)
 						assert(span_ok)
 						new_term, ok := append_node(parser, Node{kind=.Add_Builtin, span=span, child=argument, has_child=true})

@@ -16,3 +16,12 @@ add(range(1;4))
 
 0 | add(range(.))
 null
+
+[1,2] | add(.[])
+3
+
+3 | add((range(3)))
+3
+
+null | add([1,2])
+[1,2]
