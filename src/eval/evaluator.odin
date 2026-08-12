@@ -6236,7 +6236,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				count_number, count_number_ok := value.number_value_get(&count_value)
 				_ = value.destroy_value(&count_value)
 				if !count_number_ok || count_number < 0 || count_number != f64(int(count_number)) {
-					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key="nth doesn't support negative count"})
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key="nth doesn't support negative indices"})
 					if ready do return result
 					continue
 				}

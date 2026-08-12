@@ -1308,7 +1308,9 @@ parse_pipe :: proc(
 						term_ready = true
 						continue
 					}
-					if count_node.kind != .Number || count_node.has_child || count_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+					negative_literal := count_node.kind == .Negate && count_node.has_child &&
+						parser.nodes.storage[int(count_node.child)].kind == .Number
+					if (count_node.kind != .Number && !negative_literal) || count_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Skip, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term
@@ -1329,7 +1331,9 @@ parse_pipe :: proc(
 						term_ready = true
 						continue
 					}
-					if count_node.kind != .Number || count_node.has_child || count_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+					negative_literal := count_node.kind == .Negate && count_node.has_child &&
+						parser.nodes.storage[int(count_node.child)].kind == .Number
+					if (count_node.kind != .Number && !negative_literal) || count_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Nth, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term

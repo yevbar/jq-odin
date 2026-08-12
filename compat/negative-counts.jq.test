@@ -1,0 +1,7 @@
+# Negative literal skip/nth counts are catchable before generator evaluation.
+try skip(-1; error) catch .
+null
+"skip doesn't support negative count"
+
+3 | [nth(0; range(.)), try nth(-1; range(.)) catch .]
+[0,"nth doesn't support negative indices"]
