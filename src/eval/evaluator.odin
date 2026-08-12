@@ -5381,6 +5381,16 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			case .Error:
 				child, child_ok := child_instruction(storage, instruction, 0)
 				message_instruction, message_instruction_ok := program.program_instruction(storage.compiled, child)
+				if child_ok && message_instruction_ok && message_instruction.opcode == .Identity && !message_instruction.has_literal {
+					message, message_ok, message_error := text_coercion_text(&frame.input, storage.allocator)
+					if message_error != nil do return resource_step(message_error)
+					if !message_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key=message})
+					free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator)
+					if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					if ready do return result
+					continue
+				}
 				message_operand, operand_ok := program.program_operand(storage.compiled, message_instruction.operands_start)
 				message, message_ok := program.operand_text(storage.compiled, message_operand)
 				if !child_ok || !message_instruction_ok || !operand_ok || !message_ok ||

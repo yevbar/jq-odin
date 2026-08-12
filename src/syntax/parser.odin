@@ -1062,7 +1062,13 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				advance(parser)
-				if spelling == "range" && token_is(parser, .Open_Paren) {
+				if spelling == "error" && !token_is(parser, .Open_Paren) {
+					identity, identity_ok := append_node(parser, Node{kind=.Identity, span=token.span})
+					if !identity_ok { return {}, false }
+					new_term, error_ok := append_node(parser, Node{kind=.Error, span=token.span, child=identity, has_child=true})
+					if !error_ok { return {}, false }
+					term = new_term
+				} else if spelling == "range" && token_is(parser, .Open_Paren) {
 					advance(parser)
 					first, first_ok := parse_pipe(parser, .Close_Paren, false)
 					if !first_ok { fail_from_lookahead(parser, .Close_Paren); return {}, false }
