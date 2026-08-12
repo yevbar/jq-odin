@@ -1,0 +1,19 @@
+# Scalar error values are preserved by try/catch.
+try error(0) catch .
+null
+0
+
+try error(false) catch .
+null
+false
+
+try error(null) catch .
+null
+null
+
+# A scalar error still suppresses the producer's output and resumes try.
+1, try error(2) catch ., 3
+null
+1
+2
+3

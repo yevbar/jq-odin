@@ -1952,7 +1952,7 @@ raise_runtime :: proc(
 	retain_error := retain_runtime_error(storage, err)
 	if retain_error != nil do return resource_step(retain_error), true
 	if target >= 0 {
-		if err.kind == .User_Error && len(err.key) == 0 {
+		if err.kind == .User_Error && len(err.key) == 0 && value.kind_of(&storage.pending_value) == .Invalid {
 			pending := value.clone_value(&storage.frames[producer].input)
 			if value.kind_of(&pending) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program), true
 			storage.pending_value = pending
@@ -5963,19 +5963,47 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if ready do return result
 					continue
 				}
-				message_operand, operand_ok := program.program_operand(storage.compiled, message_instruction.operands_start)
-				message, message_ok := program.operand_text(storage.compiled, message_operand)
-				if !child_ok || !message_instruction_ok || !operand_ok || !message_ok ||
-				   message_operand.kind != .Text || !message_instruction.has_literal ||
-				   message_instruction.literal_kind != .String {
+				if !child_ok || !message_instruction_ok || !message_instruction.has_literal {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
+				if message_instruction.literal_kind == .String {
+					message_operand, operand_ok := program.program_operand(storage.compiled, message_instruction.operands_start)
+					message, message_ok := program.operand_text(storage.compiled, message_operand)
+					if !operand_ok || !message_ok || message_operand.kind != .Text {
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					result, ready := raise_runtime(storage, index, Runtime_Error{
+						kind = .User_Error,
+						input_kind = value.kind_of(&frame.input),
+						span = instruction.span,
+						key = message,
+					})
+					if ready do return result
+					continue
+				}
+				if message_instruction.literal_kind != .Null && message_instruction.literal_kind != .Boolean && message_instruction.literal_kind != .Number {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				scalar, scalar_error, scalar_cleanup := literal_value(storage, message_instruction)
+				if scalar_error != .None || scalar_cleanup != nil {
+					if value.kind_of(&scalar) != .Invalid do _ = value.destroy_value(&scalar)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				message, message_ok, message_error := text_coercion_text(&scalar, storage.allocator)
+				if message_error != nil || !message_ok {
+					if value.kind_of(&scalar) != .Invalid do _ = value.destroy_value(&scalar)
+					return resource_step(message_error)
+				}
+				// A try/catch must receive the typed scalar, while the runtime key
+				// remains the compact JSON rendering for uncaught diagnostics.
+				storage.pending_value = scalar
 				result, ready := raise_runtime(storage, index, Runtime_Error{
 					kind = .User_Error,
 					input_kind = value.kind_of(&frame.input),
 					span = instruction.span,
 					key = message,
 				})
+				if len(message) > 0 { _ = runtime.mem_free_bytes(transmute([]byte)message, storage.allocator) }
 				if ready do return result
 				continue
 			case .IsEmpty:
