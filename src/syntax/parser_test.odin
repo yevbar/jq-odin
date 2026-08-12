@@ -3968,3 +3968,17 @@ error_accepts_scalar_literals :: proc(t: ^testing.T) {
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
 }
+
+@(test)
+isempty_accepts_literal_objects :: proc(t: ^testing.T) {
+	sources := [?]string{`isempty({})`, `isempty({a:1})`}
+	for source_text in sources {
+		parser: Parser
+		source := diagnostic.borrow_source("<isempty-object>", source_text)
+		testing.expect(t, init_parser(&parser, source, context.allocator))
+		outcome := parse_filter(&parser)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+		testing.expect_value(t, parser.nodes.storage[int(outcome.root)].kind, Node_Kind.IsEmpty)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}

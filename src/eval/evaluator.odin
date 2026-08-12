@@ -6042,9 +6042,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						is_empty = start >= end
 					}
 				}
-				if child_instruction_value.opcode == .Array {
-					// A literal array is always a value-producing child, including
-					// the empty array. `isempty([..])` therefore returns false.
+				if child_instruction_value.opcode == .Array || child_instruction_value.opcode == .Object {
+					// Literal containers are always value-producing children, including
+					// the empty container. `isempty([...])`/`isempty({...})` therefore
+					// return false.
 					is_empty = false
 				}
 				output := value.boolean_value(is_empty)

@@ -1,0 +1,8 @@
+# Literal objects always produce one value, even when empty.
+isempty({})
+null
+false
+
+isempty({a:1})
+null
+false
