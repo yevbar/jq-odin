@@ -5716,9 +5716,27 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			case .Strftime:
 				child, child_ok := child_instruction(storage, instruction, 0)
 				format_instruction, format_ok := program.program_instruction(storage.compiled, child)
+				if child_ok && format_ok && (format_instruction.opcode != .Identity || !format_instruction.has_literal || format_instruction.literal_kind != .String) {
+					err := Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					err.key = "strftime/1 requires a string format"
+					result, ready := raise_runtime(storage, index, err)
+					if ready do return result
+					continue
+				}
 				format_value, format_error, format_cleanup := literal_value(storage, format_instruction)
 				format, format_text_ok := value.string_borrowed(&format_value)
-				if !child_ok || !format_ok || format_cleanup != nil || format_error != .None || !format_text_ok { if value.kind_of(&format_value) != .Invalid { _ = value.destroy_value(&format_value) }; return begin_terminal_misuse(storage, .Malformed_Program) }
+				if !child_ok || !format_ok {
+					if value.kind_of(&format_value) != .Invalid { _ = value.destroy_value(&format_value) }
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				if format_cleanup != nil || format_error != .None || !format_text_ok {
+					_ = value.destroy_value(&format_value)
+					err := Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					err.key = "strftime/1 requires a string format"
+					result, ready := raise_runtime(storage, index, err)
+					if ready do return result
+					continue
+				}
 				output, runtime_kind, resource_error := strftime_array_result(&frame.input, format, storage.allocator)
 				_ = value.destroy_value(&format_value)
 				if resource_error != nil do return resource_step(resource_error)
