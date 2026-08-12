@@ -189,6 +189,7 @@ Node_Kind :: enum {
 	Tan,
 	// Sinh is appended to preserve existing AST discriminants.
 	Sinh,
+	Cosh,
 	// Error is appended to preserve existing AST discriminants.
 	Error,
 	// Try is appended to preserve existing AST discriminants.
@@ -1027,6 +1028,8 @@ parse_pipe :: proc(
 					kind = .Tan
 				} else if spelling == "sinh" {
 					kind = .Sinh
+				} else if spelling == "cosh" {
+					kind = .Cosh
 				} else if spelling == "error" {
 					kind = .Error
 				} else if spelling == "isempty" {
