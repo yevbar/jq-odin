@@ -3957,7 +3957,7 @@ strptime_result :: proc(input: ^value.Value, format: string, allocator: runtime.
 mktime_result :: proc(input: ^value.Value) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
 	length, length_ok := value.array_length(input)
-	if !length_ok || length < 3 do return {}, .Cannot_Iterate, nil
+	if !length_ok || length < 1 do return {}, .Cannot_Iterate, nil
 	fields: [6]i64
 	for i in 0..<min(length, 6) {
 		item, item_ok := value.array_element_copy(input, i)
@@ -3968,9 +3968,17 @@ mktime_result :: proc(input: ^value.Value) -> (value.Value, Runtime_Error_Kind, 
 		fields[i] = i64(number)
 	}
 	fields[1] += 1
+	// C's timegm normalizes the zero day produced by jq's zero-filled short
+	// arrays to the final day of the preceding month. Odin's component
+	// constructor requires an in-range day, so perform that bounded
+	// normalization explicitly for one- and two-field inputs.
+	omitted_day := length < 3
+	if omitted_day do fields[2] = 1
 	moment, moment_ok := time.components_to_time(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5])
 	if !moment_ok do return {}, .Cannot_Iterate, nil
-	return value.number_value(f64(time.to_unix_seconds(moment))), .None, nil
+	seconds := time.to_unix_seconds(moment)
+	if omitted_day do seconds -= 24*60*60
+	return value.number_value(f64(seconds)), .None, nil
 }
 
 @(private)

@@ -10,3 +10,12 @@ mktime
 strptime("%Y-%m-%dT%H:%M:%SZ") | mktime
 "2015-03-05T23:51:47Z"
 1425599507
+
+# Omitted month/day fields are zero-filled before UTC normalization.
+mktime
+[2024]
+1703980800
+
+mktime
+[2024,8]
+1725062400

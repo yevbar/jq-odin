@@ -98,6 +98,39 @@ not_builtin_uses_jq_truthiness :: proc(t: ^testing.T) {
 }
 
 @(test)
+mktime_zero_fills_one_and_two_field_arrays :: proc(t: ^testing.T) {
+	instructions := [?]program.Instruction{{opcode = .Mktime, span = {start = 0, end = 6}}}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], nil, "", 0)
+	cases := [?]struct {
+		fields:   [2]f64,
+		length:   int,
+		expected: f64,
+	}{
+		{{2024, 0}, 1, 1703980800},
+		{{2024, 8}, 2, 1725062400},
+	}
+	for test_case in cases {
+		fields := test_case.fields
+		input, array_error := value.array_value(context.allocator)
+		testing.expect_value(t, value.array_error_kind(&array_error), value.Array_Error.None)
+		for field in fields[:test_case.length] {
+			item := value.number_value(field)
+			displaced, append_error := value.array_append_take(&input, &item)
+			testing.expect_value(t, value.array_error_kind(&append_error), value.Array_Error.None)
+			testing.expect_value(t, value.destroy_value(&displaced), runtime.Allocator_Error(nil))
+		}
+		evaluator: Evaluator
+		testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+		output := step_take(t, &evaluator)
+		expect_number(t, &output, test_case.expected)
+		testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+		testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	}
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 ceil_builtin_rounds_toward_positive_infinity :: proc(t: ^testing.T) {
 	cases := [?]struct { input: f64, expected: f64 }{
 		{1.2, 2},

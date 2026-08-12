@@ -165,6 +165,7 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 		{`isempty(empty)`, .IsEmpty},
 		{`range(0;1)`, .Range},
 		{`strftime("%Y-%m-%dT%H:%M:%SZ")`, .Strftime},
+		{"mktime", .Mktime},
 		{"isinfinite", .Isinfinite},
 		{"log", .Log},
 		{"min", .Min},
@@ -223,6 +224,20 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 		testing.expect(t, has_entry && entry == program.Instruction_Index(parsed.root))
 		expect_cleanup(t, &parser, &compiled)
 	}
+}
+
+@(test)
+mktime_lowers_to_append_only_builtin_opcode :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, _, lowered := parse_and_lower(t, "mktime", &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	root_index, root_ok := program.program_root(&compiled)
+	testing.expect(t, root_ok)
+	root := instruction_at(&compiled, root_index)
+	testing.expect_value(t, root.opcode, program.Opcode.Mktime)
+	testing.expect_value(t, root.operands_count, program.Count(0))
+	expect_cleanup(t, &parser, &compiled)
 }
 
 @(test)
