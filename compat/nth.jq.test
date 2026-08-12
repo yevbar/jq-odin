@@ -1,0 +1,11 @@
+# `nth` selects one zero-based output from a generator.
+nth(1; range(5))
+null
+1
+
+nth(0; .[])
+[7,8,9]
+7
+
+nth(9; range(3))
+null
