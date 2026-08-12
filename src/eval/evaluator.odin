@@ -137,6 +137,9 @@ frame_phase :: enum u8 {
 	Binary_Left_Active,
 	Binary_Start_Right,
 	Binary_Right_Active,
+	If_Condition_Active,
+	If_Then_Active,
+	If_Else_Active,
 	Complete,
 }
 
@@ -172,6 +175,7 @@ eval_frame :: struct {
 	binding_value: value.Value,
 	// Binary operators retain the left result while the right generator runs.
 	binary_left: value.Value,
+	if_branch_active: bool,
 	iterator_cursor: int,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
@@ -1111,6 +1115,9 @@ capture_composite_instruction :: proc(
 	case .Range:
 		if instruction.operands_count != 1 && instruction.operands_count != 2 && instruction.operands_count != 3 do return false
 		for offset in 0..<int(instruction.operands_count) { _, child_ok := child_instruction(storage, instruction, u32(offset)); if !child_ok do return false }
+	case .If:
+		if instruction.operands_count != 3 do return false
+		for offset in 0..<3 { _, child_ok := child_instruction(storage, instruction, u32(offset)); if !child_ok do return false }
 	case .Strftime:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1214,6 +1221,8 @@ resumed_composite_instruction_valid :: proc(
 		return frame.has_saved_instruction && instruction.opcode == frame.saved_instruction.opcode
 	case .Binary_Start_Left, .Binary_Left_Active, .Binary_Start_Right, .Binary_Right_Active:
 		if frame.mode != .Normal || !is_binary_opcode(instruction.opcode) do return false
+	case .If_Condition_Active, .If_Then_Active, .If_Else_Active:
+		if frame.mode != .Normal || instruction.opcode != .If do return false
 	case:
 		return true
 	}
@@ -1234,6 +1243,8 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = u8(instruction.operands_count)
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
+		expected_operand_count = 3
+	} else if frame.phase == .If_Condition_Active || frame.phase == .If_Then_Active || frame.phase == .If_Else_Active {
 		expected_operand_count = 3
 	} else if frame.phase == .Binary_Start_Left || frame.phase == .Binary_Left_Active || frame.phase == .Binary_Start_Right || frame.phase == .Binary_Right_Active {
 		expected_operand_count = 2
@@ -1588,7 +1599,7 @@ output_needs_frame :: proc(storage: ^evaluator_storage, producer: int) -> bool {
 		parent := storage.frames[current].parent
 		if parent < 0 do return false
 		phase := storage.frames[parent].phase
-		if phase == .Sequence_Left_Active || phase == .Field_Child_Active || phase == .Index_Child_Active || phase == .Binary_Left_Active do return true
+		if phase == .Sequence_Left_Active || phase == .Field_Child_Active || phase == .Index_Child_Active || phase == .Binary_Left_Active || phase == .If_Condition_Active || phase == .If_Then_Active || phase == .If_Else_Active do return true
 		current = parent
 	}
 	return false
@@ -1699,6 +1710,16 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .Binary_Right_Active:
 		_ = value.destroy_value(&frame.binary_left)
 		frame.phase = .Binary_Left_Active
+	case .If_Condition_Active:
+		if frame.if_branch_active {
+			frame.if_branch_active = false
+			frame.phase = .If_Condition_Active
+		} else {
+			frame.phase = .Complete
+		}
+	case .If_Then_Active, .If_Else_Active:
+		frame.if_branch_active = false
+		frame.phase = .If_Condition_Active
 	case .Binding_Left_Active:
 		frame.phase = .Complete
 	case .Binding_Body_Active:
@@ -2030,6 +2051,23 @@ propagate_output :: proc(
 			frame.phase = .Sequence_Right_Active
 			return {}, false
 		case .Sequence_Right_Active:
+			current = parent
+		case .If_Condition_Active:
+			kind := value.kind_of(owned)
+			truthy := kind != .Null
+			if kind == .Boolean {
+				truthy, _ = value.boolean_value_get(owned)
+			}
+			child, ok := child_instruction(storage, instruction, 1 if truthy else 2)
+			input_copy := value.clone_value(&frame.input)
+			_ = value.destroy_value(owned)
+			if !ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, parent, &input_copy) {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true
+			}
+			frame.if_branch_active = true
+			frame.phase = .If_Then_Active if truthy else .If_Else_Active
+			return {}, false
+		case .If_Then_Active, .If_Else_Active:
 			current = parent
 		case .Field_Child_Active:
 			_, field_ok := field_text(storage, instruction)
@@ -6037,6 +6075,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Sequence_Start_Left
+			case .If:
+				if !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				if storage.frame_count == len(storage.frames) {
+					capacity_error := grow_frames(storage)
+					if capacity_error != nil do return resource_step(capacity_error)
+					frame = &storage.frames[index]
+				}
+				condition_child, ok := child_instruction(storage, instruction, 0)
+				input_copy := value.clone_value(&frame.input)
+				if !ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, condition_child, index, &input_copy) {
+					return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+				}
+				frame.if_branch_active = false
+				frame.phase = .If_Condition_Active
 			case .Fork:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
@@ -6299,6 +6353,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		     .Binary_Left_Active, .Binary_Right_Active,
 		     .Binding_Left_Active, .Binding_Body_Active, .Constructor_Child_Active:
 			// An active consumer is never the top frame: its producer is above it.
+			return begin_terminal_misuse(storage, .Malformed_Program)
+		case .If_Condition_Active, .If_Then_Active, .If_Else_Active:
 			return begin_terminal_misuse(storage, .Malformed_Program)
 		}
 	}

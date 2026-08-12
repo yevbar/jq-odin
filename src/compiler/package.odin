@@ -111,6 +111,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
+	case .If:
+		return node.has_if_condition && node.has_if_then && node.has_if_else && no_child && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Null:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
@@ -307,6 +309,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Slice:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .If:
+		return validate_binding_scopes(nodes, node.if_condition, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.if_then, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.if_else, source, scopes, depth, next_budget)
 	case .Any_Not, .All_Not:
 		return true
 	case .Variable:
@@ -531,6 +535,8 @@ lower_filter :: proc(
 			if !node_reference_valid(node.left, len(nodes)) || !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Invalid_AST} }
 			if node.right >= 0 && (!node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 1)) { return Lower_Outcome{kind = .Invalid_AST} }
 			if node.has_reduce_update && (!node_reference_valid(node.reduce_update, len(nodes)) || !checked_count_add(&operand_count, 1)) { return Lower_Outcome{kind = .Invalid_AST} }
+		case .If:
+			if !node_reference_valid(node.if_condition, len(nodes)) || !node_reference_valid(node.if_then, len(nodes)) || !node_reference_valid(node.if_else, len(nodes)) || !checked_count_add(&operand_count, 3) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .Strftime, .Strptime:
 			if !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .Try:
@@ -865,6 +871,13 @@ lower_filter :: proc(
 				assert(child_ok); operand_at += 1
 			}
 			instruction.operands_count = program.Count(count)
+		case .If:
+			instruction.opcode = .If
+			instruction.operands_count = 3
+			children := [3]syntax.Node_Id{node.if_condition, node.if_then, node.if_else}
+			for child in children {
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(child)})); operand_at += 1
+			}
 		case .Strftime, .Strptime:
 			instruction.opcode = .Strftime if node.kind == .Strftime else .Strptime
 			instruction.operands_count = 1

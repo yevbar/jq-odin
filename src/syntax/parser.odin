@@ -227,6 +227,8 @@ Node_Kind :: enum {
 	Map_Values,
 	// Slice is appended to preserve existing AST discriminants.
 	Slice,
+	// If is appended to preserve existing AST discriminants.
+	If,
 }
 
 Node_Id :: distinct int
@@ -290,6 +292,12 @@ Node :: struct {
 	has_value:         bool,
 	reduce_update:     Node_Id,
 	has_reduce_update: bool,
+	if_condition:      Node_Id,
+	has_if_condition:  bool,
+	if_then:           Node_Id,
+	has_if_then:       bool,
+	if_else:           Node_Id,
+	has_if_else:       bool,
 	key:               Node_Id,
 	has_key:           bool,
 	boolean_value:     bool,
@@ -825,6 +833,18 @@ parse_pipe :: proc(
 				new_term, try_ok := append_node(parser, Node{kind = .Try, span = span, left = expression, right = catch_filter})
 				if !try_ok do return {}, false
 				term = new_term
+			case .If:
+				if_token := token; advance(parser)
+				condition, ok1 := parse_pipe(parser, .Then, false)
+				if !ok1 || !token_is(parser, .Then) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				then_branch, ok2 := parse_pipe(parser, .Else, false)
+				if !ok2 || !token_is(parser, .Else) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				else_branch, ok3 := parse_pipe(parser, .End, false)
+				if !ok3 || !token_is(parser, .End) { fail_from_lookahead(parser, .Expression); return {}, false }
+				end_token := parser.lookahead.token; advance(parser)
+				span, span_ok := spanning(parser, if_token.span, end_token.span); assert(span_ok)
+				new_term, ok := append_node(parser, Node{kind=.If, span=span, if_condition=condition, has_if_condition=true, if_then=then_branch, has_if_then=true, if_else=else_branch, has_if_else=true})
+				if !ok { return {}, false }; term = new_term
 			case .Minus:
 				minus_depth += 1
 				if group_depth > 0 && !minus_before_group {

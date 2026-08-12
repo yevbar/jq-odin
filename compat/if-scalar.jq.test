@@ -1,0 +1,12 @@
+# scalar conditional
+if true then 1 else 2 end
+1
+
+if false then 1 else 2 end
+2
+
+null | if . then 1 else 2 end
+2
+
+1 | if . then 1 else 2 end
+1
