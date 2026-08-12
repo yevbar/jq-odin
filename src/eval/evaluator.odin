@@ -5449,7 +5449,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
-				updated, constructor_error := value.literal_number_value(number_text, storage.allocator)
+				updated: value.Value
+				constructor_error: value.Constructor_Error
+				if number_text == "null" {
+					updated = value.null_value()
+				} else if number_text == "true" || number_text == "false" {
+					updated = value.boolean_value(number_text == "true")
+				} else {
+					updated, constructor_error = value.literal_number_value(number_text, storage.allocator)
+				}
 				if value.constructor_error_kind(&constructor_error) != .None {
 					cleanup_error := value.destroy_constructor_error(&constructor_error)
 					if cleanup_error != nil do return resource_step(cleanup_error)
@@ -5480,7 +5488,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if !index_text_ok || !number_text_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 				array_index_i64, parse_ok := strconv.parse_i64(index_text)
 				if !parse_ok || array_index_i64 < i64(min(int)) || array_index_i64 > i64(max(int)) do return begin_terminal_misuse(storage, .Unsupported_Opcode)
-				updated, constructor_error := value.literal_number_value(number_text, storage.allocator)
+				updated: value.Value
+				constructor_error: value.Constructor_Error
+				if number_text == "null" {
+					updated = value.null_value()
+				} else if number_text == "true" || number_text == "false" {
+					updated = value.boolean_value(number_text == "true")
+				} else {
+					updated, constructor_error = value.literal_number_value(number_text, storage.allocator)
+				}
 				if value.constructor_error_kind(&constructor_error) != .None {
 					cleanup_error := value.destroy_constructor_error(&constructor_error)
 					if cleanup_error != nil do return resource_step(cleanup_error)

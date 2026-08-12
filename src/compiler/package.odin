@@ -525,21 +525,26 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Static_Field_Add_Number, .Static_Field_Set_Number:
-			if !node_reference_valid(node.right, len(nodes)) || nodes[int(node.right)].kind != .Number ||
-			   !nodes[int(node.right)].has_number_text {
+			if !node_reference_valid(node.right, len(nodes)) || (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
+			rhs_text := nodes[int(node.right)].number_text
+			if nodes[int(node.right)].kind == .Null do rhs_text = "null"
+			if nodes[int(node.right)].kind == .Boolean do rhs_text = "true" if nodes[int(node.right)].boolean_value else "false"
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
 			if !name_ok || name_end < name_start ||
 			   !checked_count_add(&operand_count, 2) ||
-			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(len(nodes[int(node.right)].number_text))) {
+			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(len(rhs_text))) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Static_Index_Set_Number:
+			rhs_text := nodes[int(node.right)].number_text
+			if nodes[int(node.right)].kind == .Null do rhs_text = "null"
+			if nodes[int(node.right)].kind == .Boolean do rhs_text = "true" if nodes[int(node.right)].boolean_value else "false"
 			if !node_reference_valid(node.child, len(nodes)) || !node_reference_valid(node.right, len(nodes)) ||
-			   nodes[int(node.right)].kind != .Number || !nodes[int(node.right)].has_number_text ||
+			   (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null) ||
 			   !checked_count_add(&operand_count, 2) ||
-			   !checked_count_add(&text_count, u64(len(node.number_text))+u64(len(nodes[int(node.right)].number_text))) {
+			   !checked_count_add(&text_count, u64(len(node.number_text))+u64(len(rhs_text))) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Flatten:
@@ -935,7 +940,10 @@ lower_filter :: proc(
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
 			assert(name_ok && name_end >= name_start)
 			name := string(bytes[name_start:name_end])
-			number := nodes[int(node.right)].number_text
+			rhs := nodes[int(node.right)]
+			number := rhs.number_text
+			if rhs.kind == .Null do number = "null"
+			if rhs.kind == .Boolean do number = "true" if rhs.boolean_value else "false"
 			texts := [2]string{name, number}
 			for text in texts {
 				assert(program.set_text(output, program.Byte_Offset(text_at), text))
@@ -950,7 +958,11 @@ lower_filter :: proc(
 			instruction.operands_count = 2
 		case .Static_Index_Set_Number:
 			instruction.opcode = .Static_Index_Set_Number
-			texts := [2]string{node.number_text, nodes[int(node.right)].number_text}
+			rhs := nodes[int(node.right)]
+			rhs_text := rhs.number_text
+			if rhs.kind == .Null do rhs_text = "null"
+			if rhs.kind == .Boolean do rhs_text = "true" if rhs.boolean_value else "false"
+			texts := [2]string{node.number_text, rhs_text}
 			for text in texts {
 				assert(program.set_text(output, program.Byte_Offset(text_at), text))
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(text))}))
