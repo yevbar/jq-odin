@@ -2,3 +2,11 @@
 [limit(0,2; .[]), skip(0,2; .[]), nth(1,3; .[])]
 [10,20,30]
 [[10,20],[10,20,30,30],[20]]
+
+# Comma-separated generator expressions remain streams inside skip/nth.
+nth(1; 0,1,error("foo"))
+1
+
+skip(1; 0,1,2)
+1
+2

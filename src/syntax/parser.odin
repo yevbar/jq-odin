@@ -1296,7 +1296,7 @@ parse_pipe :: proc(
 					count, count_ok := parse_pipe(parser, .Semicolon, false)
 					if !count_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }
 					advance(parser)
-					generator, generator_ok := parse_pipe(parser, .Close_Paren, true)
+					generator, generator_ok := parse_pipe(parser, .Close_Paren, false)
 					if !generator_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					close := parser.lookahead.token; advance(parser)
 					count_node := parser.nodes.storage[int(count)]
@@ -1319,7 +1319,7 @@ parse_pipe :: proc(
 					count, count_ok := parse_pipe(parser, .Semicolon, false)
 					if !count_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }
 					advance(parser)
-					generator, generator_ok := parse_pipe(parser, .Close_Paren, true)
+					generator, generator_ok := parse_pipe(parser, .Close_Paren, false)
 					if !generator_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					close := parser.lookahead.token; advance(parser)
 					count_node := parser.nodes.storage[int(count)]
