@@ -7,8 +7,9 @@ that already produce streams, such as `.[]` and parenthesized literal ranges,
 reuse the same accumulator. Null and map-produced streams are covered as well;
 other dynamic arguments remain deferred.
 
-Comma-separated child streams are also reduced as one stream. Higher-order
-generator bounds such as `range(range(10))` remain deferred.
+Comma-separated child streams are also reduced as one stream. Literal
+one-argument nested ranges such as `range(range(10))` are expanded in the
+existing range evaluator; arbitrary higher-order generators remain deferred.
 
 Identity bounds in multi-argument `range` forms are also covered when they use
 the current numeric input.

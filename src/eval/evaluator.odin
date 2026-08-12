@@ -5962,6 +5962,34 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				continue
 			case .Range:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				if instruction.operands_count == 1 {
+					bound_child, bound_child_ok := child_instruction(storage, instruction, 0)
+					bound_instruction, bound_instruction_ok := program.program_instruction(storage.compiled, bound_child)
+					if bound_child_ok && bound_instruction_ok && bound_instruction.opcode == .Range && bound_instruction.operands_count == 1 {
+						inner_child, inner_child_ok := child_instruction(storage, bound_instruction, 0)
+						inner_instruction, inner_instruction_ok := program.program_instruction(storage.compiled, inner_child)
+						inner_value, inner_error, inner_cleanup := literal_value(storage, inner_instruction)
+						inner_bound, inner_numeric := value.number_value_get(&inner_value)
+						if inner_child_ok && inner_instruction_ok && inner_error == .None && inner_cleanup == nil && inner_numeric && inner_bound >= 0 && inner_bound == f64(int(inner_bound)) {
+							result, array_error := value.array_value(storage.allocator)
+							if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&inner_value); return resource_step(.Out_Of_Memory) }
+							for outer_bound in 0..<int(inner_bound) {
+								for item_number in 0..<outer_bound {
+									item := value.number_value(f64(item_number))
+									_, append_error := value.array_append_take(&result, &item)
+									if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_value(&result); _ = value.destroy_value(&inner_value); return resource_step(.Out_Of_Memory) }
+								}
+							}
+							_ = value.destroy_value(&inner_value)
+							_ = value.destroy_value(&frame.input)
+							frame.input = result
+							frame.iterator_cursor = 0
+							frame.phase = .Iterator_Active
+							continue
+						}
+						if value.kind_of(&inner_value) != .Invalid { _ = value.destroy_value(&inner_value) }
+					}
+				}
 				start: f64
 				end: f64
 				step: f64 = 1

@@ -1140,7 +1140,7 @@ parse_pipe :: proc(
 							term = new_term
 						} else {
 							first_identity := first_node.kind == .Identity && !first_node.has_child && !first_node.has_value && first_node.container_kind == .None
-							if (first_node.kind != .Number && !first_identity) || first_node.has_child || first_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+							if (first_node.kind != .Number && !first_identity && first_node.kind != .Range) || first_node.has_child || first_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
 							span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 							new_term, ok := append_node(parser, Node{kind=.Range, span=span, left=first, right=Node_Id(-1)}); if !ok { return {}, false }; term = new_term
 						}
