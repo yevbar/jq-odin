@@ -3394,6 +3394,39 @@ binary_zero_divisor_runtime_key :: proc(left, right: ^value.Value, remainder: bo
 	return strings.to_string(builder), nil
 }
 
+implode_runtime_key :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	if value.kind_of(input) != .Array {
+		_ = strings.write_string(&builder, "implode input must be an array")
+		return strings.to_string(builder), nil
+	}
+	length, ok := value.array_length(input)
+	if !ok { strings.builder_destroy(&builder); return "", nil }
+	for i in 0..<length {
+		item, item_ok := value.array_element_copy(input, i)
+		if !item_ok { strings.builder_destroy(&builder); return "", nil }
+		if value.kind_of(&item) != .Number {
+			kind := runtime_value_kind_name(value.kind_of(&item))
+			if strings.write_string(&builder, kind) != len(kind) || strings.write_string(&builder, " (") != 2 || !text_append_json_value(&builder, &item) || strings.write_string(&builder, ") can't be imploded, unicode codepoint needs to be numeric") != len(") can't be imploded, unicode codepoint needs to be numeric") {
+				_ = value.destroy_value(&item); strings.builder_destroy(&builder); return "", nil
+			}
+			_ = value.destroy_value(&item)
+			return strings.to_string(builder), nil
+		}
+		number, number_ok := value.number_value_get(&item)
+		if number_ok && math.is_nan(number) {
+			_ = value.destroy_value(&item)
+			_ = strings.write_string(&builder, "number (null) can't be imploded, unicode codepoint needs to be numeric")
+			return strings.to_string(builder), nil
+		}
+		_ = value.destroy_value(&item)
+	}
+	strings.builder_destroy(&builder)
+	return "", nil
+}
+
 @(private)
 binary_append_error_operand :: proc(
 	builder: ^strings.Builder,
@@ -6054,6 +6087,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if instruction.opcode == .Utf8bytelength {
 						key_error: runtime.Allocator_Error
 						owned_key, key_error = utf8bytelength_runtime_key(&frame.input, storage.allocator)
+						if key_error != nil do return resource_step(key_error)
+						err.key = owned_key
+					}
+					if instruction.opcode == .Implode {
+						key_error: runtime.Allocator_Error
+						owned_key, key_error = implode_runtime_key(&frame.input, storage.allocator)
 						if key_error != nil do return resource_step(key_error)
 						err.key = owned_key
 					}
