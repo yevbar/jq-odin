@@ -877,12 +877,19 @@ constructor_emit :: proc(
 		result = value.take_value(&object_result)
 	}
 	quotient := frame.constructor_cursor
+	static_object_keys := instruction.opcode == .Object
+	if static_object_keys {
+		for key_child in 0..<child_count {
+			key_operand, key_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(key_child*2)))
+			if !key_ok || key_operand.kind != .Text { static_object_keys = false; break }
+		}
+	}
 	for child in 0..<child_count {
 		// jq's object constructor evaluates later entries inside each earlier
 		// result, so the later entry is the least-significant Cartesian
 		// dimension. Arrays retain their existing left-to-right stream order.
 		selected_child := child
-		if instruction.opcode == .Object do selected_child = child_count - 1 - child
+		if instruction.opcode == .Object && !static_object_keys do selected_child = child_count - 1 - child
 		child_stream, stream_ok := value.array_element_copy(
 			&frame.constructor_results,
 			selected_child,
@@ -924,8 +931,22 @@ constructor_emit :: proc(
 				_ = value.destroy_value(&result)
 				return {}, false
 			}
-			selected := int(quotient % u64(length))
-			quotient /= u64(length)
+			selected: int
+			if static_object_keys {
+				divisor: u64 = 1
+				for later in child+1..<child_count {
+					later_stream, later_ok := value.array_element_copy(&frame.constructor_results, later)
+					if !later_ok { _ = value.destroy_value(&child_stream); _ = value.destroy_value(&result); return {}, false }
+					later_length, later_length_ok := value.array_length(&later_stream)
+					_ = value.destroy_value(&later_stream)
+					if !later_length_ok || later_length <= 0 { _ = value.destroy_value(&child_stream); _ = value.destroy_value(&result); return {}, false }
+					divisor *= u64(later_length)
+				}
+				selected = int((u64(frame.constructor_cursor) / divisor) % u64(length))
+			} else {
+				selected = int(quotient % u64(length))
+				quotient /= u64(length)
+			}
 			item, item_ok := value.array_element_copy(&child_stream, selected)
 			if !item_ok {
 				_ = value.destroy_value(&child_stream)

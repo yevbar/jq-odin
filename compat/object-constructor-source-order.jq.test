@@ -1,0 +1,12 @@
+# Static object constructors retain source key order.
+{a:1,b:2}
+null
+{"a":1,"b":2}
+
+# Static-key generator entries use jq's source-order Cartesian stream.
+{a:.[],b:.[]}
+[1,2]
+{"a":1,"b":1}
+{"a":1,"b":2}
+{"a":2,"b":1}
+{"a":2,"b":2}
