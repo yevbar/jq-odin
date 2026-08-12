@@ -1150,7 +1150,7 @@ dynamic_range_bound :: proc(storage: ^evaluator_storage, instruction: program.In
 		if left_error != nil || left_kind != .None { return {}, left_kind, left_error }
 		right, right_kind, right_error := dynamic_range_bound(storage, right_instruction, input)
 		if right_error != nil || right_kind != .None { _ = value.destroy_value(&left); return {}, right_kind, right_error }
-	result, runtime_kind, resource_error := apply_binary(instruction.opcode, &left, &right, instruction.operator_span, storage.allocator)
+		result, runtime_kind, resource_error := apply_binary(instruction.opcode, &left, &right, instruction.operator_span, storage.allocator)
 		_ = value.destroy_value(&left); _ = value.destroy_value(&right)
 		return result, runtime_kind, resource_error
 	}

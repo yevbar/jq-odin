@@ -3493,7 +3493,7 @@ range_numeric_bound_node :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
 		return child.kind == .Number && !child.has_child && !child.has_value
 	}
 	if node.form == .Binary && node.has_child {
-		return node.binary_operator == .Add || node.binary_operator == .Subtract || node.binary_operator == .Multiply
+		return node.binary_operator == .Add || node.binary_operator == .Subtract || node.binary_operator == .Multiply || node.binary_operator == .Divide || node.binary_operator == .Modulo
 	}
 	return false
 }

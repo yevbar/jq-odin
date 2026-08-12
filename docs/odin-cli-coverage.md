@@ -629,7 +629,7 @@ behavioral oracle.
   including `map(range(.; .+2))`. The focused shard passes 4/4 and package/full
   unit tests remain green; the catalog remains **322/522** because these cases
   are embedded in larger unsupported expressions. Generator-valued bounds and
-  division/modulo expressions remain deferred.
+  zero-divisor diagnostic propagation remain deferred.
 
 ## Remaining high-value clusters
 

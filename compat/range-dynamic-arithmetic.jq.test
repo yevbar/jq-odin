@@ -9,3 +9,9 @@ null
 
 1 | range(.; 3)
 null
+
+1 | range(.; 4/2)
+null
+
+1 | range(.; 5%3)
+null
