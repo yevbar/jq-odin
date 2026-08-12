@@ -4842,6 +4842,12 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 	case .Multiply:
 		left_kind := value.kind_of(left)
 		right_kind := value.kind_of(right)
+		if left_kind == .Object && right_kind == .Object {
+			result, merge_ok, merge_error := object_multiply_merge(left, right, allocator)
+			if merge_error != nil do return {}, .None, merge_error
+			if merge_ok do return result, .None, nil
+			return {}, .Cannot_Multiply, nil
+		}
 		if (left_kind == .String && right_kind == .Number) || (left_kind == .Number && right_kind == .String) {
 			text_value := left if left_kind == .String else right
 			number_value := right if left_kind == .String else left
@@ -4902,6 +4908,50 @@ apply_binary :: proc(opcode: program.Opcode, left, right: ^value.Value, span: pr
 		}
 	}
 	return {}, .None, .Out_Of_Memory
+}
+
+// object_multiply_merge implements jq's recursive object multiplication. Both
+// operands remain borrowed; the result owns cloned keys and values, and nested
+// objects are merged only when both corresponding values are objects.
+object_multiply_merge :: proc(left, right: ^value.Value, allocator: runtime.Allocator) -> (value.Value, bool, runtime.Allocator_Error) {
+	result, object_error := value.object_value(allocator)
+	if value.object_error_kind(&object_error) != .None do return {}, false, .Out_Of_Memory
+	left_length, left_ok := value.object_length(left)
+	if !left_ok { _ = value.destroy_value(&result); return {}, false, nil }
+	for i in 0..<left_length {
+		key, item, entry_ok := value.object_entry_copy(left, i)
+		if !entry_ok { _ = value.destroy_value(&result); return {}, false, nil }
+		_, _, set_error := value.object_set_take(&result, &key, &item)
+		if value.object_error_kind(&set_error) != .None {
+			_ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&result)
+			return {}, false, .Out_Of_Memory
+		}
+	}
+	right_length, right_ok := value.object_length(right)
+	if !right_ok { _ = value.destroy_value(&result); return {}, false, nil }
+	for i in 0..<right_length {
+		key, incoming, entry_ok := value.object_entry_copy(right, i)
+		if !entry_ok { _ = value.destroy_value(&result); return {}, false, nil }
+		key_text, key_ok := value.string_borrowed(&key)
+		if !key_ok { _ = value.destroy_value(&key); _ = value.destroy_value(&incoming); _ = value.destroy_value(&result); return {}, false, nil }
+		existing, found := value.object_get_copy(&result, key_text)
+		if found && value.kind_of(&existing) == .Object && value.kind_of(&incoming) == .Object {
+			merged, merged_ok, merge_error := object_multiply_merge(&existing, &incoming, allocator)
+			_ = value.destroy_value(&existing)
+			_ = value.destroy_value(&incoming)
+			if merge_error != nil { _ = value.destroy_value(&key); _ = value.destroy_value(&result); return {}, false, merge_error }
+			if !merged_ok { _ = value.destroy_value(&key); _ = value.destroy_value(&result); return {}, false, nil }
+			_, displaced, set_error := value.object_set_take(&result, &key, &merged)
+			_ = value.destroy_value(&displaced)
+			if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&merged); _ = value.destroy_value(&result); return {}, false, .Out_Of_Memory }
+		} else {
+			_ = value.destroy_value(&existing)
+			_, displaced, set_error := value.object_set_take(&result, &key, &incoming)
+			_ = value.destroy_value(&displaced)
+			if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&incoming); _ = value.destroy_value(&result); return {}, false, .Out_Of_Memory }
+		}
+	}
+	return result, true, nil
 }
 
 @(private)
