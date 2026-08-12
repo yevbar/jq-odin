@@ -123,7 +123,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return (node.has_child || node.child == 0) && no_edges && no_name && no_container_links && !node.has_value &&
 			       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
-	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Tan, .Sinh, .Cosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 			       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
@@ -293,7 +293,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Last, .First:
 		if node.has_child { return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) }
 		return true
-	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Cosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Cosh, .Acosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return true
 	case .Limit:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
@@ -598,7 +598,7 @@ lower_filter :: proc(
 			if node.has_child {
 				if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 			}
-	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
+	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 			// Operand-free math/date builtins.
 		case .Limit:
 			if !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Size_Overflow} }
@@ -991,6 +991,8 @@ lower_filter :: proc(
 			instruction.opcode = .Sinh
 		case .Cosh:
 			instruction.opcode = .Cosh
+		case .Acosh:
+			instruction.opcode = .Acosh
 		case .Isinfinite:
 			instruction.opcode = .Isinfinite
 	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Sin, .Tan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:

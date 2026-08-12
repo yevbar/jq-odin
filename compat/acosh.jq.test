@@ -1,0 +1,9 @@
+# Zero-argument acosh, radians.
+1 | acosh
+0
+
+2 | acosh
+1.3169578969248166
+
+0 | try acosh catch .
+null
