@@ -1497,7 +1497,11 @@ parse_pipe :: proc(
 		}
 		negate_boundary := invalid_id
 		binary_boundary := invalid_id
-		if parser.frames.count > 0 {
+		// Recursive parse_pipe calls (for call arguments, interpolation, and
+		// similar subexpressions) can inherit parenthesis frames from their
+		// caller, but their operator stacks always start empty.  Only a frame
+		// opened by this invocation can delimit its local pending operators.
+		if parser.frames.count > entry_frame_depth {
 			active_frame := parser.frames.storage[parser.frames.count-1]
 			negate_boundary = active_frame.outer_negate_boundary
 			binary_boundary = active_frame.outer_binary_boundary
@@ -1787,7 +1791,7 @@ parse_pipe :: proc(
 			continue
 		}
 
-		if parser.frames.count > 0 {
+		if parser.frames.count > entry_frame_depth {
 			fail_from_lookahead(parser, .Close_Paren)
 			return {}, false
 		}

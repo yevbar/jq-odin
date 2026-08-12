@@ -22,6 +22,23 @@ test_select_lowers_to_existing_if_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_parenthesized_generator_binary_expression_parses :: proc(t: ^testing.T) {
+	cases := [?]string{
+		`1 * (range(0;3) / 2)`,
+		`10 - (range(0;3) + 1)`,
+		`1 + (range(0;3) * 2)`,
+		`(range(0;3) / 2) * 4`,
+		`100 / (range(1;3) * 5)`,
+	}
+	for text in cases {
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		expect_parse_success(t, &parser, outcome)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
 test_log2_parses_as_zero_argument_builtin :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<log2>", "log2")
