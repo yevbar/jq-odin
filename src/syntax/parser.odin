@@ -1665,7 +1665,7 @@ parse_pipe :: proc(
 			return bound, true
 		}
 
-		if (closing != .Invalid && token_is(parser, closing)) ||
+		if (closing != .Invalid && token_is(parser, closing) && parser.frames.count == 0) ||
 		   (stop_at_comma && token_is(parser, .Comma)) {
 			return result, true
 		}
