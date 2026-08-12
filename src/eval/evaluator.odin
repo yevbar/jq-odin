@@ -5956,17 +5956,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			case .Map, .Map_Values:
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 				input_kind := value.kind_of(&frame.input)
-				if input_kind != .Array && !(instruction.opcode == .Map_Values && input_kind == .Object) {
+				if input_kind != .Array && !(input_kind == .Object && (instruction.opcode == .Map || instruction.opcode == .Map_Values)) {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span})
 					if ready do return result
 					continue
 				}
 				results: value.Value
-				if input_kind == .Object {
+				if input_kind == .Object && instruction.opcode == .Map_Values {
 					object_result, object_error := value.object_value(storage.allocator)
 					if value.object_error_kind(&object_error) != .None { _ = value.destroy_object_error(&object_error); return resource_step(.Out_Of_Memory) }
 					results = object_result
 					frame.map_values_mode = true
+				} else if input_kind == .Object {
+					array_result, array_error := value.array_value(storage.allocator)
+					if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return resource_step(.Out_Of_Memory) }
+					results = array_result
+					frame.map_values_mode = false
 				} else {
 					array_result, array_error := value.array_value(storage.allocator)
 					if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return resource_step(.Out_Of_Memory) }
@@ -6517,7 +6522,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		case .Map_Start:
 			length, length_ok := value.array_length(&frame.input)
-			if !length_ok && frame.map_values_mode { length, length_ok = value.object_length(&frame.input) }
+			if !length_ok && value.kind_of(&frame.input) == .Object { length, length_ok = value.object_length(&frame.input) }
 			if !length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 			if frame.iterator_cursor >= length {
 				output := value.take_value(&frame.constructor_results)
@@ -6533,13 +6538,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			if value.kind_of(&frame.input) == .Object {
 				key: value.Value
 				entry_index := frame.iterator_cursor
+				object_length, object_length_ok := value.object_length(&frame.input)
+				if !object_length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 				if frame.map_values_mode {
-					object_length, object_length_ok := value.object_length(&frame.input)
-					if !object_length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 					entry_index = object_length - 1 - frame.iterator_cursor
 				}
 				key, element, element_ok = value.object_entry_copy(&frame.input, entry_index)
-				if element_ok { frame.pending_constructor_key = value.take_value(&key) } else { _ = value.destroy_value(&key) }
+				if frame.map_values_mode {
+					if element_ok { frame.pending_constructor_key = value.take_value(&key) } else { _ = value.destroy_value(&key) }
+				} else {
+					_ = value.destroy_value(&key)
+				}
 			} else {
 				element, element_ok = value.array_element_copy(&frame.input, frame.iterator_cursor)
 			}
