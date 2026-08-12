@@ -1390,7 +1390,18 @@ parse_pipe :: proc(
 					array_literal := argument_node.kind == .Identity && argument_node.container_kind == .Array && argument_node.has_value
 					contains_object_literal := spelling == "contains" && argument_node.kind == .Identity && argument_node.container_kind == .Object
 					contains_array_literal := spelling == "contains" && array_literal
-					in_container_literal := (spelling == "in" || spelling == "inside") && argument_node.kind == .Identity && (argument_node.container_kind == .Array || argument_node.container_kind == .Object)
+					// `in`/`inside` accept any static JSON value as their haystack,
+					// not only array/object literals. The evaluator's containment
+					// kernel already handles scalar equality and string substrings;
+					// keep dynamic expressions deferred while admitting literal
+					// null/boolean/number/string/NaN operands here.
+					in_container_literal := (spelling == "in" || spelling == "inside") && (
+						(argument_node.kind == .Identity && (argument_node.container_kind == .Array || argument_node.container_kind == .Object)) ||
+						argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number ||
+						argument_node.kind == .String || argument_node.kind == .Nan)
+					if spelling == "in" && !(argument_node.kind == .Identity && (argument_node.container_kind == .Array || argument_node.container_kind == .Object)) {
+						in_container_literal = false
+					}
 					isempty_literal := spelling == "isempty" && (argument_node.kind == .Empty || argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number || argument_node.kind == .String || argument_node.kind == .Range || argument_node.kind == .Comma || (argument_node.kind == .Identity && argument_node.container_kind == .Array))
 					 isempty_array_literal := spelling == "isempty" && argument_node.kind == .Identity && argument_node.container_kind == .Array
 					strftime_literal := spelling == "strftime" && (argument_node.kind == .Identity || argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number || argument_node.kind == .String || argument_node.kind == .Nan || argument_node.kind == .Empty)

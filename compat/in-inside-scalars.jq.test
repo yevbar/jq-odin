@@ -1,0 +1,13 @@
+# Static scalar arguments for in/inside use the same containment kernel as
+# array/object literals.
+"a" | inside("abc")
+true
+
+2 | inside(2)
+true
+
+2 | inside(3)
+false
+
+null | inside(null)
+true

@@ -3727,6 +3727,22 @@ test_contains_literal_parses_as_bounded_call :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_in_inside_scalar_literals_parse_as_bounded_calls :: proc(t: ^testing.T) {
+	cases := [?]string{`inside("abc")`, `inside(null)`, `inside(true)`}
+	for source_text in cases {
+		parser: Parser
+		source := diagnostic.borrow_source("<containment-scalar>", source_text)
+		testing.expect(t, init_parser(&parser, source, context.allocator))
+		outcome := parse_filter(&parser)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+		root := parser.nodes.storage[int(outcome.root)]
+		testing.expect(t, root.kind == Node_Kind.In || root.kind == Node_Kind.Inside)
+		testing.expect(t, root.has_child)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
 test_contains_non_string_literals_fail_without_assertion :: proc(t: ^testing.T) {
 	cases := [?]string{`contains(1)`}
 	for source_text in cases {
