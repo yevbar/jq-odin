@@ -1,0 +1,4 @@
+# Bounded reducer binding/update form from jq's reducer regression.
+reduce .[] as $then (4 as $else | $else; . as $elif | . + $then * $elif)
+[1,2,3]
+96

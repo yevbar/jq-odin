@@ -6125,10 +6125,26 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				update_instruction, update_valid := program.program_instruction(storage.compiled, update_index)
 				if !init_ok || !update_ok || !init_valid || !update_valid do return begin_terminal_misuse(storage, .Malformed_Program)
 				seed: value.Value
-				if init_instruction.opcode == .Identity && !init_instruction.has_literal {
+				// A bounded but common jq idiom uses a literal binding for the
+				// reducer seed (for example `4 as $else | $else`).  It is still a
+				// scalar seed; unwrap that binding before falling through to the
+				// ordinary literal path.
+				seed_instruction := init_instruction
+				if init_instruction.opcode == .Binding {
+					seed_child, seed_child_ok := child_instruction(storage, init_instruction, 0)
+					seed_child_instruction, seed_child_valid := program.program_instruction(storage.compiled, seed_child)
+					seed_body, seed_body_ok := child_instruction(storage, init_instruction, 1)
+					seed_body_instruction, seed_body_valid := program.program_instruction(storage.compiled, seed_body)
+					if !seed_child_ok || !seed_child_valid || !seed_body_ok || !seed_body_valid ||
+						seed_body_instruction.opcode != .Variable {
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					seed_instruction = seed_child_instruction
+				}
+				if seed_instruction.opcode == .Identity && !seed_instruction.has_literal {
 					seed = value.clone_value(&frame.input)
 				} else {
-					literal_seed, seed_error, seed_cleanup := literal_value(storage, init_instruction)
+					literal_seed, seed_error, seed_cleanup := literal_value(storage, seed_instruction)
 					if seed_cleanup != nil || seed_error != .None do return begin_terminal_misuse(storage, .Malformed_Program)
 					seed = literal_seed
 				}
@@ -6136,6 +6152,57 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if update_instruction.opcode == .Identity {
 					frame.phase = .Leaf_Yielded
 					result, ready := propagate_output(storage, index, &seed)
+					if ready do return result
+					continue
+				}
+				// Bounded reducer update used by jq's binding regression:
+				// `. as $elif | . + $then * $elif`.  This is intentionally
+				// recognized structurally rather than generalizing reducer
+				// evaluation to arbitrary continuations.
+				if update_instruction.opcode == .Binding {
+					update_left_index, update_left_ok := child_instruction(storage, update_instruction, 0)
+					update_body_index, update_body_ok := child_instruction(storage, update_instruction, 1)
+					update_left, update_left_valid := program.program_instruction(storage.compiled, update_left_index)
+					update_body, update_body_valid := program.program_instruction(storage.compiled, update_body_index)
+					if !update_left_ok || !update_body_ok || !update_left_valid || !update_body_valid ||
+						update_left.opcode != .Identity || update_left.has_literal || update_body.opcode != .Add {
+						_ = value.destroy_value(&seed)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					body_left_index, body_left_ok := child_instruction(storage, update_body, 0)
+					body_right_index, body_right_ok := child_instruction(storage, update_body, 1)
+					body_left, body_left_valid := program.program_instruction(storage.compiled, body_left_index)
+					body_right, body_right_valid := program.program_instruction(storage.compiled, body_right_index)
+					if !body_left_ok || !body_right_ok || !body_left_valid || !body_right_valid ||
+						body_left.opcode != .Identity || body_left.has_literal || body_right.opcode != .Multiply {
+						_ = value.destroy_value(&seed)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					mul_left_index, mul_left_ok := child_instruction(storage, body_right, 0)
+					mul_right_index, mul_right_ok := child_instruction(storage, body_right, 1)
+					mul_left, mul_left_valid := program.program_instruction(storage.compiled, mul_left_index)
+					mul_right, mul_right_valid := program.program_instruction(storage.compiled, mul_right_index)
+					if !mul_left_ok || !mul_right_ok || !mul_left_valid || !mul_right_valid ||
+						mul_left.opcode != .Variable || mul_right.opcode != .Variable {
+						_ = value.destroy_value(&seed)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					length, array_ok := value.array_length(&frame.input)
+					if !array_ok { _ = value.destroy_value(&seed); return begin_terminal_misuse(storage, .Malformed_Program) }
+					acc := seed
+					for item_index in 0..<length {
+						item, item_ok := value.array_element_copy(&frame.input, item_index)
+						if !item_ok { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+						product, product_kind := value.number_multiply(&item, &acc)
+						_ = value.destroy_value(&item)
+						if product_kind != .Success { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+						next, add_ok := value.number_add(&acc, &product)
+						_ = value.destroy_value(&acc); _ = value.destroy_value(&product)
+						if !add_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+						acc = next
+					}
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &acc)
 					if ready do return result
 					continue
 				}
