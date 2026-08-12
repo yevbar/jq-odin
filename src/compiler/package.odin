@@ -525,26 +525,28 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Static_Field_Add_Number, .Static_Field_Set_Number:
-			if !node_reference_valid(node.right, len(nodes)) || (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null) {
+			if !node_reference_valid(node.right, len(nodes)) || (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null && nodes[int(node.right)].kind != .String) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 			rhs_text := nodes[int(node.right)].number_text
 			if nodes[int(node.right)].kind == .Null do rhs_text = "null"
 			if nodes[int(node.right)].kind == .Boolean do rhs_text = "true" if nodes[int(node.right)].boolean_value else "false"
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+			rhs_len := len(rhs_text) if nodes[int(node.right)].kind != .String else 5 + len(nodes[int(node.right)].string_text)
 			if !name_ok || name_end < name_start ||
 			   !checked_count_add(&operand_count, 2) ||
-			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(len(rhs_text))) {
+			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(rhs_len)) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Static_Index_Set_Number:
 			rhs_text := nodes[int(node.right)].number_text
 			if nodes[int(node.right)].kind == .Null do rhs_text = "null"
 			if nodes[int(node.right)].kind == .Boolean do rhs_text = "true" if nodes[int(node.right)].boolean_value else "false"
+			rhs_len := len(rhs_text) if nodes[int(node.right)].kind != .String else 5 + len(nodes[int(node.right)].string_text)
 			if !node_reference_valid(node.child, len(nodes)) || !node_reference_valid(node.right, len(nodes)) ||
-			   (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null) ||
+			   (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null && nodes[int(node.right)].kind != .String) ||
 			   !checked_count_add(&operand_count, 2) ||
-			   !checked_count_add(&text_count, u64(len(node.number_text))+u64(len(rhs_text))) {
+			   !checked_count_add(&text_count, u64(len(node.number_text))+u64(rhs_len)) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Flatten:
@@ -945,7 +947,14 @@ lower_filter :: proc(
 			if rhs.kind == .Null do number = "null"
 			if rhs.kind == .Boolean do number = "true" if rhs.boolean_value else "false"
 			texts := [2]string{name, number}
-			for text in texts {
+			for text, text_index in texts {
+				if text_index == 1 && rhs.kind == .String {
+					string_start := text_at
+					assert(program.set_text(output, program.Byte_Offset(text_at), "@str:")); text_at += 5
+					assert(program.set_text(output, program.Byte_Offset(text_at), rhs.string_text)); text_at += u32(len(rhs.string_text))
+					assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(string_start), text_count=program.Count(5+len(rhs.string_text))})); operand_at += 1
+					continue
+				}
 				assert(program.set_text(output, program.Byte_Offset(text_at), text))
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
 					kind = .Text,
@@ -962,8 +971,16 @@ lower_filter :: proc(
 			rhs_text := rhs.number_text
 			if rhs.kind == .Null do rhs_text = "null"
 			if rhs.kind == .Boolean do rhs_text = "true" if rhs.boolean_value else "false"
+			if rhs.kind == .String do rhs_text = rhs.string_text
 			texts := [2]string{node.number_text, rhs_text}
-			for text in texts {
+			for text, text_index in texts {
+				if text_index == 1 && rhs.kind == .String {
+					string_start := text_at
+					assert(program.set_text(output, program.Byte_Offset(text_at), "@str:")); text_at += 5
+					assert(program.set_text(output, program.Byte_Offset(text_at), rhs.string_text)); text_at += u32(len(rhs.string_text))
+					assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(string_start), text_count=program.Count(5+len(rhs.string_text))})); operand_at += 1
+					continue
+				}
 				assert(program.set_text(output, program.Byte_Offset(text_at), text))
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(text))}))
 				text_at += u32(len(text)); operand_at += 1

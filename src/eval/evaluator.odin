@@ -5451,7 +5451,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				updated: value.Value
 				constructor_error: value.Constructor_Error
-				if number_text == "null" {
+				if strings.has_prefix(number_text, "@str:") {
+					updated, constructor_error = value.string_value(number_text[5:], storage.allocator)
+				} else if number_text == "null" {
 					updated = value.null_value()
 				} else if number_text == "true" || number_text == "false" {
 					updated = value.boolean_value(number_text == "true")
@@ -5490,7 +5492,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if !parse_ok || array_index_i64 < i64(min(int)) || array_index_i64 > i64(max(int)) do return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				updated: value.Value
 				constructor_error: value.Constructor_Error
-				if number_text == "null" {
+				if strings.has_prefix(number_text, "@str:") {
+					updated, constructor_error = value.string_value(number_text[5:], storage.allocator)
+				} else if number_text == "null" {
 					updated = value.null_value()
 				} else if number_text == "true" || number_text == "false" {
 					updated = value.boolean_value(number_text == "true")

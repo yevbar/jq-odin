@@ -1923,7 +1923,7 @@ parse_static_field_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
 	if !right_ok do return {}, false
 	number := parser.nodes.storage[int(right)]
-	if number.form != .Kinded || (number.kind != .Number && number.kind != .Boolean && number.kind != .Null) || number.has_child || number.has_value {
+	if number.form != .Kinded || (number.kind != .Number && number.kind != .Boolean && number.kind != .Null && number.kind != .String) || number.has_child || number.has_value {
 		fail_from_lookahead(parser, .Expression); return {}, false
 	}
 	span, span_ok := spanning(parser, left_node.span, number.span); assert(span_ok)
@@ -1946,7 +1946,7 @@ parse_static_index_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
 	if !right_ok do return {}, false
 	number := parser.nodes.storage[int(right)]
-	if number.form != .Kinded || (number.kind != .Number && number.kind != .Boolean && number.kind != .Null) || number.has_child || number.has_value {
+	if number.form != .Kinded || (number.kind != .Number && number.kind != .Boolean && number.kind != .Null && number.kind != .String) || number.has_child || number.has_value {
 		fail_from_lookahead(parser, .Expression); return {}, false
 	}
 	span, span_ok := spanning(parser, index_node.span, number.span); assert(span_ok)
