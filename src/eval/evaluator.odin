@@ -101,6 +101,9 @@ frame_phase :: enum u8 {
 	First_Empty,
 	Last_Result,
 	Last_Empty,
+	Add_Active,
+	Add_Result,
+	Add_Empty,
 	Limit_Active,
 	Skip_Active,
 	Nth_Active,
@@ -181,6 +184,8 @@ eval_frame :: struct {
 	reduce_binding: value.Value,
 	selected_value: value.Value,
 	selected_seen: bool,
+	add_accumulator: value.Value,
+	add_seen: bool,
 	limit_remaining: u64,
 	map_values_mode: bool,
 }
@@ -1072,7 +1077,7 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
-	case .First, .Last:
+	case .First, .Last, .Add_Builtin:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
@@ -1227,7 +1232,7 @@ resumed_composite_instruction_valid :: proc(
 		return true
 	}
 	expected_operand_count: u8
-	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty do expected_operand_count = 1
+	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty || frame.phase == .Add_Active || frame.phase == .Add_Result || frame.phase == .Add_Empty do expected_operand_count = 1
 	else if frame.phase == .Limit_Active || frame.phase == .Skip_Active || frame.phase == .Nth_Active do expected_operand_count = 2
 	else if frame.phase == .Map_Start || frame.phase == .Map_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
@@ -1680,6 +1685,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		} else {
 			frame.phase = .Complete
 		}
+		case .Add_Active:
+			frame.phase = .Add_Result if frame.add_seen else .Add_Empty
+	case .Add_Result, .Add_Empty:
+			// Finalization is handled by the consumer loop.
 	case .Limit_Active, .Skip_Active, .Nth_Active:
 		frame.phase = .Complete
 	case .Map_Child_Active:
@@ -1794,6 +1803,8 @@ finish_top_frame :: proc(storage: ^evaluator_storage) -> (runtime.Allocator_Erro
 	free_error = constructor_frame_destroy(&storage.frames[index])
 	if free_error != nil do return free_error, true
 	free_error = value.destroy_value(&storage.frames[index].binary_left)
+	if free_error != nil do return free_error, true
+	free_error = value.destroy_value(&storage.frames[index].add_accumulator)
 	if free_error != nil do return free_error, true
 	storage.frames[index] = {}
 	storage.frame_count -= 1
@@ -1966,6 +1977,23 @@ propagate_output :: proc(
 				return {}, false
 			}
 			current = parent
+		case .Add_Active:
+			if frame.add_seen {
+				result_value, add_error := value.value_add(&frame.add_accumulator, owned, storage.allocator)
+				kind_error := value.value_add_error_kind(&add_error)
+				_ = value.destroy_value(owned)
+				if kind_error != .None {
+					_ = value.destroy_value(&frame.add_accumulator)
+					_ = value.destroy_value_add_error(&add_error)
+					return begin_terminal_misuse(storage, .Malformed_Program), true
+				}
+				_ = value.destroy_value(&frame.add_accumulator)
+				frame.add_accumulator = result_value
+			} else {
+				frame.add_accumulator = value.take_value(owned)
+				frame.add_seen = true
+			}
+			return {}, false
 		case .Limit_Active:
 			if frame.limit_remaining == 0 {
 				free_error := destroy_frames_to(storage, parent+1)
@@ -6044,15 +6072,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Try_Start_Expression
 			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				if instruction.opcode == .Add_Builtin && instruction.operands_count == 1 {
+					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 					child, child_ok := child_instruction(storage, instruction, 0)
-					child_instruction_value, instruction_ok2 := program.program_instruction(storage.compiled, child)
-					if !child_ok || !instruction_ok2 || child_instruction_value.opcode != .Empty {
-						return begin_terminal_misuse(storage, .Malformed_Program)
+					input_copy := value.clone_value(&frame.input)
+					if !child_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, index, &input_copy) {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
 					}
-					output := value.null_value()
-					frame.phase = .Leaf_Yielded
-					result, ready := propagate_output(storage, index, &output)
-					if ready do return result
+					frame.add_seen = false
+					frame.phase = .Add_Active
 					continue
 				}
 				if (instruction.opcode == .First || instruction.opcode == .Last) && instruction.operands_count == 1 {
@@ -6612,12 +6639,26 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			frame.phase = .Complete
 			result, ready := propagate_output(storage, index, &output)
 			if ready do return result
+		case .Add_Result, .Add_Empty:
+			if frame.phase == .Add_Empty {
+				output := value.null_value()
+				frame.phase = .Complete
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+				continue
+			}
+			output := value.take_value(&frame.add_accumulator)
+			frame.add_seen = false
+			frame.phase = .Complete
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
 		case .Leaf_Yielded, .Complete:
 			free_error, continuation_ok := finish_top_frame(storage)
 			if free_error != nil do return resource_step(free_error)
 			if !continuation_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 
 		case .Unary_Active, .Fork_Left_Active, .Fork_Right_Active,
+		     .Add_Active,
 		     .Limit_Active, .Skip_Active, .Nth_Active,
 		     .Sequence_Left_Active, .Sequence_Right_Active,
 		     .Field_Child_Active, .Field_Result_Active,

@@ -4,3 +4,9 @@ null
 
 1 | add(empty)
 null
+
+add(range(3))
+3
+
+add(range(1;4))
+6

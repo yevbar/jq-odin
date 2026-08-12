@@ -1273,7 +1273,7 @@ parse_pipe :: proc(
 						close := parser.lookahead.token
 						advance(parser)
 						argument_node := parser.nodes.storage[int(argument)]
-						if argument_node.kind != .Empty || argument_node.has_child || argument_node.has_value {
+						if argument_node.kind != .Empty && argument_node.kind != .Range {
 							fail_from_lookahead(parser, .Expression)
 							return {}, false
 						}
