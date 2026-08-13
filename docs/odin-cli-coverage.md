@@ -734,3 +734,8 @@ postfixes; full `make validate` remains green.
 
 The NaN slice/index lane (`70085e6c`) is integrated in this snapshot;
 `.[nan:1]`, `.[1:nan]`, and `.[nan]` now follow jq's null/endpoint behavior.
+
+The NaN assignment diagnostic (`4bdd9c5c`) is present in the current head;
+the fresh authoritative catalog now measures **363/522 passed and 159 failed**
+with zero harness errors. `try ([range(3)] | .[nan] = 9) catch .` now reports
+jq's `Cannot set array element at NaN index` result.
