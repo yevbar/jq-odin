@@ -1,0 +1,14 @@
+# foreach emits every updated accumulator for an array generator.
+foreach .[] as $x (0; . + $x)
+[1, 2, 3]
+1
+3
+6
+# A range generator binds each number and emits each update.
+foreach range(5) as $x (0; $x)
+null
+0
+1
+2
+3
+4

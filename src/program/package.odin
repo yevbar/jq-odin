@@ -689,7 +689,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if instruction.opcode == .Binding && offset == 2 {
 			expected_kind = .Text
 		}
-		if instruction.opcode == .Reduce && offset == 3 {
+		if (instruction.opcode == .Reduce || instruction.opcode == .Foreach) && offset == 3 {
 			expected_kind = .Text
 		}
 		if operand.kind != expected_kind {

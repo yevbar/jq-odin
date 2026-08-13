@@ -1232,7 +1232,12 @@ capture_composite_instruction :: proc(
 		if !left_ok || !right_ok || !name_ok || name_operand.kind != .Text do return false
 	case .Reduce, .Foreach:
 		if instruction.operands_count != 4 do return false
-		for i in 0..<3 { _, ok := child_instruction(storage, instruction, u32(i)); if !ok do return false }
+		for i in 0..<3 {
+			_, ok := child_instruction(storage, instruction, u32(i)); if !ok do return false
+			operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(i)))
+			if !operand_ok do return false
+			frame.saved_operands[i] = operand
+		}
 		frame.saved_instruction = instruction
 		frame.saved_operand_count = 3
 		frame.has_saved_instruction = true
@@ -1311,7 +1316,7 @@ resumed_composite_instruction_valid :: proc(
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
 	case .Iterator_Active:
-		if (frame.mode != .Normal && frame.mode != .Field_Only) || (instruction.opcode != .Field && instruction.opcode != .Range) {
+		if (frame.mode != .Normal && frame.mode != .Field_Only) || (instruction.opcode != .Field && instruction.opcode != .Range && instruction.opcode != .Foreach) {
 			return false
 		}
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
@@ -1353,7 +1358,7 @@ resumed_composite_instruction_valid :: proc(
 	else if frame.phase == .Constructor_Start || frame.phase == .Constructor_Child_Active || frame.phase == .Constructor_Emit {
 		expected_operand_count = u8(instruction.operands_count)
 	} else if frame.phase == .Iterator_Active {
-		expected_operand_count = u8(instruction.operands_count)
+		expected_operand_count = 3 if instruction.opcode == .Foreach else u8(instruction.operands_count)
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
 		expected_operand_count = 3
@@ -6675,6 +6680,48 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Binding_Start_Left
+			case .Foreach:
+				// Materialize the canonical array/range foreach stream. Each updated
+				// accumulator is emitted through the normal iterator continuation.
+				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				generator_index, generator_ok := child_instruction(storage, instruction, 0)
+				init_index, init_ok := child_instruction(storage, instruction, 1)
+				update_index, update_ok := child_instruction(storage, instruction, 2)
+				generator, generator_valid := program.program_instruction(storage.compiled, generator_index)
+				init, init_valid := program.program_instruction(storage.compiled, init_index)
+				update, update_valid := program.program_instruction(storage.compiled, update_index)
+				name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+3))
+				name, name_text_ok := program.operand_text(storage.compiled, name_operand)
+				if !generator_ok || !init_ok || !update_ok || !generator_valid || !init_valid || !update_valid || !name_ok || !name_text_ok || name_operand.kind != .Text do return begin_terminal_misuse(storage, .Malformed_Program)
+				seed, seed_error, seed_cleanup := literal_value(storage, init)
+				if seed_error != .None || seed_cleanup != nil || value.kind_of(&seed) == .Invalid do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				items, items_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&items_error) != .None { _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+				length: int
+				if generator.opcode == .Field {
+					field_name, field_ok := field_text(storage, generator)
+					if !field_ok || len(field_name) != 0 || value.kind_of(&frame.input) != .Array { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+					length_ok: bool; length, length_ok = value.array_length(&frame.input); if !length_ok { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+				} else if generator.opcode == .Range {
+					bound_index, bound_ok := child_instruction(storage, generator, 0); bound, bound_valid := program.program_instruction(storage.compiled, bound_index)
+					bound_value, bound_error, bound_cleanup := literal_value(storage, bound); bound_number, bound_numeric := value.number_value_get(&bound_value)
+					if !bound_ok || !bound_valid || bound_error != .None || bound_cleanup != nil || !bound_numeric || bound_number < 0 || bound_number != f64(int(bound_number)) { _ = value.destroy_value(&bound_value); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+					length = int(bound_number); _ = value.destroy_value(&bound_value)
+				} else { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+				for item_index in 0..<length {
+					item := value.number_value(f64(item_index))
+					if generator.opcode == .Field { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
+					if update.opcode == .Variable {
+						op, op_ok := program.program_operand(storage.compiled, update.operands_start); update_name, text_ok := program.operand_text(storage.compiled, op); if !op_ok || !text_ok || update_name != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						_ = value.destroy_value(&seed); seed = value.take_value(&item)
+					} else if update.opcode == .Add {
+						li, lok := child_instruction(storage, update, 0); ri, rok := child_instruction(storage, update, 1); left, lv := program.program_instruction(storage.compiled, li); right, rv := program.program_instruction(storage.compiled, ri); rop, r_ok := program.program_operand(storage.compiled, right.operands_start); rname, rt_ok := program.operand_text(storage.compiled, rop)
+						if !lok || !rok || !lv || !rv || left.opcode != .Identity || left.has_literal || right.opcode != .Variable || !r_ok || !rt_ok || rname != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						next, add_ok := value.number_add(&seed, &item); _ = value.destroy_value(&item); if !add_ok { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&seed); seed = next
+					} else { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+					out := value.clone_value(&seed); _, append_error := value.array_append_take(&items, &out); if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory) }
+				}
+				_ = value.destroy_value(&seed); _ = value.destroy_value(&frame.input); frame.input = items; frame.iterator_cursor = 0; frame.phase = .Iterator_Active
 			case .Reduce:
 				// Evaluate the reduction seed from its compiled INIT expression.  The
 				// current slice handles the common `.[]` stream and scalar UPDATE
@@ -6851,8 +6898,6 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &acc)
 				if ready do return result
-			case .Foreach:
-				return begin_terminal_misuse(storage, .Unsupported_Opcode)
 			case .Parenthesized, .Optional, .Negate:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
