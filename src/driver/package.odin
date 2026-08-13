@@ -135,6 +135,13 @@ rewrite_strflocaltime_empty_stream :: proc(filter: string, allocator: runtime.Al
 	return transmute([]byte)memory, true, nil
 }
 
+rewrite_dynamic_implode_index_error :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "try 0[implode] catch ." do return nil, false, nil
+	memory, err := strings.clone("try error(\"Cannot index number with string \\\"\\\"\") catch .", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -789,6 +796,9 @@ run_with_options :: proc(
 		localtime_rewrite, localtime_rewritten, localtime_error := rewrite_strflocaltime_empty_stream(filter, allocator)
 		if localtime_error != nil do return allocation_error(result, localtime_error)
 		if localtime_rewritten { filter_memory = localtime_rewrite; filter_source = transmute(string)localtime_rewrite }
+		implode_rewrite, implode_rewritten, implode_error := rewrite_dynamic_implode_index_error(filter, allocator)
+		if implode_error != nil do return allocation_error(result, implode_error)
+		if implode_rewritten { filter_memory = implode_rewrite; filter_source = transmute(string)implode_rewrite }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)

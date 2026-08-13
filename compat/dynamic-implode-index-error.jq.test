@@ -1,0 +1,4 @@
+# Bounded dynamic index error fixture.
+try 0[implode] catch .
+[]
+"Cannot index number with string \"\""
