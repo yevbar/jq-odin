@@ -6383,7 +6383,35 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
 			case .Static_Index_Set_Number:
-				if instruction.operands_count != 2 || value.kind_of(&frame.input) != .Array do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				if instruction.operands_count != 2 do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				// jq treats null as an empty array for numeric path assignment,
+				// while other scalar/container kinds are typed runtime errors.  Keep
+				// this distinction in the evaluator so try/catch can receive the
+				// jq diagnostic rather than an internal-misuse sentinel.
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Array && input_kind != .Null {
+					message := "Cannot index object with number"
+					switch input_kind {
+					case .Boolean: message = "Cannot index boolean with number"
+					case .Number: message = "Cannot index number with number"
+					case .String: message = "Cannot index string with number"
+					case .Object: message = "Cannot index object with number"
+					case .Array, .Null, .Invalid:
+					}
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
+					if ready do return result
+					continue
+				}
+				if input_kind == .Null {
+					new_array, array_error := value.array_value(storage.allocator)
+					if value.array_error_kind(&array_error) != .None {
+						cleanup_error := value.destroy_array_error(&array_error)
+						if cleanup_error != nil do return resource_step(cleanup_error)
+						return resource_step(.Out_Of_Memory)
+					}
+					_ = value.destroy_value(&frame.input)
+					frame.input = new_array
+				}
 				index_operand, index_ok := program.program_operand(storage.compiled, instruction.operands_start)
 				number_operand, number_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
 				if !index_ok || !number_ok || index_operand.kind != .Text || number_operand.kind != .Text do return begin_terminal_misuse(storage, .Malformed_Program)

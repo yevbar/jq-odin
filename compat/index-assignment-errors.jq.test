@@ -1,0 +1,21 @@
+# Numeric assignment coerces null to an array, while preserving jq's typed
+# diagnostics for invalid and out-of-range indices.
+try (.[0] = 0) catch .
+null
+[0]
+
+try (.[-1] = 0) catch .
+null
+"Out of bounds negative array index"
+
+try (.[999999999] = 0) catch .
+null
+"Array index too large"
+
+try (.[0] = 0) catch .
+{}
+"Cannot index object with number"
+
+try (.[0] = 0) catch .
+1
+"Cannot index number with number"
