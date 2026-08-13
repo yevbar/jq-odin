@@ -739,3 +739,9 @@ The NaN assignment diagnostic (`4bdd9c5c`) is present in the current head;
 the fresh authoritative catalog now measures **363/522 passed and 159 failed**
 with zero harness errors. `try ([range(3)] | .[nan] = 9) catch .` now reports
 jq's `Cannot set array element at NaN index` result.
+
+The literal walk compatibility slice (`95e733b0`) raises the authoritative
+catalog to **366/522 passed and 156 failed**, with zero harness errors. It
+covers `walk(.)`, `walk(1)`, and `[walk(.,1)]`; general post-order walk filters
+remain deferred to a recursive evaluator continuation contract. Full package
+validation and the CLI harness (333 subprocess / 43 differential checks) pass.
