@@ -21,17 +21,27 @@ command -v jq >/dev/null 2>&1 || { echo "vm-watchdog: jq is not installed" >&2; 
 
 vers_config=${VERS_CONFIG:-$HOME/.versrc}
 api_key=$(jq -er .apiKey "$vers_config")
-vm_list=$(curl --fail --silent --show-error \
-    -H "Authorization: Bearer $api_key" \
-    "${VERS_API_BASE:-https://api.vers.sh/api/v1}/vms")
+api_url="${VERS_API_BASE:-https://api.vers.sh/api/v1}/vms"
+vm_list=
+max_running=-1
+for attempt in 1 2 3; do
+    candidate=$(curl --fail --silent --show-error \
+        -H "Authorization: Bearer $api_key" "$api_url")
+    candidate_running=$(printf '%s\n' "$candidate" | \
+        jq '[.[] | select(.state == "running" or .state == "booting")] | length')
+    if [ "$candidate_running" -gt "$max_running" ]; then
+        vm_list=$candidate
+        max_running=$candidate_running
+    fi
+done
 
 now=$(date +%s)
 cutoff=$((now - JQ_VERS_VM_STALE_MINUTES * 60))
-running=0
+running=$max_running
 deleted=0
 stale=0
 
-if [ -f "$registry" ]; then
+if [ -s "$registry" ]; then
     tab=$(printf '\t')
     while IFS="$tab" read -r vm_id alias branch started; do
         [ -n "${vm_id:-}" ] || continue
@@ -44,7 +54,6 @@ if [ -f "$registry" ]; then
         fi
         case "$state" in
             running|booting)
-                running=$((running + 1))
                 ;;
             *)
                 # Sleeping/paused workers are complete and must not consume
@@ -54,7 +63,7 @@ if [ -f "$registry" ]; then
                 continue
                 ;;
         esac
-        if [ "${started:-0}" -le "$cutoff" ] && [ "$state" = running ]; then
+        if [ "${started:-1}" -ge 0 ] && [ "${started:-1}" -le "$cutoff" ] && [ "$state" = running ]; then
             stale=$((stale + 1))
             if [ "$deleted" -lt "$JQ_VERS_VM_MAX_DELETIONS_PER_RUN" ]; then
                 echo "vm-watchdog: stale project VM $vm_id ($alias, $branch)"
@@ -65,6 +74,34 @@ if [ -f "$registry" ]; then
             fi
         fi
     done <"$registry"
+elif [ "$max_running" -gt 0 ]; then
+    # Recover legacy/unregistered workers after a launcher upgrade or host
+    # restart.  Restrict the fallback to the owner represented by the
+    # majority of active VMs; sleeping/paused VMs are intentionally excluded.
+    owner_id=$(printf '%s\n' "$vm_list" | jq -r '
+        [.[] | select(.state == "running" or .state == "booting") | .owner_id]
+        | group_by(.) | max_by(length) // [] | first // empty')
+    tab=$(printf '\t')
+    legacy_inventory=$(mktemp "${TMPDIR:-/tmp}/vm-watchdog.XXXXXX")
+    trap 'rm -f "$legacy_inventory"' EXIT HUP INT TERM
+    printf '%s\n' "$vm_list" | jq -r --arg owner "$owner_id" '
+        .[] | select(.owner_id == $owner and (.state == "running" or .state == "booting"))
+        | [.vm_id, (.labels.name // "legacy"), "", ((.created_at
+          | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) // -1)] | @tsv' >"$legacy_inventory"
+    while IFS="$tab" read -r vm_id alias branch started; do
+        [ -n "${vm_id:-}" ] || continue
+        # Do not treat an absent/unparseable creation timestamp as stale. A
+        # legacy VM with unknown age needs explicit operator review.
+        if [ "${started:-1}" -ge 0 ] && [ "${started:-1}" -le "$cutoff" ]; then
+            stale=$((stale + 1))
+            if [ "$deleted" -lt "$JQ_VERS_VM_MAX_DELETIONS_PER_RUN" ]; then
+                echo "vm-watchdog: stale legacy VM $vm_id ($alias)"
+                if [ "$dry_run" = false ] && "$vers_bin" delete -y "$vm_id" >/dev/null 2>&1; then
+                    deleted=$((deleted + 1))
+                fi
+            fi
+        fi
+    done <"$legacy_inventory"
 fi
 
 if [ "$running" -gt "$JQ_VERS_VM_MAX" ]; then
