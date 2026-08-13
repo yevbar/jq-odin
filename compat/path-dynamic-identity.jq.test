@@ -1,0 +1,12 @@
+# A no-op pipe after a wildcard path preserves every selected array path.
+path(.[] | .)
+[1,5,3]
+[0]
+[1]
+[2]
+
+# The existing static prefix form remains unchanged.
+path(.foo[] | .)
+{"foo":[7,8]}
+["foo",0]
+["foo",1]

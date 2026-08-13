@@ -1762,6 +1762,24 @@ dynamic_path_prefix :: proc(storage: ^evaluator_storage, index: program.Instruct
 		if !child_ok do return {}, false, false
 		return dynamic_path_prefix(storage, child)
 	}
+	// A pipe whose right side is identity preserves the path selected by the
+	// left-side iterator. jq uses this form when composing a path filter with
+	// a no-op (`path(.[] | .)`). Treat it as the same bounded wildcard path as
+	// `.[]`; arbitrary right-side filters still require a general continuation.
+	if instruction.opcode == .Sequence && instruction.operands_count == 2 {
+		left, left_ok := child_instruction(storage, instruction, 0)
+		right, right_ok := child_instruction(storage, instruction, 1)
+		if left_ok && right_ok {
+			right_instruction, right_instruction_ok := program.program_instruction(storage.compiled, right)
+			if right_instruction_ok && right_instruction.opcode == .Identity && !right_instruction.has_literal {
+				prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, left)
+				if prefix_ok && wildcard {
+					return prefix, true, true
+				}
+				_ = value.destroy_value(&prefix)
+			}
+		}
+	}
 	result, result_ok := path_array(storage.allocator)
 	if !result_ok do return {}, false, false
 	if instruction.opcode == .Identity && !instruction.has_literal && instruction.operands_count == 0 {
