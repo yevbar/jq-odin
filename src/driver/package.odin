@@ -617,7 +617,19 @@ run_with_options :: proc(
 		module_space(trimmed_filter, &next_definition)
 		multiple_definitions := first_definition_end > 0 &&
 			module_word(trimmed_filter, next_definition, "def")
-		if strings.has_prefix(trimmed_filter, "def ") && !multiple_definitions {
+		// The syntax/Program slice currently owns only zero-argument calls. A
+		// parameterized single definition must still pass through the mature
+		// module expansion bridge, which substitutes filter arguments and keeps
+		// generator cardinality intact.
+		parameterized_definition := false
+		if strings.has_prefix(trimmed_filter, "def ") && first_definition_end > 0 {
+			at := 4
+			for at < first_definition_end && trimmed_filter[at] != ':' {
+				if trimmed_filter[at] == '(' { parameterized_definition = true; break }
+				at += 1
+			}
+		}
+		if strings.has_prefix(trimmed_filter, "def ") && !multiple_definitions && !parameterized_definition {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
