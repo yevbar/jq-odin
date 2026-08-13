@@ -153,6 +153,9 @@ frame_phase :: enum u8 {
 	Loop_Update_Active,
 	Loop_Update_Result,
 	Loop_Start_Condition,
+	Any_Generator_Active,
+	Any_Predicate_Active,
+	Any_Result,
 	Recurse_Children,
 	Paths_Active,
 	Path_Active,
@@ -194,6 +197,7 @@ eval_frame :: struct {
 	// Tracks whether a defined result was emitted by a defined-or left stream.
 	binary_defined_or_left_seen: bool,
 	loop_value: value.Value,
+	any_seen: bool,
 	if_branch_active: bool,
 	iterator_cursor: int,
 	reduce_accumulator: value.Value,
@@ -1337,7 +1341,7 @@ capture_composite_instruction :: proc(
 			if !operand_ok || operand.kind != .Text do return false
 		}
 		if !child_ok do return false
-	case .Try:
+		case .Try:
 		if instruction.operands_count != 2 do return false
 		_, expression_ok := child_instruction(storage, instruction, 0)
 		_, catch_ok := child_instruction(storage, instruction, 1)
@@ -1415,6 +1419,11 @@ capture_composite_instruction :: proc(
 		_, condition_ok := child_instruction(storage, instruction, 0)
 		_, update_ok := child_instruction(storage, instruction, 1)
 		if !condition_ok || !update_ok do return false
+	case .Any, .All:
+		if instruction.operands_count != 2 do return false
+		_, generator_ok := child_instruction(storage, instruction, 0)
+		_, predicate_ok := child_instruction(storage, instruction, 1)
+		if !generator_ok || !predicate_ok do return false
 	case:
 		return false
 	}
@@ -1487,6 +1496,8 @@ resumed_composite_instruction_valid :: proc(
 	case .Loop_Condition_Active, .Loop_Condition_Result, .Loop_Emit_While, .Loop_Emit_Until,
 	     .Loop_Start_Update, .Loop_Update_Active, .Loop_Update_Result, .Loop_Start_Condition:
 		if frame.mode != .Normal || (instruction.opcode != .While && instruction.opcode != .Until) do return false
+	case .Any_Generator_Active, .Any_Predicate_Active, .Any_Result:
+		if frame.mode != .Normal || (instruction.opcode != .Any && instruction.opcode != .All) do return false
 	case .Recurse_Children:
 		if frame.mode != .Normal || instruction.opcode != .Recurse do return false
 	case:
@@ -1514,6 +1525,8 @@ resumed_composite_instruction_valid :: proc(
 	} else if frame.phase == .If_Condition_Active || frame.phase == .If_Then_Active || frame.phase == .If_Else_Active {
 		expected_operand_count = 3
 	} else if frame.phase == .Loop_Condition_Active || frame.phase == .Loop_Condition_Result || frame.phase == .Loop_Emit_While || frame.phase == .Loop_Emit_Until || frame.phase == .Loop_Start_Update || frame.phase == .Loop_Update_Active || frame.phase == .Loop_Update_Result || frame.phase == .Loop_Start_Condition {
+		expected_operand_count = 2
+	} else if frame.phase == .Any_Generator_Active || frame.phase == .Any_Predicate_Active || frame.phase == .Any_Result {
 		expected_operand_count = 2
 	} else if frame.phase == .Binary_Start_Left || frame.phase == .Binary_Left_Active || frame.phase == .Binary_Start_Right || frame.phase == .Binary_Right_Active {
 		expected_operand_count = 2
@@ -2711,6 +2724,12 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		// The loop consumes the retained child result on the next step.
 	case .Loop_Condition_Active, .Loop_Update_Active:
 		return false
+	case .Any_Generator_Active:
+		frame.phase = .Any_Result
+	case .Any_Predicate_Active:
+		frame.phase = .Any_Generator_Active
+	case .Any_Result:
+		frame.phase = .Complete
 	case .Recurse_Children:
 		// A completed child returns control to the parent's next sibling. The
 		// parent remains active until every container member has been visited.
@@ -3102,6 +3121,28 @@ propagate_output :: proc(
 			frame.loop_value = value.take_value(owned)
 			frame.phase = .Loop_Condition_Result if frame.phase == .Loop_Condition_Active else .Loop_Update_Result
 			return {}, false
+		case .Any_Generator_Active:
+			child, ok := child_instruction(storage, instruction, 1)
+			if !ok || !push_frame(storage, child, parent, owned) {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			}
+			frame.phase = .Any_Predicate_Active
+			return {}, false
+		case .Any_Predicate_Active:
+			kind := value.kind_of(owned)
+			truthy := kind != .Null
+			if kind == .Boolean { truthy, _ = value.boolean_value_get(owned) }
+			decisive := (instruction.opcode == .Any && truthy) || (instruction.opcode == .All && !truthy)
+			if !decisive {
+				_ = value.destroy_value(owned)
+				return {}, false
+			}
+			_ = value.destroy_value(owned)
+			free_error := destroy_frames_to(storage, parent+1)
+			if free_error != nil { return resource_step(free_error), true }
+			frame.phase = .Complete
+			result := value.boolean_value(truthy)
+			return propagate_output(storage, parent, &result)
 		case .If_Condition_Active:
 			kind := value.kind_of(owned)
 			truthy := kind != .Null
@@ -6378,7 +6419,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			return begin_terminal_misuse(storage, .Malformed_Program)
 		}
 
-		switch frame.phase {
+		#partial switch frame.phase {
 		case .Enter:
 			if instruction.opcode == .Delpaths {
 				if instruction.operands_count != 1 { return begin_terminal_misuse(storage, .Malformed_Program) }
@@ -7844,8 +7885,25 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
-				frame.phase = .Try_Start_Expression
+			frame.phase = .Try_Start_Expression
 			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+				if (instruction.opcode == .Any || instruction.opcode == .All) && instruction.operands_count == 2 {
+					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+					if storage.frame_count == len(storage.frames) {
+						capacity_error := grow_frames(storage)
+						if capacity_error != nil do return resource_step(capacity_error)
+						frame = &storage.frames[index]
+					}
+					child, child_ok := child_instruction(storage, instruction, 0)
+					input_copy := value.clone_value(&frame.input)
+					if !child_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, index, &input_copy) {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+					}
+					frame.any_seen = false
+					frame.phase = .Any_Generator_Active
+					continue
+				}
+				if (instruction.opcode == .Any || instruction.opcode == .All) && instruction.operands_count != 0 { return begin_terminal_misuse(storage, .Malformed_Program) }
 				if instruction.opcode == .Add_Builtin && instruction.operands_count == 1 {
 					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 					child, child_ok := child_instruction(storage, instruction, 0)
@@ -8396,6 +8454,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			if instruction.opcode == .While && !truthy { frame.phase = .Complete; continue }
 			if instruction.opcode == .Until && truthy { frame.phase = .Loop_Emit_Until; continue }
 			if instruction.opcode == .While { frame.phase = .Loop_Emit_While } else { frame.phase = .Loop_Start_Update }
+		case .Any_Result:
+			result := value.boolean_value(instruction.opcode == .All)
+			frame.phase = .Complete
+			result_step, ready := propagate_output(storage, index, &result)
+			if ready do return result_step
 		case .Loop_Emit_While, .Loop_Emit_Until:
 			output := value.clone_value(&frame.input)
 			if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)

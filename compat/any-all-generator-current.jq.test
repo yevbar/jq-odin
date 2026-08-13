@@ -1,0 +1,23 @@
+. as $dot|any($dot[];not)
+[false,true]
+true
+
+. as $dot|all($dot[];.)
+[false,true]
+false
+
+any(true,error("boom");.)
+null
+true
+
+all(false,error("boom");.)
+null
+false
+
+any(empty;.)
+null
+false
+
+all(empty;.)
+null
+true

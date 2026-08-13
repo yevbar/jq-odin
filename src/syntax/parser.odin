@@ -356,6 +356,11 @@ Node :: struct {
 	has_operator_span: bool,
 	call_name_span: diagnostic.Span,
 	has_call_name: bool,
+	// Parameterized any/all retain generator and predicate filters as separate
+	// source children. The flag distinguishes this two-child form from the
+	// existing operand-free builtins and any(not)/all(not) markers.
+	predicate: Node_Id,
+	has_predicate: bool,
 }
 
 Parse_Error_Kind :: enum {
@@ -1556,6 +1561,49 @@ parse_pipe :: proc(
 						assert(span_ok)
 						new_term, ok := append_node(parser, Node{kind=.Add_Builtin, span=span, child=argument, has_child=true})
 						if !ok do return {}, false
+						term = new_term
+						term_ready = true
+						continue
+					}
+					if spelling == "any" || spelling == "all" {
+						generator, generator_ok := parse_pipe(parser, .Semicolon, false)
+						if !generator_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+						if token_is(parser, .Semicolon) {
+							advance(parser)
+							predicate, predicate_ok := parse_pipe(parser, .Close_Paren, false)
+							if !predicate_ok || !token_is(parser, .Close_Paren) {
+								fail_from_lookahead(parser, .Close_Paren)
+								return {}, false
+							}
+							close := parser.lookahead.token
+							advance(parser)
+							span, span_ok := spanning(parser, token.span, close.span)
+							assert(span_ok)
+							call_kind := Node_Kind.Any if spelling == "any" else .All
+							new_term, ok := append_node(parser, Node{kind=call_kind, span=span, child=generator, has_child=true, predicate=predicate, has_predicate=true})
+							if !ok { return {}, false }
+							term = new_term
+							term_ready = true
+							continue
+						}
+						// No semicolon: fall through to the existing one-argument
+						// validation and marker handling below.
+						if !token_is(parser, .Close_Paren) {
+							fail_from_lookahead(parser, .Close_Paren)
+							return {}, false
+						}
+						close := parser.lookahead.token
+						advance(parser)
+						generator_node := parser.nodes.storage[int(generator)]
+						if generator_node.kind != .Not_Builtin || generator_node.has_child || generator_node.has_value {
+							fail_from_lookahead(parser, .Expression)
+							return {}, false
+						}
+						span, span_ok := spanning(parser, token.span, close.span)
+						assert(span_ok)
+						marker_kind := Node_Kind.Any_Not if spelling == "any" else .All_Not
+						new_term, ok := append_node(parser, Node{kind=marker_kind, span=span})
+						if !ok { return {}, false }
 						term = new_term
 						term_ready = true
 						continue
