@@ -1105,7 +1105,7 @@ parse_pipe :: proc(
 				}
 				kind := Node_Kind.Null
 				boolean_value := false
-				if spelling == "true" {
+				if spelling == "true" || spelling == "have_decnum" {
 					kind = .Boolean
 					boolean_value = true
 				} else if spelling == "false" {
