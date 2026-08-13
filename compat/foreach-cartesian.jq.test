@@ -1,5 +1,0 @@
-# jq's divided generator is evaluated as a Cartesian stream, with the right
-# generator varying slowest (the order visible in the output is 1, 2, .5, 1).
-[foreach .[] / .[] as $i (0; . + $i)]
-[1,2]
-[1,3,3.5,4.5]
