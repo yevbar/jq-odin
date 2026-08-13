@@ -1597,6 +1597,40 @@ static_filter_path :: proc(storage: ^evaluator_storage, index: program.Instructi
 	_ = value.destroy_value(&result); return {}, false
 }
 
+// static_filter_paths is the bounded multi-path companion to static_filter_path.
+// It accepts only literal numeric/field paths and Fork/Sequence nodes, which
+// are the representation produced for path(.foo[0,1]).
+static_filter_paths :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (value.Value, bool) {
+	result, result_ok := path_array(storage.allocator)
+	if !result_ok do return {}, false
+	append_path := proc(storage: ^evaluator_storage, child: program.Instruction_Index, output: ^value.Value) -> bool {
+		paths, paths_ok := static_filter_paths(storage, child)
+		if !paths_ok do return false
+		length, length_ok := value.array_length(&paths)
+		if !length_ok { _ = value.destroy_value(&paths); return false }
+		for offset in 0..<length {
+			item, item_ok := value.array_element_copy(&paths, offset)
+			if !item_ok { _ = value.destroy_value(&paths); return false }
+			if !path_append_take(output, &item) { _ = value.destroy_value(&paths); return false }
+		}
+		_ = value.destroy_value(&paths)
+		return true
+	}
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok { _ = value.destroy_value(&result); return {}, false }
+	if instruction.opcode == .Parenthesized { child, child_ok := child_instruction(storage, instruction, 0); if !child_ok || !append_path(storage, child, &result) { _ = value.destroy_value(&result); return {}, false }; return result, true }
+	if instruction.opcode == .Fork || instruction.opcode == .Sequence {
+		left, left_ok := child_instruction(storage, instruction, 0)
+		right, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok || !append_path(storage, left, &result) || !append_path(storage, right, &result) { _ = value.destroy_value(&result); return {}, false }
+		return result, true
+	}
+	path, path_ok := static_filter_path(storage, index)
+	if path_ok && path_append_take(&result, &path) { return result, true }
+	_ = value.destroy_value(&result)
+	return {}, false
+}
+
 // dynamic_path_prefix recognizes the one generator-shaped path currently
 // supported by the path() contract: a static path followed by an empty field
 // postfix (`.foo[]`).  The parser preserves [] as a Field whose name is empty,
@@ -5773,6 +5807,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						}
 						valid = false
 					} else {
+						multi, multi_ok := static_filter_paths(storage, child)
+						if multi_ok {
+							frame.paths_results = value.take_value(&multi)
+							frame.paths_cursor = 0
+							frame.phase = .Path_Active
+							continue
+						}
 						_ = value.destroy_value(&prefix)
 						output, valid = static_filter_path(storage, child)
 					}
