@@ -1971,6 +1971,12 @@ materialized_map_select_result :: proc(
 	left, left_ok := child_instruction(storage, sequence, 0)
 	right, right_ok := child_instruction(storage, sequence, 1)
 	if !left_ok || !right_ok do return {}, false
+	map_source := right
+	right_instruction, right_instruction_ok := program.program_instruction(storage.compiled, right)
+	if right_instruction_ok && right_instruction.opcode == .Sequence && right_instruction.operands_count == 2 {
+		nested_left, nested_left_ok := child_instruction(storage, right_instruction, 0)
+		if nested_left_ok { map_source = nested_left }
+	}
 	prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, left)
 	if !prefix_ok || wildcard {
 		_ = value.destroy_value(&prefix)
@@ -1979,7 +1985,7 @@ materialized_map_select_result :: proc(
 	container, _, lookup_ok := lookup_path(input, &prefix)
 	_ = value.destroy_value(&prefix)
 	if !lookup_ok || value.kind_of(&container) != .Array { _ = value.destroy_value(&container); return {}, false }
-	map_instruction, map_ok := program.program_instruction(storage.compiled, right)
+	map_instruction, map_ok := program.program_instruction(storage.compiled, map_source)
 	if !map_ok || map_instruction.opcode != .Map || map_instruction.operands_count != 1 {
 		_ = value.destroy_value(&container)
 		return {}, false
@@ -2052,6 +2058,52 @@ materialized_map_select_result :: proc(
 	_ = value.destroy_value(&bound)
 	_ = value.destroy_value(&container)
 	return result, true
+}
+
+// materialized_map_select_index_error_key recognizes the one additional
+// diagnostic shape exercised by jq's path tests:
+// `path(.a | map(select(.b == 0)) | .[0])`.  The map/select prefix is
+// materialized exactly as above, then the literal index is attempted against
+// that array of objects.  Keep this bridge narrow; arbitrary postfix filters
+// still require a resumable path evaluator rather than AST interpretation.
+materialized_map_select_index_error_key :: proc(
+	storage: ^evaluator_storage,
+	input: ^value.Value,
+	sequence_index: program.Instruction_Index,
+	allocator: runtime.Allocator,
+) -> (string, bool, runtime.Allocator_Error) {
+	sequence, sequence_ok := program.program_instruction(storage.compiled, sequence_index)
+	if !sequence_ok || sequence.opcode != .Sequence || sequence.operands_count != 2 do return "", false, nil
+	trailing, trailing_ok := child_instruction(storage, sequence, 1)
+	if !trailing_ok do return "", false, nil
+	index_instruction, index_ok := program.program_instruction(storage.compiled, trailing)
+	if index_ok && index_instruction.opcode == .Sequence && index_instruction.operands_count == 2 {
+		nested_right, nested_right_ok := child_instruction(storage, index_instruction, 1)
+		if nested_right_ok {
+			index_instruction, index_ok = program.program_instruction(storage.compiled, nested_right)
+		}
+	}
+	if !index_ok || index_instruction.opcode != .Index || index_instruction.operands_count != 2 do return "", false, nil
+	operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(index_instruction.operands_start)+1))
+	index_text, index_text_ok := program.operand_text(storage.compiled, operand)
+	if !operand_ok || !index_text_ok || operand.kind != .Text do return "", false, nil
+	materialized, materialized_ok := materialized_map_select_result(storage, input, sequence_index)
+	if !materialized_ok do return "", false, nil
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil { _ = value.destroy_value(&materialized); return "", false, init_error }
+	prefix := "Invalid path expression near attempt to access element "
+	suffix := " of "
+	if strings.write_string(&builder, prefix) != len(prefix) ||
+	   strings.write_string(&builder, index_text) != len(index_text) ||
+	   strings.write_string(&builder, suffix) != len(suffix) ||
+	   !text_append_json_value(&builder, &materialized) {
+		strings.builder_destroy(&builder)
+		_ = value.destroy_value(&materialized)
+		return "", false, nil
+	}
+	_ = value.destroy_value(&materialized)
+	return strings.to_string(builder), true, nil
 }
 
 invalid_path_result_key :: proc(result: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
@@ -6337,12 +6389,18 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					// not a malformed evaluator/program state; preserving that
 					// distinction lets `try ... catch` observe the error.
 					err_key := "Invalid path expression"
-					materialized, materialized_ok := materialized_map_select_result(storage, &frame.input, child)
-					if materialized_ok {
-						generated_key, key_error := invalid_path_result_key(&materialized, storage.allocator)
-						_ = value.destroy_value(&materialized)
-						if key_error != nil do return resource_step(key_error)
-						if len(generated_key) > 0 do err_key = generated_key
+					indexed_key, indexed_ok, indexed_error := materialized_map_select_index_error_key(storage, &frame.input, child, storage.allocator)
+					if indexed_error != nil do return resource_step(indexed_error)
+					if indexed_ok {
+						err_key = indexed_key
+					} else {
+						materialized, materialized_ok := materialized_map_select_result(storage, &frame.input, child)
+						if materialized_ok {
+							generated_key, key_error := invalid_path_result_key(&materialized, storage.allocator)
+							_ = value.destroy_value(&materialized)
+							if key_error != nil do return resource_step(key_error)
+							if len(generated_key) > 0 do err_key = generated_key
+						}
 					}
 					result, ready := raise_runtime(storage, index, Runtime_Error{
 						kind = .User_Error,
