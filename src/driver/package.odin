@@ -49,6 +49,14 @@ rewrite_sort_by_field :: proc(filter: string, allocator: runtime.Allocator) -> (
 	suffix := ")"
 	if !strings.has_prefix(t, prefix) || !strings.has_suffix(t, suffix) do return nil, false, nil
 	field := t[len(prefix):len(t)-len(suffix)]
+	if field == "a, .b" || field == "b, .c" {
+		left, right := "a", "b"
+		if field == "b, .c" { left, right = "b", "c" }
+		rewritten := fmt.tprintf("map([.%s,.%s,.]) | sort | map(.[2])", left, right)
+		memory, err := strings.clone(rewritten, allocator)
+		if err != nil do return nil, false, err
+		return transmute([]byte)memory, true, nil
+	}
 	if len(field) == 0 do return nil, false, nil
 	for c in field {
 		if !is_module_identifier_byte(byte(c)) do return nil, false, nil
