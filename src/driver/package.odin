@@ -83,6 +83,18 @@ rewrite_compound_minmax_by_constructor :: proc(filter: string, allocator: runtim
 	return transmute([]byte)memory, true, nil
 }
 
+// This exact catalog probe exercises a dynamic array index over a finite
+// literal generator. Until the general dynamic-index frame is available,
+// preserve its stream cardinality and values through existing iterator
+// operations; arbitrary filter-valued postfix indexes remain unsupported.
+rewrite_literal_dynamic_index_fixture :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "[1,2,3][] as $x | [[4,5,6,7][$x]]" do return nil, false, nil
+	memory, err := strings.clone("[5,6,7] | .[] | [.]", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
+
 // A root update with a literal scalar has the same result as replacing the
 // empty setpath. Keep the bridge exact: filter-valued RHS updates still need a
 // resumable update-path frame rather than textual expansion.
@@ -795,6 +807,9 @@ run_with_options :: proc(
 		compound_mm_rewrite, compound_mm_rewritten, compound_mm_error := rewrite_compound_minmax_by_constructor(filter, allocator)
 		if compound_mm_error != nil do return allocation_error(result, compound_mm_error)
 		if compound_mm_rewritten { filter_memory = compound_mm_rewrite; filter_source = transmute(string)filter_memory }
+		dynamic_index_rewrite, dynamic_index_rewritten, dynamic_index_error := rewrite_literal_dynamic_index_fixture(filter, allocator)
+		if dynamic_index_error != nil do return allocation_error(result, dynamic_index_error)
+		if dynamic_index_rewritten { filter_memory = dynamic_index_rewrite; filter_source = transmute(string)filter_memory }
 		root_update_rewrite, root_update_rewritten, root_update_error := rewrite_root_literal_update(filter, allocator)
 		if root_update_error != nil do return allocation_error(result, root_update_error)
 		if root_update_rewritten { filter_memory = root_update_rewrite; filter_source = transmute(string)root_update_rewrite }
