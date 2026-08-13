@@ -27,6 +27,11 @@ module_definition :: struct {
 	parameters: string,
 	body: string,
 	active: bool,
+	// Definitions are lexically visible from the point at which they are
+	// declared.  Keep the declaration index so a later redefinition does not
+	// retroactively change an earlier definition's body (jq's `def g: f`
+	// captures the then-current `f`).
+	scope_end: int,
 }
 
 module_data_import :: struct {
@@ -1116,18 +1121,15 @@ find_module_definitions :: proc(bytes: string, definitions: ^[dynamic]module_def
 				delete(owned_body, allocator)
 				return {kind = .Read_Failure, resource_error = parameters_error}
 			}
-			// jq resolves duplicate module definitions deterministically to the
-			// last definition of the same name and arity. Overloads with the same
-			// name but different arities remain callable independently.
-			for index := len(definitions^)-1; index >= 0; index -= 1 {
-				if definitions^[index].name == owned_name &&
-				   module_parameter_count(definitions^[index].parameters) ==
-				   module_parameter_count(owned_parameters) {
-					definitions^[index].active = false
-					break
-				}
-			}
-			_, append_error := append(definitions, module_definition{name = owned_name, parameters = owned_parameters, body = owned_body, active = true})
+			// Keep all definitions. Resolution chooses the latest matching
+			// definition within the caller's lexical scope; removing an earlier
+			// definition here would make `def g: f; def f: ...` resolve g's f to
+			// the later redefinition incorrectly.
+			declaration_index := len(definitions^)
+			_, append_error := append(definitions, module_definition{
+				name = owned_name, parameters = owned_parameters, body = owned_body,
+				active = true, scope_end = declaration_index,
+			})
 			if append_error != nil {
 				delete(owned_name, allocator); delete(owned_parameters, allocator); delete(owned_body, allocator)
 				return {kind = .Read_Failure, resource_error = append_error}
@@ -1150,7 +1152,7 @@ destroy_module_definitions :: proc(definitions: ^[dynamic]module_definition, all
 	delete(definitions^)
 }
 
-module_definition_at :: proc(input: string, at: int, definitions: [dynamic]module_definition, namespace: string = "") -> int {
+module_definition_at :: proc(input: string, at: int, definitions: [dynamic]module_definition, namespace: string = "", visible_end: int = -1) -> int {
 	// A bare identifier is a callable filter only when it is not part of a
 	// jq variable, field, or format directive. The scanner has already removed
 	// strings and comments, but these contexts still contain identifier-shaped
@@ -1181,11 +1183,13 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 		wanted_arity = parsed_arity if call_ok else -1
 	}
 	name_match := false
+	limit := len(definitions)-1
+	if visible_end >= 0 && visible_end < limit do limit = visible_end
 	if qualified && dollar_qualified {
 		// `$alias::name` uses the same canonical namespace as `alias::name`.
 		// A plain `$variable` remains a normal jq variable and is never a
 		// module definition.
-		for index := len(definitions)-1; index >= 0; index -= 1 {
+		for index := limit; index >= 0; index -= 1 {
 			if definitions[index].active && definitions[index].name == input[at:qualified_end] {
 				name_match = true
 				if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
@@ -1194,7 +1198,7 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 		return -1
 	}
 	if qualified {
-		for index := len(definitions)-1; index >= 0; index -= 1 {
+		for index := limit; index >= 0; index -= 1 {
 			if definitions[index].active && definitions[index].name == input[at:qualified_end] {
 				name_match = true
 				if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
@@ -1202,7 +1206,7 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 		}
 		if len(namespace) > 0 {
 			qualified_length := qualified_end-at
-			for index := len(definitions)-1; index >= 0; index -= 1 {
+			for index := limit; index >= 0; index -= 1 {
 				definition_name := definitions[index].name
 				if len(definition_name) == len(namespace)+2+qualified_length &&
 					definition_name[:len(namespace)] == namespace &&
@@ -1224,7 +1228,7 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 	// Imported definitions retain their external namespace, but references in
 	// their bodies resolve sibling definitions in that module unqualified.
 	if len(namespace) > 0 {
-		for index := len(definitions)-1; index >= 0; index -= 1 {
+		for index := limit; index >= 0; index -= 1 {
 			definition_name := definitions[index].name
 			separator := len(namespace)
 			if separator+2+len(input[at:name_end]) == len(definition_name) &&
@@ -1236,7 +1240,7 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 			}
 		}
 	}
-	for index := len(definitions)-1; index >= 0; index -= 1 {
+	for index := limit; index >= 0; index -= 1 {
 		if definitions[index].active && definitions[index].name == input[at:name_end] {
 			name_match = true
 			if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
@@ -1739,6 +1743,7 @@ module_expand_source :: proc(
 	namespace: string = "",
 	runtime_subtraction: ^bool = nil,
 	runtime_factorial: ^bool = nil,
+	visible_end: int = -1,
 ) -> Module_Outcome {
 	if depth >= module_loader_depth do return {kind = .Depth_Overflow}
 	at := 0
@@ -1753,7 +1758,7 @@ module_expand_source :: proc(
 			// Defer the dollar while scanning a qualified module reference.  If
 			// it is not a module reference, write it as the ordinary variable
 			// token and let the next iteration preserve the source exactly.
-			qualified_index := module_definition_at(input, at+1, definitions, namespace)
+			qualified_index := module_definition_at(input, at+1, definitions, namespace, visible_end)
 			if qualified_index >= 0 {
 				at += 1
 				continue
@@ -1811,12 +1816,13 @@ module_expand_source :: proc(
 				args[parameter_index], definitions, builder, stack, depth,
 				parameters, args, arg_count, allocator, namespace,
 				runtime_subtraction, runtime_factorial,
+				visible_end,
 			)
 			if outcome.kind != .None do return outcome
 			if !postfix_literal && !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			continue
 		}
-		index := module_definition_at(input, start, definitions, namespace)
+		index := module_definition_at(input, start, definitions, namespace, visible_end)
 		if index == -2 {
 			call_next := at
 			for call_next < len(input) && (input[call_next] == ' ' || input[call_next] == '\t' || input[call_next] == '\r' || input[call_next] == '\n') do call_next += 1
@@ -1908,6 +1914,7 @@ module_expand_source :: proc(
 			argument_outcome := module_expand_source(
 				call_args[argument_index], definitions, &argument_builder, stack, depth,
 				parameters, args, arg_count, allocator, namespace, runtime_subtraction, runtime_factorial,
+				visible_end,
 			)
 			if argument_outcome.kind != .None {
 				strings.builder_destroy(&argument_builder)
@@ -1962,6 +1969,7 @@ module_expand_source :: proc(
 			body, definitions, builder, stack, depth+1,
 			definition.parameters, expanded_args, call_count, allocator, definition_namespace,
 			runtime_subtraction, runtime_factorial,
+			definition.scope_end,
 		)
 		delete(body, allocator)
 		if outcome.kind != .None do return outcome
@@ -2055,7 +2063,11 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 			active^[active_count] = ""
 			return {kind = .Read_Failure, resource_error = parameters_error if parameters_error != nil else body_error}
 		}
-		_, append_error := append(definitions, module_definition{name = owned_name, parameters = owned_parameters, body = owned_body, active = true})
+		declaration_index := len(definitions^)
+		_, append_error := append(definitions, module_definition{
+			name = owned_name, parameters = owned_parameters, body = owned_body,
+			active = true, scope_end = declaration_index,
+		})
 		if append_error != nil { delete(owned_name, allocator); delete(owned_parameters, allocator); delete(owned_body, allocator); delete(data, allocator); destroy_module_definitions(&local, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = append_error} }
 	}
 	delete(data, allocator)
