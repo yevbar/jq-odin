@@ -1,0 +1,8 @@
+1|contains(1)
+true
+
+true|contains(true)
+true
+
+null|contains(null)
+true

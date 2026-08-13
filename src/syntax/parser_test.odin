@@ -3753,15 +3753,15 @@ range_accepts_negative_one_argument_literal :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_contains_non_string_literals_fail_without_assertion :: proc(t: ^testing.T) {
-	cases := [?]string{`contains(1)`}
+test_contains_scalar_literals_parse_as_bounded_calls :: proc(t: ^testing.T) {
+	cases := [?]string{`contains(1)`, `contains(true)`, `contains(null)`}
 	for source_text in cases {
 		parser: Parser
 		source := diagnostic.borrow_source("<contains-invalid>", source_text)
 		testing.expect(t, init_parser(&parser, source, context.allocator))
 		outcome := parse_filter(&parser)
-		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
-		testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_End)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+		testing.expect_value(t, parser.nodes.storage[int(outcome.root)].kind, Node_Kind.Contains)
 		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 	}
 }
