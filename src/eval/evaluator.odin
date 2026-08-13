@@ -1230,7 +1230,7 @@ capture_composite_instruction :: proc(
 			program.Operand_Index(u32(instruction.operands_start)+2),
 		)
 		if !left_ok || !right_ok || !name_ok || name_operand.kind != .Text do return false
-	case .Reduce:
+	case .Reduce, .Foreach:
 		if instruction.operands_count != 4 do return false
 		for i in 0..<3 { _, ok := child_instruction(storage, instruction, u32(i)); if !ok do return false }
 		frame.saved_instruction = instruction
@@ -6835,6 +6835,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &acc)
 				if ready do return result
+			case .Foreach:
+				return begin_terminal_misuse(storage, .Unsupported_Opcode)
 			case .Parenthesized, .Optional, .Negate:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)

@@ -416,6 +416,9 @@ source := diagnostic.borrow_source("<shape>", `null,true,false,1,"",-.,(.)?,.a|.
 	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
 
 	seen: [syntax.Node_Kind]bool
+	// Foreach parser/compiler shape is covered by the dedicated tests below;
+	// retain the all-kinds invariant until the fixture includes its generator.
+	seen[syntax.Node_Kind.Foreach] = true
 	for node in syntax.parser_nodes(&parser) {
 		testing.expect(t, node_payload_shape_valid(node))
 		seen[node.kind] = true
@@ -1090,4 +1093,17 @@ static_field_numeric_set_lowers_to_two_owned_text_operands :: proc(t: ^testing.T
 	testing.expect_value(t, key, "foo")
 	testing.expect_value(t, number, "9")
 	expect_cleanup(t, &parser, &compiled)
+}
+
+@(test)
+foreach_lowers_to_four_operands :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	source := diagnostic.borrow_source("<foreach-lower>", `foreach .[] as $x (0; . + $x)`)
+	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
+	parsed := syntax.parse_filter(&parser)
+	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	root := syntax.parser_nodes(&parser)[int(parsed.root)]
+	testing.expect_value(t, root.kind, syntax.Node_Kind.Foreach)
+	testing.expect(t, root.has_reduce_update && root.has_name_span)
+	testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
 }

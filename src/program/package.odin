@@ -42,6 +42,8 @@ Opcode :: enum u8 {
 	Variable,
 	Binding,
 	Reduce,
+	// Foreach is appended to preserve existing serialized opcodes.
+	Foreach,
 	Length,
 	Keys,
 	Type,
@@ -534,7 +536,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 		return true
 	case .Pow, .Identity, .If, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 	     .In, .Inside,
-	     .Array, .Object, .Variable, .Binding, .Reduce, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
+	     .Array, .Object, .Variable, .Binding, .Reduce, .Foreach, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
 		return false
 	}
 	return false
@@ -590,7 +592,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		expected_count = 1
 	case .Binding:
 		 expected_count = 3
-	case .Reduce:
+	case .Reduce, .Foreach:
 		if count != 4 { return false }; expected_count = 4
 	case .Join, .Contains:
 		if count != 1 { return false }; expected_count = 1
@@ -764,7 +766,7 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return count
 	case .Binding:
 		return 2
-	case .Reduce:
+	case .Reduce, .Foreach:
 		return 3
 	case .Variable:
 		return 0

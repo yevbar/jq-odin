@@ -4018,3 +4018,16 @@ isempty_accepts_static_sequence :: proc(t: ^testing.T) {
 	testing.expect_value(t, parser.nodes.storage[int(outcome.root)].kind, Node_Kind.IsEmpty)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
+
+@(test)
+foreach_parses_with_reduce_shape :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<foreach>", `foreach .[] as $x (0; . + $x)`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Foreach)
+	testing.expect(t, root.has_reduce_update && root.has_name_span)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}

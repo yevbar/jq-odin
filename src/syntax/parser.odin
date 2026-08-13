@@ -18,6 +18,8 @@ Node_Kind :: enum {
 	Variable,
 	Binding,
 	Reduce,
+	// Foreach is appended to preserve existing AST discriminants.
+	Foreach,
 	Length,
 	Keys,
 	Type,
@@ -1539,6 +1541,20 @@ parse_pipe :: proc(
 				if !update_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; close := parser.lookahead.token; advance(parser)
 				span, _ := spanning(parser, reduce_span, close.span)
 				new_term, ok := append_node(parser, Node{kind=.Reduce, span=span, left=exp, right=init, reduce_update=update, has_reduce_update=true, name_span=name, has_name_span=true})
+				if !ok { return {}, false }; term = new_term
+			case .Foreach:
+				foreach_span := token.span
+				advance(parser)
+				exp, exp_ok := parse_pipe(parser, .Close_Paren, true)
+				if !exp_ok || !parser.has_pending_reduce { fail_from_lookahead(parser, .Expression); return {}, false }
+				name := parser.pending_reduce_name; parser.has_pending_reduce = false
+				if !token_is(parser, .Open_Paren) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				init, init_ok := parse_pipe(parser, .Close_Paren, true)
+				if !init_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				update, update_ok := parse_pipe(parser, .Close_Paren, true)
+				if !update_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; close := parser.lookahead.token; advance(parser)
+				span, _ := spanning(parser, foreach_span, close.span)
+				new_term, ok := append_node(parser, Node{kind=.Foreach, span=span, left=exp, right=init, reduce_update=update, has_reduce_update=true, name_span=name, has_name_span=true})
 				if !ok { return {}, false }; term = new_term
 			case:
 				fail_at_current(parser, .Unexpected_Token, .Expression)
