@@ -1,0 +1,20 @@
+# Zero-argument atanh, with jq domain behavior.
+atanh
+0
+0
+
+atanh
+0.5
+0.5493061443340549
+
+atanh
+1
+1.7976931348623157e+308
+
+try atanh catch .
+2
+null
+
+try atanh catch .
+-2
+null
