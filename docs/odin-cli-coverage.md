@@ -731,3 +731,6 @@ The nested data-import alias slice (`cd632dcf`) raises the fresh catalog to
 **362/522 passed and 160 failed**, with zero harness errors. Qualified aliases
 such as `$d::d[].this` and object shorthand imports now preserve stream
 postfixes; full `make validate` remains green.
+
+The NaN slice/index lane (`70085e6c`) is integrated in this snapshot;
+`.[nan:1]`, `.[1:nan]`, and `.[nan]` now follow jq's null/endpoint behavior.
