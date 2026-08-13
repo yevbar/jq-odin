@@ -3,7 +3,8 @@
 Status: investigation recorded (2026-08-13)
 
 The latest authoritative catalog remains **411/522 passed, 111 failed, 0
-errors** (`/tmp/coverage-current.json`). The remaining sort/group case at
+errors** (`/tmp/coverage-refresh.json`, rebuilt after a green `make validate`).
+The remaining sort/group case at
 `upstream/jq/tests/jq.test:1639` combines stable multi-key `sort_by` with
 `group_by`; the current driver has narrow rewrites for standalone
 `sort_by(.field)` and selected multi-key forms, but the full expression still
