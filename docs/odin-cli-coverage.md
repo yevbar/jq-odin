@@ -726,3 +726,8 @@ The bound-path deletion slice (`bd17564a`) raises the fresh catalog to
 **357/522 passed and 165 failed**, with zero harness errors. It covers
 `delpaths([$p])` after an array-valued lexical path binding and preserves the
 copy-on-write ownership contract; `make validate` remains green.
+
+The nested data-import alias slice (`cd632dcf`) raises the fresh catalog to
+**362/522 passed and 160 failed**, with zero harness errors. Qualified aliases
+such as `$d::d[].this` and object shorthand imports now preserve stream
+postfixes; full `make validate` remains green.
