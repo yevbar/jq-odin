@@ -13,3 +13,8 @@
 add({(.[]):1}) | keys
 ["a","a","b","a","d","b","d","a","d"]
 ["a","b","d"]
+
+# Interpolated string keys are computed filters and must retain their value.
+{"a",b,"a$\(1+1)"}
+{"a":1,"b":2,"c":3}
+{"a":1,"b":2,"a$2":null}
