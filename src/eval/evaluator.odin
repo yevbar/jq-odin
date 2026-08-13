@@ -2912,7 +2912,7 @@ propagate_output :: proc(
 		#partial switch frame.phase {
 		case .Unary_Active:
 			if instruction.opcode == .Negate {
-				number, number_ok := value.number_value_get(owned)
+				_, number_ok := value.number_value_get(owned)
 				if !number_ok {
 					input_kind := value.kind_of(owned)
 					key, key_error := negate_type_error_runtime_key(owned, storage.allocator)
@@ -2929,8 +2929,10 @@ propagate_output :: proc(
 					}
 					return result, ready
 				}
+				negated, negate_error, negate_ok := value.number_negate(owned, storage.allocator)
 				_ = value.destroy_value(owned)
-				owned^ = value.number_value(-number)
+				if !negate_ok || negate_error != nil { if negate_error != nil do _ = value.destroy_constructor_error(&negate_error); return begin_terminal_misuse(storage, .Malformed_Program), true }
+				owned^ = negated
 			} else if instruction.opcode == .First {
 				free_error := destroy_frames_to(storage, parent+1)
 				if free_error != nil {
@@ -7986,7 +7988,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if !seed_ok { if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
 					for item_index in 0..<length {
 					item := value.number_value(f64(item_index))
-					if generator.opcode == .Field || generator_negated { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value; if generator_negated { number, number_ok := value.number_value_get(&item); if !number_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = value.number_value(-number) } }
+					if generator.opcode == .Field || generator_negated { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value; if generator_negated { negated, negate_error, negate_ok := value.number_negate(&item, storage.allocator); if !negate_ok || negate_error != nil { if negate_error != nil do _ = value.destroy_constructor_error(&negate_error); _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = negated } }
 					if has_cartesian { item_value, item_ok := value.array_element_copy(&cartesian_values, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); _ = value.destroy_value(&cartesian_values); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
 					if update.opcode == .Variable {
 						op, op_ok := program.program_operand(storage.compiled, update.operands_start); update_name, text_ok := program.operand_text(storage.compiled, op); if !op_ok || !text_ok || update_name != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
@@ -8179,10 +8181,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					item, item_ok := value.array_element_copy(&frame.input, item_index)
 					if !item_ok { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
 					if generator_negated {
-						number, number_ok := value.number_value_get(&item)
+						_, number_ok := value.number_value_get(&item)
 						if !number_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+						negated, negate_error, negate_ok := value.number_negate(&item, storage.allocator)
 						_ = value.destroy_value(&item)
-						item = value.number_value(-number)
+						if !negate_ok || negate_error != nil { if negate_error != nil do _ = value.destroy_constructor_error(&negate_error); _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+						item = negated
 					}
 					next, add_ok := value.number_add(&acc, &item)
 					_ = value.destroy_value(&acc); _ = value.destroy_value(&item)
