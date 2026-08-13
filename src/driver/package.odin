@@ -606,11 +606,18 @@ run_with_options :: proc(
 		filter_source := filter
 		filter_memory: []byte
 		module_outcome: Module_Outcome
-		// The syntax/program vertical slice owns simple top-level zero-argument
-		// definitions. Leave those sources intact so the parser can build Call
-		// nodes; module-bearing sources continue through the legacy loader.
+		// The syntax/program vertical slice owns a single top-level definition.
+		// Leave that source intact so the parser can build its Call node. Multiple
+		// definitions go through the module expander, whose declaration indices
+		// preserve jq's lexical snapshots across redefinition.
 		trimmed_filter := strings.trim_space(filter)
-		if strings.has_prefix(trimmed_filter, "def ") {
+		first_definition_end := module_definition_end(trimmed_filter, 0)
+		next_definition := first_definition_end
+		if next_definition < 0 do next_definition = 0
+		module_space(trimmed_filter, &next_definition)
+		multiple_definitions := first_definition_end > 0 &&
+			module_word(trimmed_filter, next_definition, "def")
+		if strings.has_prefix(trimmed_filter, "def ") && !multiple_definitions {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)

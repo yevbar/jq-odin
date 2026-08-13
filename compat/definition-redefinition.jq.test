@@ -1,0 +1,13 @@
+# jq definitions are resolved at declaration time: redefinitions affect later
+# calls but do not rewrite earlier definition bodies.
+def f: 1; def f: 2; f
+null
+2
+
+def f: 1; def g: f; def f: 2; g
+null
+1
+
+def f: 1; def g: f; g
+null
+1
