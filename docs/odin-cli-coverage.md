@@ -705,3 +705,13 @@ only the merge-base-to-head diff and attempt to falsify the focused shard
 before integration.
 - Scalar non-string `ltrimstr`/`rtrimstr`/`trimstr` separators are now parsed
   and produce jq-compatible catchable type errors; focused shard passes 8/8.
+
+## Latest integration snapshot (2026-08-12)
+
+The current integration head (`d1f3001d`) measures **350/522 passed and 172
+failed**, with zero harness errors. This includes the bounded zero-argument
+definition/call path, declaration-time redefinition snapshots, bounded
+recursive-call activation with a depth guard, and the materialized path-index
+diagnostic. `make validate` passes all package, layout, oracle, and CLI checks
+(333 subprocess and 43 differential cases). General parameterized calls,
+closures, and generator-valued definitions remain separate VM call-frame work.
