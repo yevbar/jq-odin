@@ -715,3 +715,9 @@ recursive-call activation with a depth guard, and the materialized path-index
 diagnostic. `make validate` passes all package, layout, oracle, and CLI checks
 (333 subprocess and 43 differential cases). General parameterized calls,
 closures, and generator-valued definitions remain separate VM call-frame work.
+
+The subsequent parameterized-definition routing commit (`42f4bfca`) raises the
+fresh catalog measurement to **355/522 passed and 167 failed**, with zero
+harness errors. Its focused shard covers six-argument, generator-valued, and
+`$` value-parameter definitions; general closures, nested lexical definitions,
+and broader generator calls remain open.
