@@ -643,16 +643,17 @@ behavioral oracle.
 
 ## Current authoritative measurement (2026-08-13)
 
-- Integration head `5eca0d9f` includes the reviewed CLI lineage, the
+- Integration head `789d286d` includes the reviewed CLI lineage, the
   `asinh`/`atanh` unary math builtins, filter-parameter validation, the
   static `path`/`paths`/literal `getpath` slice, literal `setpath`, and
   bounded literal `delpaths`, bounded dynamic path iteration, and static path
   forks, and whitespace-tolerant literal postfix module parameters, plus numeric `%Y`, `%m`, and `%d` strftime directives.
   A pinned jq 1.8.1 catalog run selects all **522** upstream cases and passes
-  **345**, with **177**
+  **346**, with **176**
   failing and no harness errors. Package tests, `make validate`, and the CLI
   harness (333 subprocess / 43 differential checks) pass.
-- The basic strftime shard passes 4/4. Computed-key, dynamic-path-identity,
+- The basic strftime shard passes 4/4. Filter-parameter, computed-key,
+  nested-path-map-select, nested-setpath-error, dynamic-path-identity,
   predicate-path, piped-wildcard-path, multi-seed-foreach, Cartesian-foreach,
   index-assignment-error, path-mutation-error, try-defined-or, and nested
   defined-or shards pass 3/3, 2/2, 2/2, 2/2, 2/2, 1/1, 5/5, 2/2, 4/4,
