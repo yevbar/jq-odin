@@ -7814,7 +7814,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				// observable error precedence for caught invalid-input calls such as
 				// `try strflocaltime({}) catch .`.
 				input_kind := value.kind_of(&frame.input)
-				input_is_datetime := input_kind == .Array || (input_kind == .Number && !instruction.format_local)
+				input_is_datetime := input_kind == .Array || input_kind == .Number
 				if !input_is_datetime {
 					err := Runtime_Error{kind=.Cannot_Iterate, input_kind=input_kind, span=instruction.span}
 					err.key = "strflocaltime/1 requires parsed datetime inputs" if instruction.format_local else "strftime/1 requires parsed datetime inputs"
