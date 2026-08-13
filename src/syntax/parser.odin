@@ -258,6 +258,8 @@ Node_Kind :: enum {
 	// The first implementation accepts identity, fields, and scalar literals as
 	// FILTER; generator-valued assignments remain a continuation contract.
 	Dynamic_Field_Set,
+	// Call invokes a top-level zero-argument definition captured by the parser.
+	Call,
 }
 
 Node_Id :: distinct int
@@ -347,6 +349,8 @@ Node :: struct {
 	binary_operator:   Binary_Operator,
 	operator_span:     diagnostic.Span,
 	has_operator_span: bool,
+	call_name_span: diagnostic.Span,
+	has_call_name: bool,
 }
 
 Parse_Error_Kind :: enum {
@@ -469,6 +473,9 @@ Parser :: struct {
 	pending_string_text: []byte,
 	pending_reduce_name: diagnostic.Span,
 	has_pending_reduce: bool,
+	definition_name: diagnostic.Span,
+	has_definition: bool,
+	definition_body: Node_Id,
 	failed:              bool,
 	failure:             Parse_Outcome,
 }
@@ -531,6 +538,22 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 	assert(parser.state == .Ready, "syntax.Parser can parse only once")
 
 	advance(parser)
+	if token_is(parser, .Def) {
+		advance(parser)
+		if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Identifier {
+			fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure
+		}
+		name := parser.lookahead.token
+		advance(parser)
+		if !token_is(parser, .Colon) { fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure }
+		advance(parser)
+		body, body_ok := parse_pipe(parser, .Semicolon, false)
+		if !body_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure }
+		parser.definition_name = name.span
+		parser.has_definition = true
+		parser.definition_body = body
+		advance(parser)
+	}
 	root, ok := parse_pipe(parser)
 	if !ok {
 		parser.state = .Finished
@@ -1007,6 +1030,14 @@ parse_pipe :: proc(
 				continue
 			case .Identifier:
 				spelling := token_spelling(parser, token)
+				if parser.has_definition && spelling == token_spelling(parser, Token{span=parser.definition_name}) && !token_is(parser, .Open_Paren) {
+					advance(parser)
+					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=parser.definition_body, has_child=true, call_name_span=token.value_span, has_call_name=true})
+					if !call_ok { return {}, false }
+					term = new_term
+					term_ready = true
+					continue
+				}
 				if spelling == "select" {
 					advance(parser)
 					if !token_is(parser, .Open_Paren) { fail_from_lookahead(parser, .Expression); return {}, false }

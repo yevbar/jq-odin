@@ -120,6 +120,7 @@ frame_phase :: enum u8 {
 	Sequence_Start_Left,
 	Sequence_Left_Active,
 	Sequence_Right_Active,
+	Call_Active,
 	Field_Start_Child,
 	Field_Child_Active,
 	Field_Result_Active,
@@ -140,6 +141,7 @@ frame_phase :: enum u8 {
 	Binary_Left_Active,
 	Binary_Start_Right,
 	Binary_Right_Active,
+	Call_Start,
 	If_Condition_Active,
 	If_Then_Active,
 	If_Else_Active,
@@ -1455,6 +1457,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
 	case .Sequence_Start_Left, .Sequence_Left_Active, .Sequence_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Sequence do return false
+	case .Call_Start, .Call_Active:
+		if frame.mode != .Normal || instruction.opcode != .Call do return false
 	case .Binding_Start_Left, .Binding_Left_Active, .Binding_Body_Active:
 		if frame.mode != .Normal || instruction.opcode != .Binding do return false
 	case .Constructor_Start, .Constructor_Child_Active, .Constructor_Emit:
@@ -1494,6 +1498,8 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = 3
 	} else if frame.phase == .Binary_Start_Left || frame.phase == .Binary_Left_Active || frame.phase == .Binary_Start_Right || frame.phase == .Binary_Right_Active {
 		expected_operand_count = 2
+	} else if frame.phase == .Call_Start || frame.phase == .Call_Active {
+		expected_operand_count = 1
 	} else do expected_operand_count = 2
 	if !frame.has_saved_instruction ||
 	   frame.saved_operand_count != expected_operand_count ||
@@ -2493,6 +2499,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Sequence_Right_Active:
 		frame.phase = .Sequence_Left_Active
+	case .Call_Active:
+		frame.phase = .Complete
 	case .Field_Child_Active:
 		frame.phase = .Complete
 	case .Field_Result_Active:
@@ -8032,11 +8040,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				   !constructor_start(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
+			case .Call:
+				if instruction.operands_count != 1 || storage.frame_count > 64 { return begin_terminal_misuse(storage, .Malformed_Program) }
+				child, child_ok := child_instruction(storage, instruction, 0)
+				if !child_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+				// A zero-argument call has no environment to bind. Re-enter the
+				// captured body in this frame; recursion is bounded by the frame-count
+				// guard above and the body graph remains immutable.
+				frame.instruction = child
+				frame.phase = .Enter
+				continue
 			case:
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right:
+		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right, .Call_Start:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -8067,6 +8085,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				offset, next_phase = 0, .Binary_Left_Active
 			case .Binary_Start_Right:
 				offset, next_phase = 1, .Binary_Right_Active
+			case .Call_Start:
+				offset, next_phase = 0, .Call_Active
 			case:
 			}
 			child, ok := child_instruction(storage, instruction, offset)
@@ -8356,7 +8376,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		     .Sequence_Left_Active, .Sequence_Right_Active,
 		     .Field_Child_Active, .Field_Result_Active,
 		     .Index_Child_Active, .Index_Result_Active,
-		     .Binary_Left_Active, .Binary_Right_Active,
+		     .Binary_Left_Active, .Binary_Right_Active, .Call_Active,
 		     .Binding_Left_Active, .Binding_Body_Active, .Constructor_Child_Active:
 			// An active consumer is never the top frame: its producer is above it.
 			return begin_terminal_misuse(storage, .Malformed_Program)

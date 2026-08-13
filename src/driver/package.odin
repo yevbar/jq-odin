@@ -604,7 +604,17 @@ run_with_options :: proc(
 		result.module_input_memory = options.compiled_filter.owner.module_input_memory
 	} else {
 		filter_source := filter
-		filter_memory, module_outcome := load_filter_modules(filter, options.module_paths, allocator)
+		filter_memory: []byte
+		module_outcome: Module_Outcome
+		// The syntax/program vertical slice owns simple top-level zero-argument
+		// definitions. Leave those sources intact so the parser can build Call
+		// nodes; module-bearing sources continue through the legacy loader.
+		trimmed_filter := strings.trim_space(filter)
+		if strings.has_prefix(trimmed_filter, "def ") {
+			filter_memory, module_outcome = nil, {}
+		} else {
+			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
+		}
 		if module_outcome.kind != .None {
 			result.module_cleanup_value = value.take_value(&module_outcome.cleanup_value)
 			result.module_cleanup_parse_error = module_outcome.cleanup_parse_error
