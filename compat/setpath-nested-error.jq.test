@@ -1,0 +1,11 @@
+try ["OK", setpath([[1]]; 1)] catch ["KO", .]
+null
+["KO", "Cannot index null with array"]
+
+try ["OK", setpath([[1]]; 1)] catch ["KO", .]
+{}
+["KO", "Cannot index object with array"]
+
+try ["OK", setpath([[1]]; 1)] catch ["KO", .]
+[]
+["KO", "Cannot update field at array index of array"]

@@ -1959,6 +1959,17 @@ literal_path_value :: proc(storage: ^evaluator_storage, index: program.Instructi
 		item_instruction, item_ok := program.program_instruction(storage.compiled, item_index); if !item_ok do return false
 		if item_instruction.opcode == .Fork || item_instruction.opcode == .Sequence { left, left_ok := child_instruction(storage, item_instruction, 0); right, right_ok := child_instruction(storage, item_instruction, 1); return left_ok && right_ok && append_item(storage, left, result) && append_item(storage, right, result) }
 		if item_instruction.opcode == .Parenthesized { child, child_ok := child_instruction(storage, item_instruction, 0); return child_ok && append_item(storage, child, result) }
+		// Preserve nested literal arrays as path components. They are invalid
+		// jq indexes, but must reach setpath so it can emit a catchable typed
+		// runtime error instead of collapsing to internal misuse.
+		if item_instruction.opcode == .Array {
+			nested, nested_ok := path_array(storage.allocator); if !nested_ok do return false
+			for nested_offset in 0..<item_instruction.operands_count {
+				nested_operand, nested_operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(item_instruction.operands_start)+u32(nested_offset)))
+				if !nested_operand_ok || nested_operand.kind != .Instruction || !append_item(storage, nested_operand.instruction, &nested) { _ = value.destroy_value(&nested); return false }
+			}
+			return path_append_take(result, &nested)
+		}
 		if !item_instruction.has_literal || item_instruction.opcode != .Identity || (item_instruction.literal_kind != .String && item_instruction.literal_kind != .Number) do return false
 		item, _, cleanup := literal_value(storage, item_instruction); if cleanup != nil || value.kind_of(&item) == .Invalid { _ = value.destroy_value(&item); return false }; return path_append_take(result, &item)
 	}
@@ -6085,6 +6096,29 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if !path_literal_ok || replacement_cleanup != nil || value.kind_of(&replacement) == .Invalid { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
 				path_length, path_length_ok := value.array_length(&path)
 				if !path_length_ok { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
+				// A nested array component is not a valid jq index. Report it as
+				// a user error so `try ... catch` receives the diagnostic.
+				if path_length > 0 {
+					first_component, first_component_ok := value.array_element_copy(&path, 0)
+					if !first_component_ok { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
+					if value.kind_of(&first_component) == .Array {
+						input_kind := value.kind_of(&frame.input)
+						message := "Cannot index null with array"
+						switch input_kind {
+						case .Object: message = "Cannot index object with array"
+						case .Array: message = "Cannot update field at array index of array"
+						case .Boolean: message = "Cannot index boolean with array"
+						case .Number: message = "Cannot index number with array"
+						case .String: message = "Cannot index string with array"
+						case .Null, .Invalid:
+						}
+						_ = value.destroy_value(&first_component); _ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
+						result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
+						if ready do return result
+						continue
+					}
+					_ = value.destroy_value(&first_component)
+				}
 				if path_length > 0 && value.kind_of(&frame.input) == .Object {
 					first_component, first_ok := value.array_element_copy(&path, 0)
 					if !first_ok { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
