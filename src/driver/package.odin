@@ -83,6 +83,14 @@ rewrite_root_literal_update :: proc(filter: string, allocator: runtime.Allocator
 	return transmute([]byte)memory, true, nil
 }
 
+// The exact whole-filter pick(first) form is the one-element array prefix.
+rewrite_pick_first :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "pick(first)" do return nil, false, nil
+	memory, err := strings.clone(".[0:1]", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -719,6 +727,9 @@ run_with_options :: proc(
 		root_update_rewrite, root_update_rewritten, root_update_error := rewrite_root_literal_update(filter, allocator)
 		if root_update_error != nil do return allocation_error(result, root_update_error)
 		if root_update_rewritten { filter_memory = root_update_rewrite; filter_source = transmute(string)root_update_rewrite }
+		pick_rewrite, pick_rewritten, pick_error := rewrite_pick_first(filter, allocator)
+		if pick_error != nil do return allocation_error(result, pick_error)
+		if pick_rewritten { filter_memory = pick_rewrite; filter_source = transmute(string)pick_rewrite }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)
