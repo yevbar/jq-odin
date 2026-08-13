@@ -720,70 +720,6 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 	return nil
 }
 
-// parse_if_chain parses an if arm after the leading `if`/`elif` token has
-// already been consumed.  Chained elif arms are represented as nested If
-// nodes in the preceding arm's else branch, preserving the existing compiler
-// and evaluator contract for conditionals.
-@(private="package")
-parse_if_chain :: proc(parser: ^Parser, if_token: Token) -> (Node_Id, bool) {
-	condition, condition_ok := parse_pipe(parser, .Then, false)
-	if !condition_ok || !token_is(parser, .Then) {
-		fail_from_lookahead(parser, .Expression)
-		return {}, false
-	}
-	advance(parser)
-
-	then_branch, then_ok := parse_pipe(parser, .Else, false)
-	if !then_ok || (!token_is(parser, .Else) && !token_is(parser, .Else_If)) {
-		fail_from_lookahead(parser, .Expression)
-		return {}, false
-	}
-
-	else_branch: Node_Id
-	if token_is(parser, .Else_If) {
-		elif_token := parser.lookahead.token
-		advance(parser)
-		nested_ok: bool
-		else_branch, nested_ok = parse_if_chain(parser, elif_token)
-		if !nested_ok {
-			return {}, false
-		}
-	} else {
-		else_ok: bool
-		if token_is(parser, .Else) {
-			advance(parser)
-			else_branch, else_ok = parse_pipe(parser, .End, false)
-			if !else_ok || !token_is(parser, .End) {
-				fail_from_lookahead(parser, .Expression)
-				return {}, false
-			}
-		} else {
-			// An omitted else is jq's identity fallback.
-			else_branch, else_ok = append_node(parser, Node{kind = .Identity, span = if_token.span})
-			if !else_ok || !token_is(parser, .End) {
-				fail_from_lookahead(parser, .Expression)
-				return {}, false
-			}
-		}
-		end_token := parser.lookahead.token
-		advance(parser)
-		_ = end_token
-	}
-
-	span, span_ok := spanning(parser, if_token.span, parser.nodes.storage[int(else_branch)].span)
-	assert(span_ok)
-	return append_node(parser, Node{
-		kind = .If,
-		span = span,
-		if_condition = condition,
-		has_if_condition = true,
-		if_then = then_branch,
-		has_if_then = true,
-		if_else = else_branch,
-		has_if_else = true,
-	})
-}
-
 // parse_pipe is an explicit-state precedence parser. Parenthesized state lives
 // in parser.frames; binary, pipe, and comma nodes begin as incomplete arena
 // placeholders and are completed before success. Partial state remains owned
@@ -1039,11 +975,40 @@ parse_pipe :: proc(
 				if !try_ok do return {}, false
 				term = new_term
 			case .If:
-				if_token := token
-				advance(parser)
-				new_term, ok := parse_if_chain(parser, if_token)
-				if !ok { return {}, false }
-				term = new_term
+				if_token := token; advance(parser)
+				condition, ok1 := parse_pipe(parser, .Then, false)
+				if !ok1 || !token_is(parser, .Then) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				then_branch, ok2 := parse_pipe(parser, .Else, false)
+				if !ok2 { fail_from_lookahead(parser, .Expression); return {}, false }
+				else_branch: Node_Id
+				ok3: bool
+				if token_is(parser, .Else) {
+					advance(parser)
+					else_branch, ok3 = parse_pipe(parser, .End, false)
+					if !ok3 || !token_is(parser, .End) { fail_from_lookahead(parser, .Expression); return {}, false }
+				} else if token_is(parser, .Else_If) {
+					elif_token := parser.lookahead.token; advance(parser)
+					elif_condition, elif_ok := parse_pipe(parser, .Then, false)
+					if !elif_ok || !token_is(parser, .Then) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+					elif_then, elif_then_ok := parse_pipe(parser, .Else, false)
+					if !elif_then_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+					elif_else: Node_Id
+					if token_is(parser, .Else) {
+						advance(parser); elif_else_ok: bool; elif_else, elif_else_ok = parse_pipe(parser, .End, false)
+						if !elif_else_ok || !token_is(parser, .End) { fail_from_lookahead(parser, .Expression); return {}, false }
+					} else {
+						elif_else, _ = append_node(parser, Node{kind=.Identity, span=elif_token.span})
+					}
+					elif_span, _ := spanning(parser, elif_token.span, parser.lookahead.token.span)
+					else_branch, _ = append_node(parser, Node{kind=.If, span=elif_span, if_condition=elif_condition, has_if_condition=true, if_then=elif_then, has_if_then=true, if_else=elif_else, has_if_else=true})
+				} else {
+					else_branch, ok3 = append_node(parser, Node{kind=.Identity, span=if_token.span})
+					if !ok3 { return {}, false }
+				}
+				end_token := parser.lookahead.token; advance(parser)
+				span, span_ok := spanning(parser, if_token.span, end_token.span); assert(span_ok)
+				new_term, ok := append_node(parser, Node{kind=.If, span=span, if_condition=condition, has_if_condition=true, if_then=then_branch, has_if_then=true, if_else=else_branch, has_if_else=true})
+				if !ok { return {}, false }; term = new_term
 			case .Minus:
 				minus_depth += 1
 				if group_depth > 0 && !minus_before_group {
@@ -2173,9 +2138,7 @@ parse_pipe :: proc(
 			return bound, true
 		}
 
-		if (closing != .Invalid &&
-			(token_is(parser, closing) || (closing == .Else && token_is(parser, .Else_If))) &&
-			parser.frames.count == entry_frame_depth) ||
+		if (closing != .Invalid && token_is(parser, closing) && parser.frames.count == entry_frame_depth) ||
 		   (stop_at_comma && token_is(parser, .Comma)) {
 			return result, true
 		}
