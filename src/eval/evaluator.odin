@@ -1220,6 +1220,31 @@ literal_value :: proc(
 	return {}, .Invalid_Number_Literal, nil
 }
 
+// foreach_seed_values materializes the literal seed stream used by the
+// bounded foreach evaluator. Comma filters are lowered to Fork/Sequence;
+// retaining both branches preserves jq's left-to-right seed ordering before
+// each seed is replayed over the generator stream.
+foreach_seed_values :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (value.Value, bool) {
+	result, result_error := value.array_value(storage.allocator)
+	if value.array_error_kind(&result_error) != .None { _ = value.destroy_array_error(&result_error); return {}, false }
+	append_values :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, result: ^value.Value) -> bool {
+		instruction, instruction_ok := program.program_instruction(storage.compiled, index)
+		if !instruction_ok do return false
+		if instruction.opcode == .Parenthesized { child, child_ok := child_instruction(storage, instruction, 0); return child_ok && append_values(storage, child, result) }
+		if instruction.opcode == .Fork || instruction.opcode == .Sequence {
+			left, left_ok := child_instruction(storage, instruction, 0); right, right_ok := child_instruction(storage, instruction, 1)
+			return left_ok && right_ok && append_values(storage, left, result) && append_values(storage, right, result)
+		}
+		seed, seed_error, seed_cleanup := literal_value(storage, instruction)
+		if seed_cleanup != nil || seed_error != .None || value.kind_of(&seed) == .Invalid { _ = value.destroy_value(&seed); return false }
+		_, append_error := value.array_append_take(result, &seed)
+		if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&seed); return false }
+		return true
+	}
+	if !append_values(storage, index, &result) { _ = value.destroy_value(&result); return {}, false }
+	return result, true
+}
+
 @(private)
 dynamic_range_bound :: proc(storage: ^evaluator_storage, instruction: program.Instruction, input: ^value.Value) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if instruction.opcode == .Identity && !instruction.has_literal do return value.clone_value(input), .None, nil
@@ -7295,27 +7320,32 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				init_index, init_ok := child_instruction(storage, instruction, 1)
 				update_index, update_ok := child_instruction(storage, instruction, 2)
 				generator, generator_valid := program.program_instruction(storage.compiled, generator_index)
-				init, init_valid := program.program_instruction(storage.compiled, init_index)
+				_, init_valid := program.program_instruction(storage.compiled, init_index)
 				update, update_valid := program.program_instruction(storage.compiled, update_index)
 				name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+3))
 				name, name_text_ok := program.operand_text(storage.compiled, name_operand)
 				if !generator_ok || !init_ok || !update_ok || !generator_valid || !init_valid || !update_valid || !name_ok || !name_text_ok || name_operand.kind != .Text do return begin_terminal_misuse(storage, .Malformed_Program)
-				seed, seed_error, seed_cleanup := literal_value(storage, init)
-				if seed_error != .None || seed_cleanup != nil || value.kind_of(&seed) == .Invalid do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				seeds, seeds_ok := foreach_seed_values(storage, init_index)
+				if !seeds_ok do return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				items, items_error := value.array_value(storage.allocator)
-				if value.array_error_kind(&items_error) != .None { _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+				if value.array_error_kind(&items_error) != .None { _ = value.destroy_value(&seeds); return resource_step(.Out_Of_Memory) }
 				length: int
 				if generator.opcode == .Field {
 					field_name, field_ok := field_text(storage, generator)
-					if !field_ok || len(field_name) != 0 || value.kind_of(&frame.input) != .Array { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
-					length_ok: bool; length, length_ok = value.array_length(&frame.input); if !length_ok { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+					if !field_ok || len(field_name) != 0 || value.kind_of(&frame.input) != .Array { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+					length_ok: bool; length, length_ok = value.array_length(&frame.input); if !length_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
 				} else if generator.opcode == .Range {
 					bound_index, bound_ok := child_instruction(storage, generator, 0); bound, bound_valid := program.program_instruction(storage.compiled, bound_index)
 					bound_value, bound_error, bound_cleanup := literal_value(storage, bound); bound_number, bound_numeric := value.number_value_get(&bound_value)
-					if !bound_ok || !bound_valid || bound_error != .None || bound_cleanup != nil || !bound_numeric || bound_number < 0 || bound_number != f64(int(bound_number)) { _ = value.destroy_value(&bound_value); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+					if !bound_ok || !bound_valid || bound_error != .None || bound_cleanup != nil || !bound_numeric || bound_number < 0 || bound_number != f64(int(bound_number)) { _ = value.destroy_value(&bound_value); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 					length = int(bound_number); _ = value.destroy_value(&bound_value)
-				} else { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
-				for item_index in 0..<length {
+				} else { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+				seed_count, seed_count_ok := value.array_length(&seeds)
+				if !seed_count_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+				for seed_index in 0..<seed_count {
+					seed, seed_ok := value.array_element_copy(&seeds, seed_index)
+					if !seed_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+					for item_index in 0..<length {
 					item := value.number_value(f64(item_index))
 					if generator.opcode == .Field { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
 					if update.opcode == .Variable {
@@ -7327,8 +7357,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						next, add_ok := value.number_add(&seed, &item); _ = value.destroy_value(&item); if !add_ok { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&seed); seed = next
 					} else { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 					out := value.clone_value(&seed); _, append_error := value.array_append_take(&items, &out); if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory) }
+					}
+					_ = value.destroy_value(&seed)
 				}
-				_ = value.destroy_value(&seed); _ = value.destroy_value(&frame.input); frame.input = items; frame.iterator_cursor = 0; frame.phase = .Iterator_Active
+				_ = value.destroy_value(&seeds); _ = value.destroy_value(&frame.input); frame.input = items; frame.iterator_cursor = 0; frame.phase = .Iterator_Active
 			case .Reduce:
 				// Evaluate the reduction seed from its compiled INIT expression.  The
 				// current slice handles the common `.[]` stream and scalar UPDATE

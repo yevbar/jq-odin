@@ -1623,7 +1623,11 @@ parse_pipe :: proc(
 				if !exp_ok || !parser.has_pending_reduce { fail_from_lookahead(parser, .Expression); return {}, false }
 				name := parser.pending_reduce_name; parser.has_pending_reduce = false
 				if !token_is(parser, .Open_Paren) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
-				init, init_ok := parse_pipe(parser, .Close_Paren, true)
+				// The initializer is a jq filter, not a single literal.  In
+				// particular `foreach ... (0, 1; ...)` uses a comma stream of
+				// seeds; keep commas live until the semicolon so the evaluator can
+				// preserve that Cartesian seed ordering.
+				init, init_ok := parse_pipe(parser, .Close_Paren, false)
 				if !init_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
 				update, update_ok := parse_pipe(parser, .Close_Paren, true)
 				if !update_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; close := parser.lookahead.token; advance(parser)
