@@ -7348,6 +7348,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				items, items_error := value.array_value(storage.allocator)
 				if value.array_error_kind(&items_error) != .None { _ = value.destroy_value(&seeds); return resource_step(.Out_Of_Memory) }
 				length: int
+				// A divided generator is a Cartesian product of its two streams.  The
+				// general continuation machinery is still pending, but materializing
+				// this canonical `.[] / .[]` form lets foreach preserve jq's
+				// right-major ordering for the common numeric accumulator idiom.
+				has_cartesian := false
+				cartesian_values: value.Value
 				if generator.opcode == .Field {
 					field_name, field_ok := field_text(storage, generator)
 					if !field_ok || len(field_name) != 0 || value.kind_of(&frame.input) != .Array { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
@@ -7357,27 +7363,72 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					bound_value, bound_error, bound_cleanup := literal_value(storage, bound); bound_number, bound_numeric := value.number_value_get(&bound_value)
 					if !bound_ok || !bound_valid || bound_error != .None || bound_cleanup != nil || !bound_numeric || bound_number < 0 || bound_number != f64(int(bound_number)) { _ = value.destroy_value(&bound_value); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 					length = int(bound_number); _ = value.destroy_value(&bound_value)
+				} else if generator.opcode == .Divide {
+					left_index, left_ok := child_instruction(storage, generator, 0)
+					right_index, right_ok := child_instruction(storage, generator, 1)
+					left, left_valid := program.program_instruction(storage.compiled, left_index)
+					right, right_valid := program.program_instruction(storage.compiled, right_index)
+					left_name, left_name_ok := field_text(storage, left)
+					right_name, right_name_ok := field_text(storage, right)
+					if !left_ok || !right_ok || !left_valid || !right_valid ||
+						left.opcode != .Field || right.opcode != .Field ||
+						!left_name_ok || !right_name_ok || left_name != "" || right_name != "" ||
+						value.kind_of(&frame.input) != .Array {
+						_ = value.destroy_value(&seeds); _ = value.destroy_value(&items)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					cartesian_values, items_error = value.array_value(storage.allocator)
+					if value.array_error_kind(&items_error) != .None { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory) }
+					input_length, input_length_ok := value.array_length(&frame.input)
+					if !input_length_ok { _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+					for right_at in 0..<input_length {
+						for left_at in 0..<input_length {
+							left_value, left_value_ok := value.array_element_copy(&frame.input, left_at)
+							right_value, right_value_ok := value.array_element_copy(&frame.input, right_at)
+							if !left_value_ok || !right_value_ok {
+								_ = value.destroy_value(&left_value); _ = value.destroy_value(&right_value)
+								_ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items)
+								return begin_terminal_misuse(storage, .Malformed_Program)
+							}
+							result, divide_kind := value.number_divide(&left_value, &right_value)
+							_ = value.destroy_value(&left_value); _ = value.destroy_value(&right_value)
+							if divide_kind != .Success {
+								_ = value.destroy_value(&result)
+								_ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items)
+								return begin_terminal_misuse(storage, .Unsupported_Opcode)
+							}
+							_, append_error := value.array_append_take(&cartesian_values, &result)
+							if value.array_error_kind(&append_error) != .None {
+								_ = value.destroy_value(&result); _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items)
+								return resource_step(.Out_Of_Memory)
+							}
+						}
+					}
+					has_cartesian = true
+					length, _ = value.array_length(&cartesian_values)
 				} else { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 				seed_count, seed_count_ok := value.array_length(&seeds)
-				if !seed_count_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+				if !seed_count_ok { if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
 				for seed_index in 0..<seed_count {
 					seed, seed_ok := value.array_element_copy(&seeds, seed_index)
-					if !seed_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+					if !seed_ok { if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
 					for item_index in 0..<length {
 					item := value.number_value(f64(item_index))
 					if generator.opcode == .Field { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
+					if has_cartesian { item_value, item_ok := value.array_element_copy(&cartesian_values, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); _ = value.destroy_value(&cartesian_values); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
 					if update.opcode == .Variable {
-						op, op_ok := program.program_operand(storage.compiled, update.operands_start); update_name, text_ok := program.operand_text(storage.compiled, op); if !op_ok || !text_ok || update_name != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						op, op_ok := program.program_operand(storage.compiled, update.operands_start); update_name, text_ok := program.operand_text(storage.compiled, op); if !op_ok || !text_ok || update_name != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 						_ = value.destroy_value(&seed); seed = value.take_value(&item)
 					} else if update.opcode == .Add {
 						li, lok := child_instruction(storage, update, 0); ri, rok := child_instruction(storage, update, 1); left, lv := program.program_instruction(storage.compiled, li); right, rv := program.program_instruction(storage.compiled, ri); rop, r_ok := program.program_operand(storage.compiled, right.operands_start); rname, rt_ok := program.operand_text(storage.compiled, rop)
-						if !lok || !rok || !lv || !rv || left.opcode != .Identity || left.has_literal || right.opcode != .Variable || !r_ok || !rt_ok || rname != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
-						next, add_ok := value.number_add(&seed, &item); _ = value.destroy_value(&item); if !add_ok { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&seed); seed = next
-					} else { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
-					out := value.clone_value(&seed); _, append_error := value.array_append_take(&items, &out); if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory) }
+						if !lok || !rok || !lv || !rv || left.opcode != .Identity || left.has_literal || right.opcode != .Variable || !r_ok || !rt_ok || rname != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						next, add_ok := value.number_add(&seed, &item); _ = value.destroy_value(&item); if !add_ok { _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&seed); seed = next
+					} else { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+					out := value.clone_value(&seed); _, append_error := value.array_append_take(&items, &out); if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory) }
 					}
 					_ = value.destroy_value(&seed)
 				}
+				if has_cartesian do _ = value.destroy_value(&cartesian_values)
 				_ = value.destroy_value(&seeds); _ = value.destroy_value(&frame.input); frame.input = items; frame.iterator_cursor = 0; frame.phase = .Iterator_Active
 			case .Reduce:
 				// Evaluate the reduction seed from its compiled INIT expression.  The
