@@ -181,6 +181,8 @@ eval_frame :: struct {
 	binding_value: value.Value,
 	// Binary operators retain the left result while the right generator runs.
 	binary_left: value.Value,
+	// Tracks whether a defined result was emitted by a defined-or left stream.
+	binary_defined_or_left_seen: bool,
 	if_branch_active: bool,
 	iterator_cursor: int,
 	reduce_accumulator: value.Value,
@@ -2388,7 +2390,7 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		// must start its right-hand generator when the producer exhausts without
 		// yielding. This is observable for `try error(0) // 1`: try suppresses
 		// the error by producing an empty stream, then // evaluates its fallback.
-		if instruction.opcode == .Defined_Or {
+		if instruction.opcode == .Defined_Or && !frame.binary_defined_or_left_seen {
 			child, child_ok := child_instruction(storage, instruction, 1)
 			input_copy := value.clone_value(&frame.input)
 			if !child_ok || value.kind_of(&input_copy) == .Invalid {
@@ -2409,6 +2411,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 			}
 			frame = &storage.frames[parent]
 			frame.phase = .Binary_Right_Active
+		} else if instruction.opcode == .Defined_Or {
+			frame.phase = .Complete
 		} else {
 			frame.phase = .Complete
 		}
@@ -2869,14 +2873,11 @@ propagate_output :: proc(
 				kind := value.kind_of(owned)
 				truthy := kind != .Null
 				if kind == .Boolean { truthy, _ = value.boolean_value_get(owned) }
-				if truthy { return propagate_output(storage, parent, owned) }
-				_ = value.destroy_value(owned)
-				child, ok := child_instruction(storage, instruction, 1)
-				input_copy := value.clone_value(&frame.input)
-				if !ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, parent, &input_copy) {
-					return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true
+				if truthy {
+					frame.binary_defined_or_left_seen = true
+					return propagate_output(storage, parent, owned)
 				}
-				frame.phase = .Binary_Right_Active
+				_ = value.destroy_value(owned)
 				return {}, false
 			}
 			frame.binary_left = value.take_value(owned)
