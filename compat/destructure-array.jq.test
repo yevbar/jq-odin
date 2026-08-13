@@ -2,3 +2,9 @@
 . as [$a, $b] | [$b, $a]
 [1, 2]
 [2, 1]
+
+# Iterator-fed patterns bind once for each produced item.
+.[] as [$a, $b] | [$b, $a]
+[[1], [1, 2, 3]]
+[null, 1]
+[2, 1]

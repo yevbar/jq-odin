@@ -3887,6 +3887,22 @@ pipe_binds_only_the_right_hand_filter :: proc(t: ^testing.T) {
 }
 
 @(test)
+iterator_fed_destructuring_patterns_parse :: proc(t: ^testing.T) {
+	cases := [?]string{
+		`.[] as [$a, $b] | [$a, $b]`,
+		`.[] as {a:$a} | $a`,
+	}
+	for source_text in cases {
+		parser: Parser
+		source := diagnostic.borrow_source("<iterator-destructure>", source_text)
+		testing.expect(t, init_parser(&parser, source, context.allocator))
+		outcome := parse_filter(&parser)
+		testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
 try_catch_stops_before_surrounding_binary :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<try-precedence>", `1 + try 2 catch 3 + 4`)

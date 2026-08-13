@@ -1875,11 +1875,15 @@ parse_pipe :: proc(
 			// A bounded, literal array destructuring form is lowered into
 			// ordinary lexical bindings over static indexes.  This keeps the
 			// existing Binding/Variable evaluator contract intact while covering
-			// the common `. as [$a, $b] | ...` jq idiom.  General patterns and
-			// object destructuring remain outside this narrow contract.
+			// the common `. as [$a, $b] | ...` jq idiom. General patterns and
+			// nested destructuring remain outside this narrow contract.
 			if token_is(parser, .Open_Bracket) {
-				if pipe_root != invalid_id || parser.nodes.storage[int(left)].kind != .Identity ||
-				   parser.nodes.storage[int(left)].has_child {
+				// The producer may itself be a generator (`.[] as [$a, $b]`).
+				// Keep the bounded pattern lowering restricted to a single left
+				// expression, but do not require that producer to be literal `.`.
+				// The generated index filters then run once for each producer item,
+				// matching jq's destructuring binding semantics.
+				if pipe_root != invalid_id {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
@@ -1913,39 +1917,42 @@ parse_pipe :: proc(
 				body, body_ok := parse_pipe(parser, closing, stop_at_comma)
 				if !body_ok do return {}, false
 				nested := body
-				for index := 1; index >= 0; index -= 1 {
-					variable := parser.nodes.storage[int(variables[index])]
-					indexed, indexed_ok := append_node(parser, Node{
-						kind = .Index,
-						span = variable.span,
-						number_text = "1" if index == 1 else "0",
-						has_number_text = true,
-						child = left,
-						has_child = true,
-					})
-					if !indexed_ok do return {}, false
-					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(indexed)].span, parser.nodes.storage[int(nested)].span)
-					assert(bound_span_ok)
-					bound, bound_ok := append_node(parser, Node{
-						kind = .Binding,
-						span = bound_span,
-						left = indexed,
-						right = nested,
-						name_span = variable.name_span,
-						has_name_span = true,
-					})
-					if !bound_ok do return {}, false
-					nested = bound
-				}
-				return nested, true
+				// Bind the produced item once, then project both slots from that
+				// lexical value. Reusing `left` for each slot would restart a
+				// generator and duplicate its outputs (`.[] as [...]`). The
+				// temporary item binding deliberately reuses the first user name;
+				// the innermost slot binding shadows it with the first element.
+				first := parser.nodes.storage[int(variables[0])]
+				second := parser.nodes.storage[int(variables[1])]
+				first_ref, first_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+				if !first_ref_ok do return {}, false
+				first_index, first_index_ok := append_node(parser, Node{kind=.Index, span=first.span, number_text="0", has_number_text=true, child=first_ref, has_child=true})
+				if !first_index_ok do return {}, false
+				bound_span, span_ok := spanning(parser, parser.nodes.storage[int(first_index)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
+				bound, bound_ok := append_node(parser, Node{kind=.Binding, span=bound_span, left=first_index, right=nested, name_span=first.name_span, has_name_span=true})
+				if !bound_ok do return {}, false
+				nested = bound
+				first_ref, first_ref_ok = append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+				if !first_ref_ok do return {}, false
+				second_index, second_index_ok := append_node(parser, Node{kind=.Index, span=second.span, number_text="1", has_number_text=true, child=first_ref, has_child=true})
+				if !second_index_ok do return {}, false
+				bound_span, span_ok = spanning(parser, parser.nodes.storage[int(second_index)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
+				bound, bound_ok = append_node(parser, Node{kind=.Binding, span=bound_span, left=second_index, right=nested, name_span=second.name_span, has_name_span=true})
+				if !bound_ok do return {}, false
+				nested = bound
+				bound_span, span_ok = spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
+				bound, bound_ok = append_node(parser, Node{kind=.Binding, span=bound_span, left=left, right=nested, name_span=first.name_span, has_name_span=true})
+				if !bound_ok do return {}, false
+				return bound, true
 			}
 			// A bounded object pattern reuses the normal Field and Binding
-			// instructions: each named entry extracts a field from the direct
-			// identity producer, then binds that result to its `$name`.  Restrict
+			// instructions: each named entry extracts a field from the producer,
+			// then binds that result to its `$name`. Restrict
 			// this slice to one or two simple `name:$var` entries.
 			if token_is(parser, .Open_Brace) {
-				if pipe_root != invalid_id || parser.nodes.storage[int(left)].kind != .Identity ||
-				   parser.nodes.storage[int(left)].has_child {
+				// As with array patterns, permit a generator producer such as
+				// `.[] as {a:$a}` while retaining a narrow direct-field pattern.
+				if pipe_root != invalid_id {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
@@ -1992,32 +1999,23 @@ parse_pipe :: proc(
 				body, body_ok := parse_pipe(parser, closing, stop_at_comma)
 				if !body_ok do return {}, false
 				nested := body
-				for index := count-1; index >= 0; index -= 1 {
+				first := parser.nodes.storage[int(variables[0])]
+				first_ref, first_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+				if !first_ref_ok do return {}, false
+				for index := 0; index < count; index += 1 {
 					key := parser.nodes.storage[int(keys[index])]
 					variable := parser.nodes.storage[int(variables[index])]
-					field, field_ok := append_node(parser, Node{
-						kind = .Field,
-						span = key.span,
-						child = left,
-						has_child = true,
-						name_span = key.name_span,
-						has_name_span = true,
-					})
+					field, field_ok := append_node(parser, Node{kind=.Field, span=key.span, child=first_ref, has_child=true, name_span=key.name_span, has_name_span=true})
 					if !field_ok do return {}, false
-					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(field)].span, parser.nodes.storage[int(nested)].span)
-					assert(bound_span_ok)
-					bound, bound_ok := append_node(parser, Node{
-						kind = .Binding,
-						span = bound_span,
-						left = field,
-						right = nested,
-						name_span = variable.name_span,
-						has_name_span = true,
-					})
+					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(field)].span, parser.nodes.storage[int(nested)].span); assert(bound_span_ok)
+					bound, bound_ok := append_node(parser, Node{kind=.Binding, span=bound_span, left=field, right=nested, name_span=variable.name_span, has_name_span=true})
 					if !bound_ok do return {}, false
 					nested = bound
 				}
-				return nested, true
+				bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(nested)].span); assert(bound_span_ok)
+				bound, bound_ok := append_node(parser, Node{kind=.Binding, span=bound_span, left=left, right=nested, name_span=first.name_span, has_name_span=true})
+				if !bound_ok do return {}, false
+				return bound, true
 			}
 			if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {
 				fail_from_lookahead(parser, .Expression)

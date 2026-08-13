@@ -11,3 +11,10 @@
 . as {a:$x,b:$y} | [$x,$y]
 {}
 [null,null]
+
+# Iterator-fed object patterns preserve missing-field nulls per item.
+.[] as {a:$x} | $x
+[{"a":1},{"b":2},{"a":3,"b":4}]
+1
+null
+3
