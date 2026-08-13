@@ -7354,7 +7354,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				needle: value.Value
 				needle_error: value.Error
 				needle_cleanup: runtime.Allocator_Error
-				if needle_instruction.opcode == .Object {
+				if needle_instruction.opcode == .Variable {
+					needle, needle_ok = variable_result(storage, index, needle_instruction)
+					if !needle_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					needle_error = .None
+					needle_cleanup = nil
+				} else if needle_instruction.opcode == .Object {
 					needle, needle_error, needle_cleanup = literal_object_value(storage, needle_instruction)
 				} else if needle_instruction.opcode == .Array {
 					needle, needle_error, needle_cleanup = literal_array_value(storage, needle_instruction)
