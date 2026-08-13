@@ -26,6 +26,17 @@ Run_Error_Kind :: enum u8 {
 	Misuse,
 }
 
+// jq's identity-key extrema are exactly the ordinary extrema.  This narrow
+// whole-filter bridge keeps the existing operand-free Min/Max ABI and covers
+// the canonical empty-input constructor without introducing a key stream.
+rewrite_identity_minmax_constructor :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	if t != "[min,max,min_by(.),max_by(.)]" && t != "[min,max, min_by(.), max_by(.)]" do return nil, false, nil
+	memory, err := strings.clone("[min,max,min,max]", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 Output_Mode :: enum u8 {
 	Pretty,
 	Compact,
@@ -682,6 +693,9 @@ run_with_options :: proc(
 		sort_rewrite, sort_rewritten, sort_error := rewrite_sort_by_field(filter, allocator)
 		if sort_error != nil do return allocation_error(result, sort_error)
 		if sort_rewritten { filter_memory = sort_rewrite; filter_source = transmute(string)filter_memory }
+		identity_minmax_rewrite, identity_minmax_rewritten, identity_minmax_error := rewrite_identity_minmax_constructor(filter, allocator)
+		if identity_minmax_error != nil do return allocation_error(result, identity_minmax_error)
+		if identity_minmax_rewritten { filter_memory = identity_minmax_rewrite; filter_source = transmute(string)filter_memory }
 		mm_rewrite, mm_rewritten, mm_error := rewrite_minmax_by_index(filter, allocator)
 		if mm_error != nil do return allocation_error(result, mm_error)
 		if mm_rewritten { filter_memory = mm_rewrite; filter_source = transmute(string)filter_memory }

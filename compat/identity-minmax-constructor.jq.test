@@ -1,0 +1,4 @@
+# Identity-key min_by/max_by are ordinary min/max.
+[min,max,min_by(.),max_by(.)]
+[]
+[null,null,null,null]
