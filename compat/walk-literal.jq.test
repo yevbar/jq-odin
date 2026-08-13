@@ -1,0 +1,10 @@
+# Bounded literal walk forms (identity/scalar replacement).
+walk(.)
+{"x":0}
+{"x":0}
+walk(1)
+{"x":0}
+1
+[walk(.,1)]
+{"x":0}
+[{"x":0},1]

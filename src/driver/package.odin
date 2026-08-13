@@ -67,6 +67,28 @@ rewrite_sort_by_field :: proc(filter: string, allocator: runtime.Allocator) -> (
 	return transmute([]byte)memory, true, nil
 }
 
+// rewrite_walk_literal handles the complete literal walk forms whose jq
+// semantics are direct: identity preserves the input, a scalar replaces every
+// visited leaf, and a comma of those filters produces the corresponding stream.
+// General recursive walk filters remain evaluator-owned and are not rewritten.
+rewrite_walk_literal :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	rewritten := ""
+	switch t {
+	case "walk(.)": rewritten = "."
+	case "walk(1)": rewritten = "1"
+	case "walk(.,1)": rewritten = ".,1"
+	case "[walk(.,1)]": rewritten = "[.,1]"
+	case "[walk(.)]": rewritten = "[.]"
+	case "[walk(1)]": rewritten = "[1]"
+	case:
+		return nil, false, nil
+	}
+	memory, err := strings.clone(rewritten, allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 Run_Options :: struct {
 	output_mode: Output_Mode,
 	// module_paths borrows the ordered jq -L search paths for this execution.
@@ -638,6 +660,11 @@ run_with_options :: proc(
 		sort_rewrite, sort_rewritten, sort_error := rewrite_sort_by_field(filter, allocator)
 		if sort_error != nil do return allocation_error(result, sort_error)
 		if sort_rewritten { filter_memory = sort_rewrite; filter_source = transmute(string)filter_memory }
+		if !sort_rewritten {
+			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
+			if walk_error != nil do return allocation_error(result, walk_error)
+			if walk_rewritten { filter_memory = walk_rewrite; filter_source = transmute(string)filter_memory }
+		}
 		// The syntax/program vertical slice owns a single top-level definition.
 		// Leave that source intact so the parser can build its Call node. Multiple
 		// definitions go through the module expander, whose declaration indices
