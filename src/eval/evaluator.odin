@@ -6514,7 +6514,23 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if ready do return result
 					continue
 				}
-				output, runtime_kind, resource_error := strftime_array_result(&frame.input, format, storage.allocator)
+				// jq accepts either a parsed datetime array (the result of
+				// `gmtime`) or a numeric Unix timestamp for strftime.  Normalize
+				// numeric inputs through gmtime before formatting; passing them
+				// directly to the array formatter incorrectly raises a type error.
+				parsed_input: value.Value
+				output: value.Value
+				runtime_kind: Runtime_Error_Kind
+				resource_error: runtime.Allocator_Error
+				if value.kind_of(&frame.input) == .Number && !instruction.format_local {
+					parsed_input, runtime_kind, resource_error = gmtime_result(&frame.input, storage.allocator)
+				} else {
+					parsed_input = value.clone_value(&frame.input)
+				}
+				if resource_error == nil && runtime_kind == .None {
+					output, runtime_kind, resource_error = strftime_array_result(&parsed_input, format, storage.allocator)
+				}
+				_ = value.destroy_value(&parsed_input)
 				_ = value.destroy_value(&format_value)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
