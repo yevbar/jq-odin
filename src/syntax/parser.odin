@@ -195,6 +195,8 @@ Node_Kind :: enum {
 	Acosh,
 	// Asinh is appended to preserve existing AST discriminants.
 	Asinh,
+	// Atanh is appended to preserve existing AST discriminants.
+	Atanh,
 	// Error is appended to preserve existing AST discriminants.
 	Error,
 	// Try is appended to preserve existing AST discriminants.
@@ -1179,6 +1181,8 @@ parse_pipe :: proc(
 					kind = .Acosh
 				} else if spelling == "asinh" {
 					kind = .Asinh
+				} else if spelling == "atanh" {
+					kind = .Atanh
 				} else if spelling == "recurse" {
 					// jq's zero-argument recurse builtin is the same
 					// preorder traversal as the standalone `..` spelling.

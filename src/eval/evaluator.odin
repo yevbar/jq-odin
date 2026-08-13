@@ -4745,6 +4745,17 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if !ok do return {}, .Cannot_Number, nil
 		return value.number_value(math.ln(n + math.sqrt(n*n + 1))), .None, nil
 	}
+	if opcode == .Atanh {
+		if kind != .Number do return {}, .Cannot_Number, nil
+		n, ok := value.number_value_get(input)
+		if !ok do return {}, .Cannot_Number, nil
+		if n < -1 || n > 1 do return value.null_value(), .None, nil
+		if n == -1 do return value.number_value(-1.7976931348623157e+308), .None, nil
+		if n == 1 do return value.number_value(1.7976931348623157e+308), .None, nil
+		result := math.atanh(n)
+		if math.is_inf(result) do result = 1.7976931348623157e+308 if n > 0 else -1.7976931348623157e+308
+		return value.number_value(result), .None, nil
+	}
 	if opcode == .Implode {
 		if kind != .Array do return {}, .Cannot_Iterate, nil
 		length, length_ok := value.array_length(input)
@@ -6581,7 +6592,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				if instruction.opcode == .Add_Builtin && instruction.operands_count == 1 {
 					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 					child, child_ok := child_instruction(storage, instruction, 0)
