@@ -734,7 +734,7 @@ parse_if_chain :: proc(parser: ^Parser, if_token: Token) -> (Node_Id, bool) {
 	advance(parser)
 
 	then_branch, then_ok := parse_pipe(parser, .Else, false)
-	if !then_ok || (!token_is(parser, .Else) && !token_is(parser, .Else_If)) {
+	if !then_ok || (!token_is(parser, .Else) && !token_is(parser, .Else_If) && !token_is(parser, .End)) {
 		fail_from_lookahead(parser, .Expression)
 		return {}, false
 	}

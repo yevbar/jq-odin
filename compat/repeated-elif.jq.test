@@ -1,0 +1,12 @@
+# Omitted else defaults to identity, including repeated elif chains.
+if true then 3 end
+null
+3
+
+if false then 3 elif false then 4 end
+null
+null
+
+if false then 1 elif false then 2 elif true then 3 else 4 end
+null
+3
