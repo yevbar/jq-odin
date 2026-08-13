@@ -1,0 +1,12 @@
+# Dynamic path generator: an empty postfix iterator enumerates child paths.
+path(.foo[])
+{"foo":[10,20]}
+[["foo",0],["foo",1]]
+
+path(.foo[])
+{"foo":{"a":1,"b":2}}
+[["foo","a"],["foo","b"]]
+
+path(.foo[])?
+{"foo":[10,20]}
+[["foo",0],["foo",1]]

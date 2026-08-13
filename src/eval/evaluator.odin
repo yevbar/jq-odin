@@ -145,6 +145,7 @@ frame_phase :: enum u8 {
 	If_Else_Active,
 	Recurse_Children,
 	Paths_Active,
+	Path_Active,
 	Complete,
 }
 
@@ -1596,6 +1597,104 @@ static_filter_path :: proc(storage: ^evaluator_storage, index: program.Instructi
 	_ = value.destroy_value(&result); return {}, false
 }
 
+// dynamic_path_prefix recognizes the one generator-shaped path currently
+// supported by the path() contract: a static path followed by an empty field
+// postfix (`.foo[]`).  The parser preserves [] as a Field whose name is empty,
+// so this remains an explicit AST contract rather than accepting arbitrary
+// dynamic filters and guessing their paths.
+dynamic_path_prefix :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (value.Value, bool, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok do return {}, false, false
+	if instruction.opcode == .Parenthesized {
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return {}, false, false
+		return dynamic_path_prefix(storage, child)
+	}
+	result, result_ok := path_array(storage.allocator)
+	if !result_ok do return {}, false, false
+	if instruction.opcode == .Identity && !instruction.has_literal && instruction.operands_count == 0 {
+		return result, false, true
+	}
+	if instruction.opcode == .Field {
+		name, name_ok := field_text(storage, instruction)
+		if !name_ok { _ = value.destroy_value(&result); return {}, false, false }
+		if name == "" {
+			if instruction.operands_count != 2 {
+				_ = value.destroy_value(&result)
+				return {}, false, false
+			}
+			child, child_ok := child_instruction(storage, instruction, 0)
+			if !child_ok { _ = value.destroy_value(&result); return {}, false, false }
+			prefix, _, prefix_ok := dynamic_path_prefix(storage, child)
+			if !prefix_ok { _ = value.destroy_value(&result); return {}, false, false }
+			_ = value.destroy_value(&result)
+			return prefix, true, true
+		}
+		if instruction.operands_count == 2 {
+			child, child_ok := child_instruction(storage, instruction, 0)
+			if !child_ok { _ = value.destroy_value(&result); return {}, false, false }
+			prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, child)
+			if !prefix_ok || wildcard { _ = value.destroy_value(&prefix); _ = value.destroy_value(&result); return {}, false, false }
+			_ = value.destroy_value(&result)
+			result = prefix
+		}
+		component, err := value.string_value(name, storage.allocator)
+		if value.constructor_error_kind(&err) != .None { _ = value.destroy_constructor_error(&err); _ = value.destroy_value(&result); return {}, false, false }
+		if !path_append_take(&result, &component) { _ = value.destroy_value(&result); return {}, false, false }
+		return result, false, true
+	}
+	if instruction.opcode == .Index && instruction.operands_count == 2 {
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok { _ = value.destroy_value(&result); return {}, false, false }
+		prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, child)
+		if !prefix_ok || wildcard { _ = value.destroy_value(&prefix); _ = value.destroy_value(&result); return {}, false, false }
+		_ = value.destroy_value(&result)
+		result = prefix
+		operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+		text, text_ok := program.operand_text(storage.compiled, operand)
+		if !operand_ok || !text_ok || operand.kind != .Text { _ = value.destroy_value(&result); return {}, false, false }
+		component, err := value.literal_number_value(text, storage.allocator)
+		if value.constructor_error_kind(&err) != .None { _ = value.destroy_constructor_error(&err); _ = value.destroy_value(&result); return {}, false, false }
+		if !path_append_take(&result, &component) { _ = value.destroy_value(&result); return {}, false, false }
+		return result, false, true
+	}
+	_ = value.destroy_value(&result)
+	return {}, false, false
+}
+
+dynamic_path_results :: proc(input, prefix: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, bool) {
+	container, runtime_kind, lookup_ok := lookup_path(input, prefix)
+	if !lookup_ok { return {}, runtime_kind, false }
+	output, output_ok := path_array(allocator)
+	if !output_ok { _ = value.destroy_value(&container); return {}, .None, false }
+	kind := value.kind_of(&container)
+	length: int
+	length_ok := false
+	if kind == .Array { length, length_ok = value.array_length(&container) } else if kind == .Object { length, length_ok = value.object_length(&container) }
+	if kind != .Array && kind != .Object {
+		_ = value.destroy_value(&container); _ = value.destroy_value(&output)
+		return {}, .Cannot_Iterate, true
+	}
+	if !length_ok { _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false }
+	for offset in 0..<length {
+		path := value.clone_value(prefix)
+		if value.kind_of(&path) == .Invalid { _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false }
+		component: value.Value
+		if kind == .Array {
+			component = value.number_value(f64(offset))
+		} else {
+			key, _, entry_ok := value.object_entry_copy(&container, offset)
+			if !entry_ok { _ = value.destroy_value(&path); _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false }
+			component = key
+		}
+		if !path_append_take(&path, &component) || !path_append_take(&output, &path) {
+			_ = value.destroy_value(&path); _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false
+		}
+	}
+	_ = value.destroy_value(&container)
+	return output, .None, true
+}
+
 @(private)
 literal_path_value :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (value.Value, bool) {
 	instruction, ok := program.program_instruction(storage.compiled, index); if !ok do return {}, false
@@ -2050,7 +2149,7 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .Recurse_Children:
 		// A completed child returns control to the parent's next sibling. The
 		// parent remains active until every container member has been visited.
-	case .Paths_Active:
+	case .Paths_Active, .Path_Active:
 		frame.phase = .Complete
 	case .Binding_Left_Active:
 		frame.phase = .Complete
@@ -5655,7 +5754,32 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if instruction.operands_count != 1 do return begin_terminal_misuse(storage, .Malformed_Program)
 				child, child_ok := child_instruction(storage, instruction, 0); if !child_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 				output: value.Value; valid := false; runtime_kind := Runtime_Error_Kind.None
-				if instruction.opcode == .Path { output, valid = static_filter_path(storage, child) } else { path, path_ok := bound_literal_path_value(storage, child, index); if path_ok { output, runtime_kind, valid = lookup_path(&frame.input, &path); _ = value.destroy_value(&path) } }
+				if instruction.opcode == .Path {
+					prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, child)
+					if prefix_ok && wildcard {
+						results, dynamic_kind, results_ok := dynamic_path_results(&frame.input, &prefix, storage.allocator)
+						_ = value.destroy_value(&prefix)
+						if results_ok {
+							frame.paths_results = value.take_value(&results)
+							frame.paths_cursor = 0
+							frame.phase = .Path_Active
+							if dynamic_kind != .None {
+								_ = value.destroy_value(&frame.paths_results)
+								result, ready := raise_runtime(storage, index, Runtime_Error{kind=dynamic_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+								if ready do return result
+								continue
+							}
+							continue
+						}
+						valid = false
+					} else {
+						_ = value.destroy_value(&prefix)
+						output, valid = static_filter_path(storage, child)
+					}
+				} else {
+					path, path_ok := bound_literal_path_value(storage, child, index)
+					if path_ok { output, runtime_kind, valid = lookup_path(&frame.input, &path); _ = value.destroy_value(&path) }
+				}
 				if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
 				if runtime_kind != .None { result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}); if ready do return result; continue }
 				frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result; continue
@@ -7455,7 +7579,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			result, ready := propagate_output(storage, index, &output)
 			if ready do return result
 
-		case .Paths_Active:
+		case .Paths_Active, .Path_Active:
 			length, length_ok := value.array_length(&frame.paths_results)
 			if !length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 			if frame.paths_cursor >= length { frame.phase = .Complete; continue }
