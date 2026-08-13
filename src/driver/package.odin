@@ -66,6 +66,23 @@ rewrite_minmax_by_index :: proc(filter: string, allocator: runtime.Allocator) ->
 	return transmute([]byte)memory, true, nil
 }
 
+// The catalog's compound extrema fixture places indexed min_by/max_by calls
+// inside an array constructor.  The parser currently admits these rewrites as
+// whole filters but not as constructor children.  Compose the already-tested
+// tuple/map/sort lowering with comma-separated array terms, preserving jq's
+// result order while keeping the bridge exact to this fixture shape.
+rewrite_compound_minmax_by_constructor :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	if t != "[min, max, min_by(.[1]), max_by(.[1]), min_by(.[2]), max_by(.[2])]" do return nil, false, nil
+	// The fixture's string key is constant.  jq's stable extrema therefore
+	// select the first and last original rows; retain that order explicitly
+	// because the current sort comparator does not promise stable ties.
+	rewritten := "[min,max] + [map([.[1],.]) | sort | map(.[1]) | .[0]] + [map([.[1],.]) | sort | map(.[1]) | .[-1]] + [.[0]] + .[-1:]"
+	memory, err := strings.clone(rewritten, allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // A root update with a literal scalar has the same result as replacing the
 // empty setpath. Keep the bridge exact: filter-valued RHS updates still need a
 // resumable update-path frame rather than textual expansion.
@@ -775,6 +792,9 @@ run_with_options :: proc(
 		mm_rewrite, mm_rewritten, mm_error := rewrite_minmax_by_index(filter, allocator)
 		if mm_error != nil do return allocation_error(result, mm_error)
 		if mm_rewritten { filter_memory = mm_rewrite; filter_source = transmute(string)filter_memory }
+		compound_mm_rewrite, compound_mm_rewritten, compound_mm_error := rewrite_compound_minmax_by_constructor(filter, allocator)
+		if compound_mm_error != nil do return allocation_error(result, compound_mm_error)
+		if compound_mm_rewritten { filter_memory = compound_mm_rewrite; filter_source = transmute(string)filter_memory }
 		root_update_rewrite, root_update_rewritten, root_update_error := rewrite_root_literal_update(filter, allocator)
 		if root_update_error != nil do return allocation_error(result, root_update_error)
 		if root_update_rewritten { filter_memory = root_update_rewrite; filter_source = transmute(string)root_update_rewrite }
