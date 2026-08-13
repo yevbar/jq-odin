@@ -248,6 +248,10 @@ Node_Kind :: enum {
 	Static_Field_Set_Number,
 	// Static_Index_Set_Number is appended to preserve existing AST discriminants.
 	Static_Index_Set_Number,
+	// Path, Paths, and Getpath are explicit path-expression nodes.
+	Path,
+	Paths,
+	Getpath,
 }
 
 Node_Id :: distinct int
@@ -1209,6 +1213,12 @@ parse_pipe :: proc(
 					kind = .Map
 				} else if spelling == "map_values" {
 					kind = .Map_Values
+				} else if spelling == "path" {
+					kind = .Path
+				} else if spelling == "getpath" {
+					kind = .Getpath
+				} else if spelling == "paths" {
+					kind = .Paths
 				} else if spelling == "strftime" || spelling == "strflocaltime" {
 					kind = .Strftime
 				} else if spelling == "strptime" {
@@ -1232,6 +1242,25 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				advance(parser)
+				if (spelling == "path" || spelling == "getpath") && token_is(parser, .Open_Paren) {
+					advance(parser)
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
+					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token; advance(parser)
+					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+					term_ok: bool
+					term, term_ok = append_node(parser, Node{kind=kind, span=span, child=argument, has_child=true})
+					if !term_ok { return {}, false }
+					term_ready = true
+					continue
+				}
+				if spelling == "paths" && !token_is(parser, .Open_Paren) {
+					term_ok: bool
+					term, term_ok = append_node(parser, Node{kind=.Paths, span=token.span})
+					if !term_ok { return {}, false }
+					term_ready = true
+					continue
+				}
 				if spelling == "error" && !token_is(parser, .Open_Paren) {
 					identity, identity_ok := append_node(parser, Node{kind=.Identity, span=token.span})
 					if !identity_ok { return {}, false }

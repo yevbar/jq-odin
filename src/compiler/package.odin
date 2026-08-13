@@ -160,6 +160,10 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       node.has_name_span && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
+	case .Path, .Getpath:
+		return node.container_kind == .None && node.has_child && node.child >= 0 && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Paths:
+		return no_child && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Static_Index_Set_Number:
 		return node.container_kind == .None && node.has_child && node.child >= 0 && node.right >= 0 &&
 		       node.has_number_text && len(node.number_text) > 0 && node.has_name_span == false && !node.has_value &&
@@ -332,6 +336,10 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Static_Field_Add_Number, .Static_Field_Set_Number:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Path, .Getpath:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Paths:
+		return true
 	case .Static_Index_Set_Number:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .If:
@@ -540,6 +548,9 @@ lower_filter :: proc(
 			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(rhs_len)) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
+		case .Path, .Getpath:
+			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
+		case .Paths:
 		case .Static_Index_Set_Number:
 			rhs_text := nodes[int(node.right)].number_text
 			if nodes[int(node.right)].kind == .Null do rhs_text = "null"
@@ -1128,7 +1139,7 @@ lower_filter :: proc(
 			instruction.opcode = .Atanh
 		case .Isinfinite:
 			instruction.opcode = .Isinfinite
-	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Sin, .Tan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Recurse:
+	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Sin, .Tan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Recurse, .Paths:
 			#partial switch node.kind {
 			case .Length: instruction.opcode = .Length
 			case .Keys: instruction.opcode = .Keys
@@ -1204,6 +1215,7 @@ lower_filter :: proc(
 			case .Implode: instruction.opcode = .Implode
 			case .Explode: instruction.opcode = .Explode
 			case .Recurse: instruction.opcode = .Recurse
+			case .Paths: instruction.opcode = .Paths
 			}
 			if node.kind == .Add_Builtin && node.has_child {
 				instruction.operands_count = 1
@@ -1212,6 +1224,11 @@ lower_filter :: proc(
 			} else {
 				instruction.operands_count = 0
 			}
+		case .Path, .Getpath:
+			instruction.opcode = .Path if node.kind == .Path else .Getpath
+			instruction.operands_count = 1
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
+			operand_at += 1
 		case .Parenthesized, .Optional:
 			instruction.opcode = .Parenthesized if node.kind == .Parenthesized else .Optional if node.kind == .Optional else .Negate
 			instruction.operands_count = 1

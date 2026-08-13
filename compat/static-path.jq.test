@@ -1,0 +1,17 @@
+# Static path extraction from a single object field.
+path(.foo)
+{"foo":1}
+["foo"]
+
+# paths emits every non-root path depth-first.
+paths
+{"a":[1,{"b":2}]}
+["a"]
+["a",0]
+["a",1]
+["a",1,"b"]
+
+# A literal multi-component path can be read without assignment semantics.
+getpath(["foo",1])
+{"foo":["a","b"]}
+"b"
