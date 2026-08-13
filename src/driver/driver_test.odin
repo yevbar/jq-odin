@@ -400,6 +400,19 @@ zero_one_and_many_outputs_are_lf_delimited :: proc(t: ^testing.T) {
 }
 
 @(test)
+recursive_zero_argument_calls_are_bounded_and_catchable :: proc(t: ^testing.T) {
+	// Recursive zero-argument calls use evaluator-owned frames.  The depth
+	// guard is a jq-style user error, so `try` can recover it as ordinary data
+	// instead of terminating the process or reporting internal misuse.
+	expect_run(
+		t,
+		"def f: try f catch .; f",
+		"1",
+		"\"recursion depth exceeded\"\n",
+	)
+}
+
+@(test)
 ordinary_string_interpolation_evaluates_and_stringifies_each_result :: proc(t: ^testing.T) {
 	expect_run(t, `"inter\("pol" + "ation")"`, "null", `"interpolation"
 `)

@@ -547,11 +547,25 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 		advance(parser)
 		if !token_is(parser, .Colon) { fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure }
 		advance(parser)
+		// Make the definition name visible while parsing its body.  A recursive
+		// reference is represented by a Call node with a temporary child; once
+		// the body root exists, parse_filter patches those placeholders to the
+		// immutable body graph.  This keeps recursion in the syntax/program
+		// contract instead of expanding the body textually.
+		parser.definition_name = name.span
+		parser.has_definition = true
+		parser.definition_body = Node_Id(-1)
 		body, body_ok := parse_pipe(parser, .Semicolon, false)
 		if !body_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure }
 		parser.definition_name = name.span
 		parser.has_definition = true
 		parser.definition_body = body
+		for i in 0..<parser.nodes.count {
+			if parser.nodes.storage[i].kind == .Call && parser.nodes.storage[i].child < 0 {
+				parser.nodes.storage[i].child = body
+				parser.nodes.storage[i].has_child = true
+			}
+		}
 		advance(parser)
 	}
 	root, ok := parse_pipe(parser)

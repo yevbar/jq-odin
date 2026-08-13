@@ -1293,7 +1293,7 @@ capture_composite_instruction :: proc(
 ) -> bool {
 	if frame.mode != .Normal && frame.mode != .Field_Only && frame.mode != .Index_Only && frame.mode != .Slice_Only do return false
 	#partial switch instruction.opcode {
-	case .Parenthesized, .Optional, .Negate:
+	case .Parenthesized, .Optional, .Negate, .Call:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
@@ -3004,6 +3004,10 @@ propagate_output :: proc(
 			frame.phase = .If_Then_Active if truthy else .If_Else_Active
 			return {}, false
 		case .If_Then_Active, .If_Else_Active:
+			current = parent
+		case .Call_Active:
+			// A call forwards each value from its definition body to the caller;
+			// notify_exhausted completes this frame after the body stream ends.
 			current = parent
 		case .Recurse_Children:
 			current = parent
@@ -8099,15 +8103,31 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 			case .Call:
-				if instruction.operands_count != 1 || storage.frame_count > 64 { return begin_terminal_misuse(storage, .Malformed_Program) }
+				if instruction.operands_count != 1 { return begin_terminal_misuse(storage, .Malformed_Program) }
 				child, child_ok := child_instruction(storage, instruction, 0)
 				if !child_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
-				// A zero-argument call has no environment to bind. Re-enter the
-				// captured body in this frame; recursion is bounded by the frame-count
-				// guard above and the body graph remains immutable.
-				frame.instruction = child
-				frame.phase = .Enter
-				continue
+				// Calls use a real child frame so recursive definitions preserve the
+				// caller continuation.  Keep the depth bounded and surface overflow
+				// as a catchable jq runtime error rather than an evaluator misuse.
+				if storage.frame_count >= 64 {
+					err := Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key="recursion depth exceeded"}
+					result, ready := raise_runtime(storage, index, err)
+					if ready do return result
+					continue
+				}
+				if !capture_composite_instruction(storage, frame, instruction) {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				if storage.frame_count == len(storage.frames) {
+					capacity_error := grow_frames(storage)
+					if capacity_error != nil do return resource_step(capacity_error)
+					frame = &storage.frames[index]
+				}
+				input_copy := value.clone_value(&frame.input)
+				if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, index, &input_copy) {
+					return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+				}
+				frame.phase = .Call_Active
 			case:
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}

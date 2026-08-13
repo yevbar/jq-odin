@@ -845,7 +845,14 @@ validate_instruction_graph :: proc(program: ^Program) -> bool {
 		for {
 			record := &records[int(current)]
 			instruction := program.instructions[int(current)]
+			// A Call operand names the callee body and may intentionally point
+			// back into the active call graph.  Calls are runtime activation edges,
+			// not structural ownership edges, so they must not make Program's
+			// immutable filter graph fail its acyclicity check.
 			child_count := instruction_child_count(program, instruction)
+			if instruction.opcode == .Call {
+				child_count = 0
+			}
 			if record.next_child < child_count {
 				child := instruction_child_at(program, instruction, record.next_child)
 				record.next_child += 1

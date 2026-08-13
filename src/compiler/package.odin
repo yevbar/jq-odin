@@ -347,7 +347,11 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Dynamic_Field_Set:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Call:
-		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+		// Zero-argument definition calls capture no lexical bindings.  Do not
+		// recurse through the body edge here: recursive definitions intentionally
+		// form a cycle in the syntax graph, and their body is validated from the
+		// definition's call site independently of this scope walk.
+		return true
 	case .Path, .Getpath, .Delpaths:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Setpath:
