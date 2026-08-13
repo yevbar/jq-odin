@@ -1,0 +1,11 @@
+# A filter-valued parameter receives the complete output stream of its caller
+# expression; commas are not argument separators in jq filter calls.
+def id(x): x; id(1, 2)
+null
+1
+2
+
+def wrap(x): [x]; wrap(1, 2)
+null
+[1]
+[2]
