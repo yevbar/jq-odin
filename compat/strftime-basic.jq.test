@@ -9,3 +9,7 @@ strftime("%m")
 strftime("%d")
 0
 "01"
+
+strftime("%A, %B %d, %Y")
+1435677542.822351
+"Tuesday, June 30, 2015"

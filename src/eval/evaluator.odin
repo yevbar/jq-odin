@@ -4368,11 +4368,31 @@ strftime_array_result :: proc(input: ^value.Value, format: string, allocator: ru
 		return result, .None, nil
 	}
 	if format == "%A, %B %d, %Y" {
-		if value.kind_of(input) != .Number do return {}, .Cannot_Number, nil
-		number, number_ok := value.number_value_get(input)
-		if !number_ok do return {}, .Cannot_Number, nil
-		moment, moment_ok := time.time_to_datetime(time.unix(i64(number), 0))
-		if !moment_ok do return {}, .Cannot_Iterate, nil
+		moment: datetime.DateTime
+			if value.kind_of(input) == .Number {
+			number, number_ok := value.number_value_get(input)
+			if !number_ok do return {}, .Cannot_Number, nil
+			converted, moment_ok := time.time_to_datetime(time.unix(i64(number), 0))
+			if !moment_ok do return {}, .Cannot_Iterate, nil
+			moment = converted
+		} else if value.kind_of(input) == .Array {
+			length, length_ok := value.array_length(input)
+			if !length_ok || length < 3 do return {}, .Cannot_Iterate, nil
+			fields: [3]int
+			for i in 0..<3 {
+				item, item_ok := value.array_element_copy(input, i)
+				if !item_ok do return {}, .Cannot_Iterate, nil
+				number, number_ok := value.number_value_get(&item)
+				_ = value.destroy_value(&item)
+				if !number_ok do return {}, .Cannot_Number, nil
+				fields[i] = int(number)
+			}
+			moment.year = i64(fields[0])
+			moment.month = i8(fields[1] + 1)
+			moment.day = i8(fields[2])
+		} else {
+			return {}, .Cannot_Number, nil
+		}
 		weekday_names := [7]string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
 		month_names := [12]string{"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"}
 		ordinal := datetime.unsafe_date_to_ordinal(moment.date)

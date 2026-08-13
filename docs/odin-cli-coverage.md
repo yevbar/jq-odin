@@ -649,10 +649,10 @@ behavioral oracle.
   bounded literal `delpaths`, bounded dynamic path iteration, and static path
   forks, and whitespace-tolerant literal postfix module parameters, plus numeric `%Y`, `%m`, and `%d` strftime directives.
   A pinned jq 1.8.1 catalog run selects all **522** upstream cases and passes
-  **334**, with **188**
+  **335**, with **187**
   failing and no harness errors. Package tests, `make validate`, and the CLI
   harness (333 subprocess / 43 differential checks) pass.
-- The basic strftime shard passes 3/3. The static path focused shard passes 3/3, the dynamic path shard passes 3/3,
+- The basic strftime shard passes 4/4. The static path focused shard passes 3/3, the dynamic path shard passes 3/3,
   the static path-fork shard passes 2/2. The driver differential harness
   remains green at 333 subprocess and 43 differential checks; the module
   postfix whitespace case is outside the 522-case upstream catalog.
