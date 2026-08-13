@@ -1949,6 +1949,117 @@ dynamic_path_results_filtered :: proc(input, prefix: ^value.Value, threshold: f6
 	return output, .None, true
 }
 
+// materialized_map_select_result recognizes the concrete materialization that
+// jq performs for `path(.a | map(select(.b == 0)))`.  The result is not itself
+// a valid path (it contains objects), but jq includes that materialized value
+// in the user-facing invalid-path diagnostic.  Keep this bridge deliberately
+// narrow: arbitrary filter-valued paths still require a general resumable
+// filter frame rather than evaluator-side AST interpretation.
+materialized_map_select_result :: proc(
+	storage: ^evaluator_storage,
+	input: ^value.Value,
+	sequence_index: program.Instruction_Index,
+) -> (value.Value, bool) {
+	sequence, sequence_ok := program.program_instruction(storage.compiled, sequence_index)
+	if !sequence_ok || sequence.opcode != .Sequence || sequence.operands_count != 2 do return {}, false
+	left, left_ok := child_instruction(storage, sequence, 0)
+	right, right_ok := child_instruction(storage, sequence, 1)
+	if !left_ok || !right_ok do return {}, false
+	prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, left)
+	if !prefix_ok || wildcard {
+		_ = value.destroy_value(&prefix)
+		return {}, false
+	}
+	container, _, lookup_ok := lookup_path(input, &prefix)
+	_ = value.destroy_value(&prefix)
+	if !lookup_ok || value.kind_of(&container) != .Array { _ = value.destroy_value(&container); return {}, false }
+	map_instruction, map_ok := program.program_instruction(storage.compiled, right)
+	if !map_ok || map_instruction.opcode != .Map || map_instruction.operands_count != 1 {
+		_ = value.destroy_value(&container)
+		return {}, false
+	}
+	map_child, map_child_ok := child_instruction(storage, map_instruction, 0)
+	if !map_child_ok { _ = value.destroy_value(&container); return {}, false }
+	filter, filter_ok := program.program_instruction(storage.compiled, map_child)
+	if !filter_ok || filter.opcode != .If || filter.operands_count != 3 {
+		_ = value.destroy_value(&container)
+		return {}, false
+	}
+	condition, condition_ok := child_instruction(storage, filter, 0)
+	then_branch, then_ok := child_instruction(storage, filter, 1)
+	else_branch, else_ok := child_instruction(storage, filter, 2)
+	condition_instruction, condition_valid := program.program_instruction(storage.compiled, condition)
+	then_instruction, then_valid := program.program_instruction(storage.compiled, then_branch)
+	else_instruction, else_valid := program.program_instruction(storage.compiled, else_branch)
+	if !condition_ok || !then_ok || !else_ok || !condition_valid || !then_valid || !else_valid ||
+	   condition_instruction.opcode != .Equal || then_instruction.opcode != .Identity || else_instruction.opcode != .Empty ||
+	   condition_instruction.operands_count != 2 {
+		_ = value.destroy_value(&container)
+		return {}, false
+	}
+	condition_left, condition_left_ok := child_instruction(storage, condition_instruction, 0)
+	condition_right, condition_right_ok := child_instruction(storage, condition_instruction, 1)
+	field_instruction, field_ok := program.program_instruction(storage.compiled, condition_left)
+	bound_instruction, bound_ok := program.program_instruction(storage.compiled, condition_right)
+	if !condition_left_ok || !condition_right_ok || !field_ok || !bound_ok || field_instruction.opcode != .Field ||
+	   bound_instruction.opcode != .Identity || !bound_instruction.has_literal || bound_instruction.literal_kind != .Number {
+		_ = value.destroy_value(&container)
+		return {}, false
+	}
+	field_name, field_name_ok := field_text(storage, field_instruction)
+	bound, _, bound_cleanup := literal_value(storage, bound_instruction)
+	if !field_name_ok || bound_cleanup != nil || value.kind_of(&bound) == .Invalid {
+		_ = value.destroy_value(&bound)
+		_ = value.destroy_value(&container)
+		return {}, false
+	}
+	result, array_error := value.array_value(storage.allocator)
+	if value.array_error_kind(&array_error) != .None {
+		_ = value.destroy_value(&bound)
+		_ = value.destroy_value(&container)
+		_ = value.destroy_array_error(&array_error)
+		return {}, false
+	}
+	length, length_ok := value.array_length(&container)
+	if !length_ok { _ = value.destroy_value(&bound); _ = value.destroy_value(&container); _ = value.destroy_value(&result); return {}, false }
+	for offset in 0..<length {
+		item, item_ok := value.array_element_copy(&container, offset)
+		if !item_ok { _ = value.destroy_value(&bound); _ = value.destroy_value(&container); _ = value.destroy_value(&result); return {}, false }
+		actual: value.Value
+		found := false
+		if value.kind_of(&item) == .Object { actual, found = value.object_get_copy(&item, field_name) }
+		matches := false
+		if found {
+			cmp, cmp_ok := compare_values(&actual, &bound)
+			matches = cmp_ok && cmp == 0
+			_ = value.destroy_value(&actual)
+		}
+		if matches {
+			copy_item := value.clone_value(&item)
+			_, append_error := value.array_append_take(&result, &copy_item)
+			if value.array_error_kind(&append_error) != .None {
+				_ = value.destroy_value(&copy_item); _ = value.destroy_value(&item); _ = value.destroy_value(&bound); _ = value.destroy_value(&container); _ = value.destroy_value(&result); _ = value.destroy_array_error(&append_error); return {}, false
+			}
+		}
+		_ = value.destroy_value(&item)
+	}
+	_ = value.destroy_value(&bound)
+	_ = value.destroy_value(&container)
+	return result, true
+}
+
+invalid_path_result_key :: proc(result: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	prefix := "Invalid path expression with result "
+	if strings.write_string(&builder, prefix) != len(prefix) || !text_append_json_value(&builder, result) {
+		strings.builder_destroy(&builder)
+		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
 @(private)
 literal_path_value :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (value.Value, bool) {
 	instruction, ok := program.program_instruction(storage.compiled, index); if !ok do return {}, false
@@ -6217,12 +6328,24 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					// `path(.a | map(select(.b == 0)))` is a jq runtime error,
 					// not a malformed evaluator/program state; preserving that
 					// distinction lets `try ... catch` observe the error.
+					err_key := "Invalid path expression"
+					materialized, materialized_ok := materialized_map_select_result(storage, &frame.input, child)
+					if materialized_ok {
+						generated_key, key_error := invalid_path_result_key(&materialized, storage.allocator)
+						_ = value.destroy_value(&materialized)
+						if key_error != nil do return resource_step(key_error)
+						if len(generated_key) > 0 do err_key = generated_key
+					}
 					result, ready := raise_runtime(storage, index, Runtime_Error{
 						kind = .User_Error,
 						input_kind = value.kind_of(&frame.input),
 						span = instruction.span,
-						key = "Invalid path expression",
+						key = err_key,
 					})
+					if len(err_key) > len("Invalid path expression") {
+						free_error := runtime.mem_free_bytes(transmute([]byte)err_key, storage.allocator)
+						if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					}
 					if ready do return result
 					continue
 				}
