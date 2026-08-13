@@ -556,6 +556,37 @@ array_slice :: proc(
 	}), nil
 }
 
+// array_replace_range_copy returns a new owning array containing source with
+// the clamped half-open range [start,end) replaced by replacement values.
+// Source and replacement remain owned by callers; every output slot is cloned.
+array_replace_range_copy :: proc(
+	source, replacement: ^Value,
+	start, end: int,
+	allocator: runtime.Allocator,
+) -> (Value, Array_Operation_Error) {
+	source_length, source_ok := array_length(source)
+	replacement_length, replacement_ok := array_length(replacement)
+	if !source_ok || !replacement_ok do return {}, make_array_operation_error(.Wrong_Kind)
+	first := clamp_slice_index(source_length, start)
+	last := clamp_slice_index(source_length, end)
+	if last < first do last = first
+	result, constructor_error := array_value(allocator)
+	if array_error_kind(&constructor_error) != .None do return {}, constructor_error
+	for i in 0..<first {
+		item, ok := array_element_copy(source, i); if !ok { return {}, make_array_operation_error(.Wrong_Kind) }
+		_, append_error := array_append_take(&result, &item); if array_error_kind(&append_error) != .None { _ = destroy_value(&item); return {}, append_error }
+	}
+	for i in 0..<replacement_length {
+		item, ok := array_element_copy(replacement, i); if !ok { return {}, make_array_operation_error(.Wrong_Kind) }
+		_, append_error := array_append_take(&result, &item); if array_error_kind(&append_error) != .None { _ = destroy_value(&item); return {}, append_error }
+	}
+	for i in last..<source_length {
+		item, ok := array_element_copy(source, i); if !ok { return {}, make_array_operation_error(.Wrong_Kind) }
+		_, append_error := array_append_take(&result, &item); if array_error_kind(&append_error) != .None { _ = destroy_value(&item); return {}, append_error }
+	}
+	return result, nil
+}
+
 @(private)
 arrays_equal :: proc(a, b: ^Value) -> bool {
 	left_storage, left, left_ok := array_storage_of(a)

@@ -29,6 +29,23 @@ append_take_no_displaced :: proc(array: ^Value, element: ^Value) -> Array_Operat
 }
 
 @(test)
+array_replace_range_copy_preserves_source_and_splices :: proc(t: ^testing.T) {
+	source, _ := array_value(context.allocator)
+	for i in 0..<5 { item := number_value(f64(i)); append_take_no_displaced(&source, &item) }
+	replacement, _ := array_value(context.allocator)
+	for n in 0..<2 { item := number_value(88 + f64(n)); append_take_no_displaced(&replacement, &item) }
+	result, err := array_replace_range_copy(&source, &replacement, 1, 3, context.allocator)
+	defer destroy_value(&source); defer destroy_value(&replacement); defer destroy_value(&result)
+	testing.expect_value(t, array_error_kind(&err), Array_Error.None)
+	source_length, source_ok := array_length(&source); result_length, result_ok := array_length(&result)
+	testing.expect(t, source_ok && source_length == 5); testing.expect(t, result_ok && result_length == 5)
+	testing.expect_value(t, array_number_at(t, &result, 0), 0)
+	testing.expect_value(t, array_number_at(t, &result, 1), 88)
+	testing.expect_value(t, array_number_at(t, &result, 2), 89)
+	testing.expect_value(t, array_number_at(t, &result, 4), 4)
+}
+
+@(test)
 array_construct_append_lookup_growth_and_take :: proc(t: ^testing.T) {
 	array, err := array_value(context.allocator)
 	defer destroy_value(&array)
