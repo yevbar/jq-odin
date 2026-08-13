@@ -643,6 +643,17 @@ behavioral oracle.
 
 ## Remaining high-value clusters
 
+## CLI transplant measurement (2026-08-12)
+
+The reviewed CLI vertical slice `eba8cfb8` was replayed cleanly onto the
+current integration base `c2e7846d` as `4468b49c`. It builds and runs, but its
+full pinned-oracle catalog measures **296/522 passed and 226 failed**. The
+current integration head `565793ee` independently measures **324/522 passed
+and 198 failed**. The transplant is therefore retained as an audited source
+of CLI changes, not merged wholesale: it replaces newer evaluator/program
+state and regresses the measured compatibility baseline. Future CLI work must
+be replayed as smaller driver-owned commits and remeasured against this head.
+
 The largest remaining groups are not all independent builtins. They include
 dynamic indexes and slices, path mutation/assignment, richer binding and
 module forms, generator/control-flow combinations, and process/codec APIs.
