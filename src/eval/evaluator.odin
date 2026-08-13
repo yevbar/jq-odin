@@ -8120,6 +8120,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				// the update expression.
 				generator_index, generator_index_ok := child_instruction(storage, instruction, 0)
 				generator_instruction, generator_ok := program.program_instruction(storage.compiled, generator_index)
+				generator_negated := false
+				if generator_index_ok && generator_ok && generator_instruction.opcode == .Negate {
+					generator_child, generator_child_ok := child_instruction(storage, generator_instruction, 0)
+					generator_child_instruction, generator_child_valid := program.program_instruction(storage.compiled, generator_child)
+					generator_child_name, generator_child_name_ok := field_text(storage, generator_child_instruction)
+					generator_negated = generator_child_ok && generator_child_valid && generator_child_instruction.opcode == .Field && generator_child_name_ok && generator_child_name == ""
+				}
 				if generator_index_ok && generator_ok && generator_instruction.opcode == .Divide {
 					generator_left, generator_left_ok := child_instruction(storage, generator_instruction, 0)
 					generator_right, generator_right_ok := child_instruction(storage, generator_instruction, 1)
@@ -8163,6 +8170,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				for item_index in 0..<length {
 					item, item_ok := value.array_element_copy(&frame.input, item_index)
 					if !item_ok { _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+					if generator_negated {
+						number, number_ok := value.number_value_get(&item)
+						if !number_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+						_ = value.destroy_value(&item)
+						item = value.number_value(-number)
+					}
 					next, add_ok := value.number_add(&acc, &item)
 					_ = value.destroy_value(&acc); _ = value.destroy_value(&item)
 					if !add_ok { return begin_terminal_misuse(storage, .Malformed_Program) }; acc = next
