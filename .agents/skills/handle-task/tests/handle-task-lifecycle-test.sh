@@ -58,8 +58,8 @@ case "$command" in
         echo 11111111-1111-4111-8111-111111111111
         ;;
     execute)
-        if [ "${3:-}" = /tmp/handle-task-launch-job.sh ]; then
-            launch_status=${6:?launch status is required}
+        if [ "${4:-}" = /tmp/handle-task-launch-job.sh ]; then
+            launch_status=${7:?launch status is required}
             launch_job=$(job_name_for_status "$launch_status")
             launch_attempts="$VERS_STATE_DIR/$launch_job.launch-attempts"
             increment_file "$launch_attempts"
@@ -128,7 +128,7 @@ case "$command" in
                 ' "$VERS_REMOTE_SIZES"
                 ;;
             *"sh /tmp/handle-task-inspect-job.sh /run/handle-task/"*)
-                inspect_status=${4:?inspection status is required}
+                inspect_status=${5:?inspection status is required}
                 inspect_job=$(job_name_for_status "$inspect_status")
                 cat "$VERS_STATE_DIR/$inspect_job.status"
                 ;;
