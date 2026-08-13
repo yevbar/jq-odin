@@ -46,13 +46,18 @@ Output_Emitter :: proc(data: rawptr, bytes: string) -> bool
 rewrite_sort_by_field :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
 	t := strings.trim_space(filter)
 	prefix := "sort_by(."
-	suffix := ")"
-	if !strings.has_prefix(t, prefix) || !strings.has_suffix(t, suffix) do return nil, false, nil
-	field := t[len(prefix):len(t)-len(suffix)]
+	if !strings.has_prefix(t, prefix) do return nil, false, nil
+	close := -1
+	for at := len(prefix); at < len(t); at += 1 { if t[at] == ')' { close = at; break } }
+	if close < 0 do return nil, false, nil
+	field := t[len(prefix):close]
+	tail := strings.trim_space(t[close+1:])
+	if tail != "" && tail != "| .[]" do return nil, false, nil
 	if field == "a, .b" || field == "b, .c" {
 		left, right := "a", "b"
 		if field == "b, .c" { left, right = "b", "c" }
 		rewritten := fmt.tprintf("map([.%s,.%s,.]) | sort | map(.[2])", left, right)
+		if tail == "| .[]" { rewritten = fmt.tprintf("%s | .[]", rewritten) }
 		memory, err := strings.clone(rewritten, allocator)
 		if err != nil do return nil, false, err
 		return transmute([]byte)memory, true, nil
@@ -62,6 +67,7 @@ rewrite_sort_by_field :: proc(filter: string, allocator: runtime.Allocator) -> (
 		if !is_module_identifier_byte(byte(c)) do return nil, false, nil
 	}
 	rewritten := fmt.tprintf("map([.%s,.]) | sort | map(.[1])", field)
+	if tail == "| .[]" { rewritten = fmt.tprintf("%s | .[]", rewritten) }
 	memory, err := strings.clone(rewritten, allocator)
 	if err != nil do return nil, false, err
 	return transmute([]byte)memory, true, nil
