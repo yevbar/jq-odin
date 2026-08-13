@@ -1,0 +1,5 @@
+# Root literal update forms lower through the existing empty-path setpath ABI.
+. |= try 2
+1
+. |= try 2 catch 3
+1

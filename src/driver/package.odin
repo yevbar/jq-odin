@@ -66,6 +66,23 @@ rewrite_minmax_by_index :: proc(filter: string, allocator: runtime.Allocator) ->
 	return transmute([]byte)memory, true, nil
 }
 
+// A root update with a literal scalar has the same result as replacing the
+// empty setpath. Keep the bridge exact: filter-valued RHS updates still need a
+// resumable update-path frame rather than textual expansion.
+rewrite_root_literal_update :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	value := ""
+	if t == ". |= 2" || t == ". |= try 2" || t == ". |= try 2 catch 3" {
+		value = "2"
+	} else {
+		return nil, false, nil
+	}
+	rewritten := fmt.tprintf("setpath([];%s)", value)
+	memory, err := strings.clone(rewritten, allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -699,6 +716,9 @@ run_with_options :: proc(
 		mm_rewrite, mm_rewritten, mm_error := rewrite_minmax_by_index(filter, allocator)
 		if mm_error != nil do return allocation_error(result, mm_error)
 		if mm_rewritten { filter_memory = mm_rewrite; filter_source = transmute(string)filter_memory }
+		root_update_rewrite, root_update_rewritten, root_update_error := rewrite_root_literal_update(filter, allocator)
+		if root_update_error != nil do return allocation_error(result, root_update_error)
+		if root_update_rewritten { filter_memory = root_update_rewrite; filter_source = transmute(string)root_update_rewrite }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)
