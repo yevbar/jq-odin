@@ -22,6 +22,25 @@ test_select_lowers_to_existing_if_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_repeated_elif_lowers_to_nested_if_chain :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(
+		t,
+		&parser,
+		`if . == 0 then "zero" elif . == 1 then "one" elif . == 2 then "two" else "other" end`,
+	)
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.If)
+	first_elif := parser.nodes.storage[int(root.if_else)]
+	testing.expect_value(t, first_elif.kind, Node_Kind.If)
+	second_elif := parser.nodes.storage[int(first_elif.if_else)]
+	testing.expect_value(t, second_elif.kind, Node_Kind.If)
+	testing.expect_value(t, parser.nodes.storage[int(second_elif.if_else)].kind, Node_Kind.String)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_parenthesized_generator_binary_expression_parses :: proc(t: ^testing.T) {
 	cases := [?]string{
 		`1 * (range(0;3) / 2)`,
