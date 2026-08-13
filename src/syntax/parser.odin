@@ -2838,7 +2838,7 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 	token := parser.lookahead.token
 	#partial switch token.kind {
 	case .Dot, .Recurse, .Field, .Number, .String_Start, .Format, .Minus, .Open_Paren,
-	     .Open_Bracket, .Open_Brace, .Binding, .Try, .Reduce:
+	     .Open_Bracket, .Open_Brace, .Binding, .Try, .Reduce, .Foreach:
 		return true
 	case .If:
 		return true

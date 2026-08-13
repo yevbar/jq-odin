@@ -7902,6 +7902,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				init_index, init_ok := child_instruction(storage, instruction, 1)
 				update_index, update_ok := child_instruction(storage, instruction, 2)
 				generator, generator_valid := program.program_instruction(storage.compiled, generator_index)
+				generator_negated := false
+				if generator_valid && generator.opcode == .Negate {
+					generator_child, generator_child_ok := child_instruction(storage, generator, 0)
+					generator_field, generator_field_valid := program.program_instruction(storage.compiled, generator_child)
+					generator_field_name, generator_field_name_ok := field_text(storage, generator_field)
+					generator_negated = generator_child_ok && generator_field_valid && generator_field.opcode == .Field && generator_field_name_ok && generator_field_name == ""
+				}
 				_, init_valid := program.program_instruction(storage.compiled, init_index)
 				update, update_valid := program.program_instruction(storage.compiled, update_index)
 				name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+3))
@@ -7918,8 +7925,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				// right-major ordering for the common numeric accumulator idiom.
 				has_cartesian := false
 				cartesian_values: value.Value
-				if generator.opcode == .Field {
+				if generator.opcode == .Field || generator_negated {
 					field_name, field_ok := field_text(storage, generator)
+					if generator_negated { field_ok = true; field_name = "" }
 					if !field_ok || len(field_name) != 0 || value.kind_of(&frame.input) != .Array { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 					length_ok: bool; length, length_ok = value.array_length(&frame.input); if !length_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
 				} else if generator.opcode == .Range {
@@ -7978,7 +7986,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if !seed_ok { if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
 					for item_index in 0..<length {
 					item := value.number_value(f64(item_index))
-					if generator.opcode == .Field { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
+					if generator.opcode == .Field || generator_negated { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value; if generator_negated { number, number_ok := value.number_value_get(&item); if !number_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = value.number_value(-number) } }
 					if has_cartesian { item_value, item_ok := value.array_element_copy(&cartesian_values, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); _ = value.destroy_value(&cartesian_values); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
 					if update.opcode == .Variable {
 						op, op_ok := program.program_operand(storage.compiled, update.operands_start); update_name, text_ok := program.operand_text(storage.compiled, op); if !op_ok || !text_ok || update_name != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
