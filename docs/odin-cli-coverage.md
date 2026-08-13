@@ -643,17 +643,19 @@ behavioral oracle.
 
 ## Current authoritative measurement (2026-08-13)
 
-- Integration head `0d9b28ad` includes the reviewed CLI lineage, the
+- Integration head `533f7224` includes the reviewed CLI lineage, the
   `asinh`/`atanh` unary math builtins, filter-parameter validation, the
   static `path`/`paths`/literal `getpath` slice, literal `setpath`, and
   bounded literal `delpaths`, bounded dynamic path iteration, and static path
-  forks.
+  forks, and whitespace-tolerant literal postfix module parameters.
   A pinned jq 1.8.1 catalog run selects all **522** upstream cases and passes
   **334**, with **188**
   failing and no harness errors. Package tests, `make validate`, and the CLI
   harness (333 subprocess / 43 differential checks) pass.
 - The static path focused shard passes 3/3, the dynamic path shard passes 3/3,
-  the static path-fork shard passes 2/2,
+  the static path-fork shard passes 2/2. The driver differential harness
+  remains green at 333 subprocess and 43 differential checks; the module
+  postfix whitespace case is outside the 522-case upstream catalog.
   and the literal delpaths shard passes
   6/6, and iterator-fed destructuring shards pass 6/6. Dynamic path filters
   remain deferred pending a resumable
