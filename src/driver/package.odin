@@ -2,6 +2,7 @@
 package driver
 
 import "base:runtime"
+import "core:fmt"
 import "core:strings"
 import compiler "jq:compiler"
 import diagnostic "jq:diagnostic"
@@ -37,6 +38,26 @@ Output_Mode :: enum u8 {
 // driver may then reuse the same storage for the next result. Returning false
 // stops evaluation with Output while retaining the current bytes for cleanup.
 Output_Emitter :: proc(data: rawptr, bytes: string) -> bool
+
+// rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
+// `sort_by(.field)` form into map/sort/index operations. It is deliberately
+// whole-filter and single-key only; general key filters require a first-class
+// key materialization opcode.
+rewrite_sort_by_field :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	prefix := "sort_by(."
+	suffix := ")"
+	if !strings.has_prefix(t, prefix) || !strings.has_suffix(t, suffix) do return nil, false, nil
+	field := t[len(prefix):len(t)-len(suffix)]
+	if len(field) == 0 do return nil, false, nil
+	for c in field {
+		if !is_module_identifier_byte(byte(c)) do return nil, false, nil
+	}
+	rewritten := fmt.tprintf("map([.%s,.]) | sort | map(.[1])", field)
+	memory, err := strings.clone(rewritten, allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
 
 Run_Options :: struct {
 	output_mode: Output_Mode,
@@ -606,6 +627,9 @@ run_with_options :: proc(
 		filter_source := filter
 		filter_memory: []byte
 		module_outcome: Module_Outcome
+		sort_rewrite, sort_rewritten, sort_error := rewrite_sort_by_field(filter, allocator)
+		if sort_error != nil do return allocation_error(result, sort_error)
+		if sort_rewritten { filter_memory = sort_rewrite; filter_source = transmute(string)filter_memory }
 		// The syntax/program vertical slice owns a single top-level definition.
 		// Leave that source intact so the parser can build its Call node. Multiple
 		// definitions go through the module expander, whose declaration indices

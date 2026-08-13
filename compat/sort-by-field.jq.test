@@ -1,0 +1,4 @@
+# Bounded sort_by(.field) lowering through existing map/sort/index opcodes.
+sort_by(.b)
+[{"b":2},{"b":1},{"b":2}]
+[{"b":1},{"b":2},{"b":2}]
