@@ -1429,6 +1429,8 @@ def expect_differential(candidate: pathlib.Path, oracle: pathlib.Path) -> int:
         (["-c", "add"], b'[]'),
         (["-c", ".a[]"], b'{"a":[1,2]}'),
         (["-c", ".a[] + 1"], b'{"a":[1,2]}'),
+        # jq accepts `name` as an alias for `key` in from_entries input.
+        (["-c", "from_entries"], b'[{"name":"alias","value":7}]'),
         (["-c", r'"inter\("pol" + "ation")", "<b>\(.)</b>"'], b'"<&"'),
     ]
     for args, stdin in cases:
