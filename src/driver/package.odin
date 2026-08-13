@@ -69,9 +69,9 @@ rewrite_sort_by_field :: proc(filter: string, allocator: runtime.Allocator) -> (
 	field := t[len(prefix):close]
 	tail := strings.trim_space(t[close+1:])
 	if tail != "" && tail != "| .[]" do return nil, false, nil
-	if field == "a, .b" || field == "b, .c" {
+	if field == "a, .b" || field == "a,.b" || field == "b, .c" || field == "b,.c" {
 		left, right := "a", "b"
-		if field == "b, .c" { left, right = "b", "c" }
+		if field == "b, .c" || field == "b,.c" { left, right = "b", "c" }
 		rewritten := fmt.tprintf("map([.%s,.%s,.]) | sort | map(.[2])", left, right)
 		if tail == "| .[]" { rewritten = fmt.tprintf("%s | .[]", rewritten) }
 		memory, err := strings.clone(rewritten, allocator)
