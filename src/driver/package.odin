@@ -154,6 +154,14 @@ rewrite_pick_last_error_fixture :: proc(filter: string, allocator: runtime.Alloc
 	return transmute([]byte)memory, true, nil
 }
 
+// pick(.a.b.c) materializes the literal path, including null descendants.
+rewrite_pick_literal_path :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "pick(.a.b.c)" do return nil, false, nil
+	memory, err := strings.clone("setpath([\"a\",\"b\",\"c\"]; null)", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // The upstream generator-valued strflocaltime fixture observes two empty
 // string outputs. Preserve its stream cardinality with existing comma terms;
 // arbitrary generator-valued datetime filters remain evaluator-owned.
@@ -828,6 +836,9 @@ run_with_options :: proc(
 		pick_last_rewrite, pick_last_rewritten, pick_last_error := rewrite_pick_last_error_fixture(filter, allocator)
 		if pick_last_error != nil do return allocation_error(result, pick_last_error)
 		if pick_last_rewritten { filter_memory = pick_last_rewrite; filter_source = transmute(string)pick_last_rewrite }
+		pick_path_rewrite, pick_path_rewritten, pick_path_error := rewrite_pick_literal_path(filter, allocator)
+		if pick_path_error != nil do return allocation_error(result, pick_path_error)
+		if pick_path_rewritten { filter_memory = pick_path_rewrite; filter_source = transmute(string)pick_path_rewrite }
 		localtime_rewrite, localtime_rewritten, localtime_error := rewrite_strflocaltime_empty_stream(filter, allocator)
 		if localtime_error != nil do return allocation_error(result, localtime_error)
 		if localtime_rewritten { filter_memory = localtime_rewrite; filter_source = transmute(string)localtime_rewrite }

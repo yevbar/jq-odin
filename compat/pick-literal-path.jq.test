@@ -1,0 +1,4 @@
+# pick over a missing literal object path materializes null descendants.
+pick(.a.b.c)
+null
+{"a":{"b":{"c":null}}}
