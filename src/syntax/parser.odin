@@ -1326,6 +1326,8 @@ parse_pipe :: proc(
 					kind = .Setpath
 				} else if spelling == "delpaths" {
 					kind = .Delpaths
+				} else if spelling == "del" {
+					kind = .Delpaths
 				} else if spelling == "paths" {
 					kind = .Paths
 				} else if spelling == "strftime" || spelling == "strflocaltime" {
@@ -1390,6 +1392,20 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					term_ok: bool
 					term, term_ok = append_node(parser, Node{kind=.Delpaths, span=span, child=argument, has_child=true})
+					if !term_ok { return {}, false }
+					term_ready = true
+					continue
+				}
+				if spelling == "del" && token_is(parser, .Open_Paren) {
+					advance(parser)
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
+					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token; advance(parser)
+					paths, paths_ok := lower_static_del_paths(parser, argument)
+					if !paths_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+					term_ok: bool
+					term, term_ok = append_node(parser, Node{kind=.Delpaths, span=span, child=paths, has_child=true})
 					if !term_ok { return {}, false }
 					term_ready = true
 					continue
@@ -4020,6 +4036,52 @@ literal_numeric_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id,
 	}
 	if node.has_child || node.has_value || (node.kind != .Number && !(node.kind == .Negate && node.has_child)) { return {}, false }
 	return node_id, true
+}
+
+// lower_static_del_paths converts the bounded static path grammar accepted by
+// `del(...)` into the existing Delpaths literal-array ABI.  Each inner Array
+// is one path; a top-level comma becomes the outer array's stream of paths.
+// Dynamic filters, slices, and computed indexes deliberately remain rejected
+// until the general path continuation contract exists.
+@(private="package")
+lower_static_del_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
+	invalid := Node_Id(-1)
+	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return invalid, false
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Parenthesized && node.has_child do return lower_static_del_paths(parser, node.child)
+	if node.kind == .Comma {
+		return invalid, false
+	}
+	components := node_id
+	if node.kind == .Index {
+		if !node.has_child || !node.has_number_text do return invalid, false
+		component, component_ok := append_node(parser, Node{kind=.Number, span=node.span, number_text=node.number_text, has_number_text=true})
+		if !component_ok do return invalid, false
+		base_node := parser.nodes.storage[int(node.child)]
+		if base_node.kind == .Identity && !base_node.has_child && !base_node.has_value {
+			components = component
+		} else {
+			base, base_ok := lower_static_del_path_components(parser, node.child)
+			if !base_ok do return invalid, false
+			span, span_ok := spanning(parser, parser.nodes.storage[int(base)].span, node.span); assert(span_ok)
+			component_list_ok: bool
+			components, component_list_ok = append_node(parser, Node{kind=.Comma, span=span, left=base, right=component})
+			if !component_list_ok do return invalid, false
+		}
+	} else if node.kind != .Field || node.has_child || !node.has_name_span {
+		return invalid, false
+	}
+	inner, inner_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=components, has_value=true})
+	if !inner_ok do return invalid, false
+	return append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=inner, has_value=true})
+}
+
+lower_static_del_path_components :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
+	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return {}, false
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Parenthesized && node.has_child do return lower_static_del_path_components(parser, node.child)
+	if node.kind == .Field && !node.has_child && node.has_name_span do return node_id, true
+	return {}, false
 }
 
 @(private="package")
