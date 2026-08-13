@@ -721,3 +721,8 @@ fresh catalog measurement to **355/522 passed and 167 failed**, with zero
 harness errors. Its focused shard covers six-argument, generator-valued, and
 `$` value-parameter definitions; general closures, nested lexical definitions,
 and broader generator calls remain open.
+
+The bound-path deletion slice (`bd17564a`) raises the fresh catalog to
+**357/522 passed and 165 failed**, with zero harness errors. It covers
+`delpaths([$p])` after an array-valued lexical path binding and preserves the
+copy-on-write ownership contract; `make validate` remains green.
