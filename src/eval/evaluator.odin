@@ -1617,6 +1617,31 @@ literal_path_value :: proc(storage: ^evaluator_storage, index: program.Instructi
 	return result, true
 }
 
+// bound_literal_path_value extends the literal path contract with one
+// deliberately narrow lexical-binding bridge.  A binding such as
+// `["foo", 1] as $p | getpath($p)` has already evaluated and owned the array
+// in the Binding frame; resolving the Variable here clones that owned value
+// before lookup or copy-on-write mutation.  Other dynamic path expressions
+// remain unsupported until the general path/generator contract exists.
+bound_literal_path_value :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, producer: int) -> (value.Value, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok do return {}, false
+	if instruction.opcode == .Parenthesized {
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return {}, false
+		return bound_literal_path_value(storage, child, producer)
+	}
+	if instruction.opcode == .Variable {
+		resolved, resolved_ok := variable_result(storage, producer, instruction)
+		if !resolved_ok || value.kind_of(&resolved) != .Array {
+			_ = value.destroy_value(&resolved)
+			return {}, false
+		}
+		return resolved, true
+	}
+	return literal_path_value(storage, index)
+}
+
 @(private)
 lookup_path :: proc(input, path: ^value.Value) -> (value.Value, Runtime_Error_Kind, bool) {
 	current := value.clone_value(input); if value.kind_of(&current) == .Invalid do return {}, .None, false
@@ -1625,7 +1650,7 @@ lookup_path :: proc(input, path: ^value.Value) -> (value.Value, Runtime_Error_Ki
 		component, component_ok := value.array_element_copy(path, offset); if !component_ok { _ = value.destroy_value(&current); return {}, .None, false }; next: value.Value
 		switch value.kind_of(&component) {
 		case .String:
-			key, key_ok := value.string_borrowed(&component); if !key_ok { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true }; if value.kind_of(&current) == .Null { next = value.null_value() } else if value.kind_of(&current) == .Object { next, _ = value.object_get_copy(&current, key) } else { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true }
+			key, key_ok := value.string_borrowed(&component); if !key_ok { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true }; if value.kind_of(&current) == .Null { next = value.null_value() } else if value.kind_of(&current) == .Object { found_value, found := value.object_get_copy(&current, key); if found { next = found_value } else { next = value.null_value() } } else { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true }
 		case .Number:
 			n, number_ok := value.number_value_get(&component); if !number_ok || math.floor(n) != n { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true }; idx := int(n); if value.kind_of(&current) == .Null { next = value.null_value() } else if value.kind_of(&current) == .Array { count, count_ok := value.array_length(&current); if !count_ok { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true }; if idx < 0 do idx += count; if idx < 0 || idx >= count { next = value.null_value() } else { next, _ = value.array_element_copy(&current, idx) } } else { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true }
 		case .Invalid, .Null, .Boolean, .Array, .Object: _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, .Cannot_Index_With_String, true
@@ -5614,7 +5639,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				path_instruction, path_child_ok := child_instruction(storage, instruction, 0)
 				value_instruction, value_ok := child_instruction(storage, instruction, 1)
 				if !path_child_ok || !value_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
-				path, path_literal_ok := literal_path_value(storage, path_instruction)
+				path, path_literal_ok := bound_literal_path_value(storage, path_instruction, index)
 				value_instruction_data, value_instruction_ok := program.program_instruction(storage.compiled, value_instruction)
 				if !value_instruction_ok { _ = value.destroy_value(&path); return begin_terminal_misuse(storage, .Malformed_Program) }
 				replacement, _, replacement_cleanup := literal_value(storage, value_instruction_data)
@@ -5630,7 +5655,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if instruction.operands_count != 1 do return begin_terminal_misuse(storage, .Malformed_Program)
 				child, child_ok := child_instruction(storage, instruction, 0); if !child_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 				output: value.Value; valid := false; runtime_kind := Runtime_Error_Kind.None
-				if instruction.opcode == .Path { output, valid = static_filter_path(storage, child) } else { path, path_ok := literal_path_value(storage, child); if path_ok { output, runtime_kind, valid = lookup_path(&frame.input, &path); _ = value.destroy_value(&path) } }
+				if instruction.opcode == .Path { output, valid = static_filter_path(storage, child) } else { path, path_ok := bound_literal_path_value(storage, child, index); if path_ok { output, runtime_kind, valid = lookup_path(&frame.input, &path); _ = value.destroy_value(&path) } }
 				if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
 				if runtime_kind != .None { result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}); if ready do return result; continue }
 				frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result; continue

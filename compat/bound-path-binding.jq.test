@@ -1,0 +1,21 @@
+# A bound literal path is an owned array value resolved through the lexical
+# Binding frame.  These cases intentionally exclude computed/generator paths.
+["foo",1] as $p | getpath($p)
+{"foo":["a","b"]}
+"b"
+
+["foo",1] as $p | setpath($p;20)
+{"foo":["a","b"]}
+{"foo":["a",20]}
+
+["a",0,"b"] as $p | setpath($p;20)
+{"a":[{"b":3}]}
+{"a":[{"b":20}]}
+
+["missing",0] as $p | getpath($p)
+{"foo":1}
+null
+
+( ["foo",-1] ) as $p | getpath($p)
+{"foo":["a","b"]}
+"b"
