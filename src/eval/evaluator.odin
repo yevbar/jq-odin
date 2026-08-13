@@ -2183,6 +2183,19 @@ literal_path_value :: proc(storage: ^evaluator_storage, index: program.Instructi
 			}
 			return path_append_take(result, &nested)
 		}
+		// A parser-lowered nested static assignment may use a static Field
+		// instruction as the first literal path component (for example
+		// `.foo[-1] = 0`).  Materialize that field name as a string path item.
+		if item_instruction.opcode == .Field {
+			name, name_ok := field_text(storage, item_instruction)
+			if !name_ok do return false
+			item, string_error := value.string_value(name, storage.allocator)
+			if value.constructor_error_kind(&string_error) != .None {
+				_ = value.destroy_constructor_error(&string_error)
+				return false
+			}
+			return path_append_take(result, &item)
+		}
 		if !item_instruction.has_literal || item_instruction.opcode != .Identity || (item_instruction.literal_kind != .String && item_instruction.literal_kind != .Number) do return false
 		item, _, cleanup := literal_value(storage, item_instruction); if cleanup != nil || value.kind_of(&item) == .Invalid { _ = value.destroy_value(&item); return false }; return path_append_take(result, &item)
 	}
@@ -6373,8 +6386,30 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					_ = value.destroy_value(&first_component)
 				}
 				updated, updated_ok := set_path_value(&frame.input, &path, 0, &replacement, storage.allocator)
+				if !updated_ok {
+					// A negative index below a missing/null field is still a jq
+					// runtime bounds error (the field is materialized as an empty
+					// array before applying the index), not an invalid program.
+					// Preserve that diagnostic for try/catch around parser-lowered
+					// `.field[-N] = literal` assignments.
+					if path_length == 2 {
+						first, first_ok := value.array_element_copy(&path, 0)
+						second, second_ok := value.array_element_copy(&path, 1)
+						second_number, second_number_ok := value.number_value_get(&second)
+						if first_ok && second_ok && value.kind_of(&first) == .String && second_number_ok && second_number < 0 {
+							_ = value.destroy_value(&first); _ = value.destroy_value(&second)
+							_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
+							result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key="Out of bounds negative array index"})
+							if ready do return result
+							continue
+						}
+						if first_ok do _ = value.destroy_value(&first)
+						if second_ok do _ = value.destroy_value(&second)
+					}
+					_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
 				_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
-				if !updated_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
 				_ = value.destroy_value(&frame.input); frame.input = updated
 				output := value.clone_value(&frame.input); if value.kind_of(&output) == .Invalid { return resource_step(.Out_Of_Memory) }
 				frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result; continue

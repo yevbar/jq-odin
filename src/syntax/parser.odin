@@ -2306,7 +2306,9 @@ parse_static_index_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 	index_node := &parser.nodes.storage[int(left)]
 	base := parser.nodes.storage[int(index_node.child)]
 	if !index_node.has_child || index_node.container_kind != .None || !index_node.has_number_text ||
-	   base.form != .Kinded || base.kind != .Identity || base.has_child || base.has_value {
+	   base.form != .Kinded || (base.kind != .Identity && base.kind != .Field) ||
+	   (base.kind == .Identity && (base.has_child || base.has_value)) ||
+	   (base.kind == .Field && !base.has_name_span) {
 		fail_at_current(parser, .Unexpected_Token, .Expression); return {}, false
 	}
 	advance(parser)
@@ -2321,6 +2323,44 @@ parse_static_index_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 		fail_from_lookahead(parser, .Expression); return {}, false
 	}
 	span, span_ok := spanning(parser, index_node.span, number.span); assert(span_ok)
+	if base.kind == .Field {
+		// A nested static index assignment is represented as the existing
+		// literal `setpath` form.  This keeps the assignment evaluator's
+		// copy-on-write path semantics in one place while retaining the
+		// bounded scalar-RHS contract of this parser entry point.
+		index_literal, index_literal_ok := append_node(parser, Node{
+			kind = .Number,
+			span = index_node.span,
+			number_text = index_node.number_text,
+			has_number_text = true,
+		})
+		if !index_literal_ok do return {}, false
+		components, components_ok := append_node(parser, Node{
+			kind = .Comma,
+			span = index_node.span,
+			left = index_node.child,
+			right = index_literal,
+		})
+		if !components_ok do return {}, false
+		path, path_ok := append_node(parser, Node{
+			kind = .Identity,
+			container_kind = .Array,
+			span = index_node.span,
+			value = components,
+			has_value = true,
+		})
+		if !path_ok do return {}, false
+		setpath, setpath_ok := append_node(parser, Node{
+			kind = .Setpath,
+			span = span,
+			left = path,
+			right = right,
+		})
+		if !setpath_ok do return {}, false
+		if int(pipe_root) < 0 do return setpath, true
+		tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = setpath; tail.has_child = false
+		return pipe_root, true
+	}
 	index_node^ = Node{kind=.Static_Index_Set_Number, span=span, child=index_node.child, has_child=true, right=right, number_text=index_node.number_text, has_number_text=true}
 	if int(pipe_root) < 0 do return left, true
 	tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = left

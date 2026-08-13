@@ -1,0 +1,9 @@
+# Nested static negative-index assignment lowers through the literal setpath
+# contract and preserves jq's catchable out-of-bounds diagnostic.
+try (.foo[-1] = 0) catch .
+null
+"Out of bounds negative array index"
+
+try (.foo[-2] = 0) catch .
+null
+"Out of bounds negative array index"
