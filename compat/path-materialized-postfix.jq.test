@@ -1,0 +1,7 @@
+try path(.a | map(select(.b == 0)) | .c) catch .
+{"a":[{"b":0}]}
+"Invalid path expression near attempt to access element \"c\" of [{\"b\":0}]"
+
+try path(.a | map(select(.b == 0)) | .[]) catch .
+{"a":[{"b":0}]}
+"Invalid path expression near attempt to iterate through [{\"b\":0}]"

@@ -2106,6 +2106,45 @@ materialized_map_select_index_error_key :: proc(
 	return strings.to_string(builder), true, nil
 }
 
+materialized_map_select_field_error_key :: proc(
+	storage: ^evaluator_storage,
+	input: ^value.Value,
+	sequence_index: program.Instruction_Index,
+	allocator: runtime.Allocator,
+) -> (string, bool, runtime.Allocator_Error) {
+	sequence, sequence_ok := program.program_instruction(storage.compiled, sequence_index)
+	if !sequence_ok || sequence.opcode != .Sequence || sequence.operands_count != 2 do return "", false, nil
+	trailing, trailing_ok := child_instruction(storage, sequence, 1)
+	if !trailing_ok do return "", false, nil
+	trailing_instruction, trailing_instruction_ok := program.program_instruction(storage.compiled, trailing)
+	if !trailing_instruction_ok || trailing_instruction.opcode != .Sequence || trailing_instruction.operands_count != 2 do return "", false, nil
+	postfix, postfix_ok := child_instruction(storage, trailing_instruction, 1)
+	if !postfix_ok do return "", false, nil
+	postfix_instruction, postfix_instruction_ok := program.program_instruction(storage.compiled, postfix)
+	if !postfix_instruction_ok || postfix_instruction.opcode != .Field do return "", false, nil
+	name, name_ok := field_text(storage, postfix_instruction)
+	if !name_ok do return "", false, nil
+	materialized, materialized_ok := materialized_map_select_result(storage, input, sequence_index)
+	if !materialized_ok do return "", false, nil
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil { _ = value.destroy_value(&materialized); return "", false, init_error }
+	if name == "" {
+		prefix := "Invalid path expression near attempt to iterate through "
+		if strings.write_string(&builder, prefix) != len(prefix) || !text_append_json_value(&builder, &materialized) {
+			strings.builder_destroy(&builder); _ = value.destroy_value(&materialized); return "", false, nil
+		}
+	} else {
+		prefix := "Invalid path expression near attempt to access element \""
+		suffix := "\" of "
+		if strings.write_string(&builder, prefix) != len(prefix) || strings.write_string(&builder, name) != len(name) || strings.write_string(&builder, suffix) != len(suffix) || !text_append_json_value(&builder, &materialized) {
+			strings.builder_destroy(&builder); _ = value.destroy_value(&materialized); return "", false, nil
+		}
+	}
+	_ = value.destroy_value(&materialized)
+	return strings.to_string(builder), true, nil
+}
+
 invalid_path_result_key :: proc(result: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
 	builder: strings.Builder
 	_, init_error := strings.builder_init(&builder, allocator)
@@ -6393,9 +6432,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					// not a malformed evaluator/program state; preserving that
 					// distinction lets `try ... catch` observe the error.
 					err_key := "Invalid path expression"
+					field_key, field_ok, field_error := materialized_map_select_field_error_key(storage, &frame.input, child, storage.allocator)
+					if field_error != nil do return resource_step(field_error)
 					indexed_key, indexed_ok, indexed_error := materialized_map_select_index_error_key(storage, &frame.input, child, storage.allocator)
 					if indexed_error != nil do return resource_step(indexed_error)
-					if indexed_ok {
+					if field_ok {
+						err_key = field_key
+					} else if indexed_ok {
 						err_key = indexed_key
 					} else {
 						materialized, materialized_ok := materialized_map_select_result(storage, &frame.input, child)
