@@ -4,6 +4,15 @@ This is a coordinator snapshot for the accepted Odin CLI lineage, not a claim
 of upstream jq compatibility. The immutable `upstream/jq` tree remains the
 behavioral oracle.
 
+## Current measured checkpoint
+
+At integration head `5923ff17`, the authoritative selected catalog measurement
+is **414/522 passed, 108 failed, 0 harness errors** (`/tmp/coverage-contains.json`).
+The two-case gain over the prior 412/522 checkpoint covers bound-variable
+`contains` needles from `upstream/jq/tests/jq.test:1615-1619`; the focused shard
+is `compat/contains-bound-variable.jq.test` and the implementation decision is
+`docs/decisions/0276-dynamic-contains-binding.md`.
+
 ## Current evidence
 
 - Baseline integration head: `1a98ae1`.
