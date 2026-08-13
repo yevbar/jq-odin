@@ -1,0 +1,7 @@
+ .foo[2].bar = 1
+{"foo":[11], "bar":42}
+ .foo[2][1] = 1
+{"foo":[[0,0,0],[0,0,0],[0,0,0]]}
+# Missing intermediate array elements are created by setpath.
+try (.foo[2].bar = 1) catch .
+{"foo":[{"bar":0}]}

@@ -2043,10 +2043,35 @@ parse_pipe :: proc(
 		}
 		if token_is(parser, .Assign) {
 			if current >= 0 && parser.nodes.storage[int(current)].kind == .Index {
-				return parse_static_index_set_number(parser, current, pipe_root, pipe_tail, closing)
+				index_base := parser.nodes.storage[int(current)].child
+				if index_base < 0 || parser.nodes.storage[int(index_base)].kind != .Index {
+					return parse_static_index_set_number(parser, current, pipe_root, pipe_tail, closing)
+				}
 			}
 			left := current if pipe_root != invalid_id else result
 			left_node := parser.nodes.storage[int(left)]
+			if left_node.form == .Kinded && (left_node.kind == .Field || left_node.kind == .Index) && left_node.has_child {
+				path, path_ok := static_assignment_path(parser, left)
+				if path_ok {
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !right_ok do return {}, false
+					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized &&
+						parser.nodes.storage[int(right)].has_child {
+						right = parser.nodes.storage[int(right)].child
+					}
+					rhs := parser.nodes.storage[int(right)]
+				if rhs.form != .Kinded || (rhs.kind != .Number && rhs.kind != .Boolean && rhs.kind != .Null && rhs.kind != .String) || rhs.has_child || rhs.has_value {
+					fail_from_lookahead(parser, .Expression); return {}, false
+				}
+				span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+				setpath, setpath_ok := append_node(parser, Node{kind=.Setpath, span=span, left=path, right=right})
+				if !setpath_ok do return {}, false
+				if int(pipe_root) < 0 do return setpath, true
+				tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = setpath; tail.has_child = false
+				return pipe_root, true
+				}
+			}
 			if left_node.form == .Kinded && left_node.kind == .Field && left_node.container_kind == .None &&
 				left_node.has_name_span && !left_node.has_child {
 				return parse_dynamic_field_set(parser, left, pipe_root, pipe_tail, closing)
@@ -2395,6 +2420,50 @@ parse_static_field_add_update :: proc(
 		pipe = pipe_node.right
 	}
 	return pipe_root, true
+}
+
+@(private="package")
+static_assignment_path :: proc(parser: ^Parser, root: Node_Id) -> (Node_Id, bool) {
+	components: [dynamic]Node_Id
+	append_component :: proc(parser: ^Parser, components: ^[dynamic]Node_Id, node: Node_Id) -> bool {
+		if node < 0 || int(node) >= len(parser.nodes.storage) do return false
+		n := parser.nodes.storage[int(node)]
+		#partial switch n.kind {
+		case .Field:
+			if n.has_child {
+				if !append_component(parser, components, n.child) do return false
+			}
+			copy, ok := append_node(parser, Node{kind=.Field, span=n.span, name_span=n.name_span, has_name_span=n.has_name_span, string_text=n.string_text, has_string_text=n.has_string_text})
+			if !ok do return false
+		append(&components^, copy)
+			return true
+		case .Index:
+			if !n.has_child || !n.has_number_text do return false
+			if !append_component(parser, components, n.child) do return false
+			copy, ok := append_node(parser, Node{kind=.Number, span=n.span, number_text=n.number_text, has_number_text=true})
+			if !ok do return false
+			append(&components^, copy)
+			return true
+		case .Identity:
+			return !n.has_child && !n.has_value
+		}
+		return false
+	}
+	if !append_component(parser, &components, root) { delete(components); return {}, false }
+	if len(components) == 0 { delete(components); return {}, false }
+	path_value := components[0]
+	for i in 1..<len(components) {
+		span, span_ok := spanning(parser, parser.nodes.storage[int(path_value)].span, parser.nodes.storage[int(components[i])].span)
+		assert(span_ok)
+		next_value, next_ok := append_node(parser, Node{kind=.Comma, span=span, left=path_value, right=components[i]})
+		if !next_ok { delete(components); return {}, false }
+		path_value = next_value
+	}
+	span, span_ok := spanning(parser, parser.nodes.storage[int(root)].span, parser.nodes.storage[int(components[len(components)-1])].span)
+	assert(span_ok)
+	path, ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=span, value=path_value, has_value=true})
+	delete(components)
+	return path, ok
 }
 
 @(private="package")
