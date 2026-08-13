@@ -643,14 +643,15 @@ behavioral oracle.
 
 ## Current authoritative measurement (2026-08-13)
 
-- Integration head `a814f511` includes the reviewed CLI lineage, the
-  `asinh`/`atanh` unary math builtins, filter-parameter validation, and the
-  static `path`/`paths`/literal `getpath` slice. A pinned jq 1.8.1 catalog
-  run selects all **522** upstream cases and passes **328**, with **194**
+- Integration head `c454ff31` includes the reviewed CLI lineage, the
+  `asinh`/`atanh` unary math builtins, filter-parameter validation, the
+  static `path`/`paths`/literal `getpath` slice, and literal `setpath`.
+  A pinned jq 1.8.1 catalog run selects all **522** upstream cases and passes
+  **329**, with **193**
   failing and no harness errors. Package tests, `make validate`, and the CLI
   harness (333 subprocess / 43 differential checks) pass.
 - The static path focused shard passes 3/3. Dynamic path filters and
-  `setpath`/`delpaths` remain deferred pending a resumable path-mutation
+  `delpaths` remain deferred pending a resumable path-mutation
   contract. Filter-parameter validation is a textual module-loader bridge;
   general lexical calls, closures, and recursion remain deferred to the VM
   call-frame contract.
