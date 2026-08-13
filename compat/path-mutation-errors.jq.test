@@ -1,0 +1,9 @@
+# Invalid path-list arguments are runtime errors catchable by try/catch.
+try delpaths(0) catch .
+{}
+"Paths must be specified as an array"
+
+# Numeric path components cannot index an object in setpath/2.
+try setpath([1]; 1) catch .
+{}
+"Cannot index object with number"

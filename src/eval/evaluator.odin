@@ -5938,7 +5938,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if instruction.operands_count != 1 { return begin_terminal_misuse(storage, .Malformed_Program) }
 				argument, argument_ok := child_instruction(storage, instruction, 0)
 				argument_instruction, argument_instruction_ok := program.program_instruction(storage.compiled, argument)
-				if !argument_ok || !argument_instruction_ok || argument_instruction.opcode != .Array { return begin_terminal_misuse(storage, .Malformed_Program) }
+				if !argument_ok || !argument_instruction_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+				if argument_instruction.opcode != .Array {
+					result, ready := raise_runtime(storage, index, Runtime_Error{
+						kind = .User_Error,
+						input_kind = value.kind_of(&frame.input),
+						span = instruction.span,
+						key = "Paths must be specified as an array",
+					})
+					if ready do return result
+					continue
+				}
 				current := value.clone_value(&frame.input); if value.kind_of(&current) == .Invalid { return resource_step(.Out_Of_Memory) }
 				for offset in 0..<argument_instruction.operands_count {
 					operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(argument_instruction.operands_start)+u32(offset)))
@@ -5959,6 +5969,26 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if !value_instruction_ok { _ = value.destroy_value(&path); return begin_terminal_misuse(storage, .Malformed_Program) }
 				replacement, _, replacement_cleanup := literal_value(storage, value_instruction_data)
 				if !path_literal_ok || replacement_cleanup != nil || value.kind_of(&replacement) == .Invalid { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
+				path_length, path_length_ok := value.array_length(&path)
+				if !path_length_ok { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
+				if path_length > 0 && value.kind_of(&frame.input) == .Object {
+					first_component, first_ok := value.array_element_copy(&path, 0)
+					if !first_ok { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
+					if value.kind_of(&first_component) == .Number {
+						_ = value.destroy_value(&first_component)
+						_ = value.destroy_value(&path)
+						_ = value.destroy_value(&replacement)
+						result, ready := raise_runtime(storage, index, Runtime_Error{
+							kind = .User_Error,
+							input_kind = .Object,
+							span = instruction.span,
+							key = "Cannot index object with number",
+						})
+						if ready do return result
+						continue
+					}
+					_ = value.destroy_value(&first_component)
+				}
 				updated, updated_ok := set_path_value(&frame.input, &path, 0, &replacement, storage.allocator)
 				_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
 				if !updated_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
