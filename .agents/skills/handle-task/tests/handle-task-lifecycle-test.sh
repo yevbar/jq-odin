@@ -58,8 +58,8 @@ case "$command" in
         echo 11111111-1111-4111-8111-111111111111
         ;;
     execute)
-        if [ "${5:-}" = /tmp/handle-task-launch-job.sh ]; then
-            launch_status=${8:?launch status is required}
+        if [ "${3:-}" = /tmp/handle-task-launch-job.sh ]; then
+            launch_status=${6:?launch status is required}
             launch_job=$(job_name_for_status "$launch_status")
             launch_attempts="$VERS_STATE_DIR/$launch_job.launch-attempts"
             increment_file "$launch_attempts"
@@ -128,14 +128,14 @@ case "$command" in
                 ' "$VERS_REMOTE_SIZES"
                 ;;
             *"sh /tmp/handle-task-inspect-job.sh /run/handle-task/"*)
-                inspect_status=${6:?inspection status is required}
+                inspect_status=${4:?inspection status is required}
                 inspect_job=$(job_name_for_status "$inspect_status")
                 cat "$VERS_STATE_DIR/$inspect_job.status"
                 ;;
         esac
         ;;
     copy)
-        shift 3
+        shift 1
         source_path=$1
         remote_path=$2
         count=0
@@ -196,7 +196,7 @@ GITHUB_API_KEY=credential-must-not-appear run_launcher \
 grep -q '^delete -y 11111111-1111-4111-8111-111111111111$' "$apply_log"
 ! grep -q '^pause ' "$apply_log"
 ! grep -q 'credential-must-not-appear' "$apply_log"
-grep -q '^execute -t 60 11111111-1111-4111-8111-111111111111 ' "$apply_log"
+grep -q '^execute 11111111-1111-4111-8111-111111111111 ' "$apply_log"
 ! grep -q '^exec ' "$apply_log"
 test -d "$vers_state_dir/prepare.status.launch"
 test -d "$vers_state_dir/codex.status.launch"

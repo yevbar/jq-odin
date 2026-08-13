@@ -217,10 +217,10 @@ copy_to_vm() (
     attempt=1
 
     while [ "$attempt" -le 3 ]; do
-        if "$vers_bin" copy -t 120 "$vm_id" \
+        if "$vers_bin" copy "$vm_id" \
             "$source_path" "$remote_path"; then
             remote_bytes=$(
-                "$vers_bin" execute -t 60 "$vm_id" \
+                "$vers_bin" execute "$vm_id" \
                     sh -c 'wc -c <"$1"' sh "$remote_path" 2>/dev/null |
                     sed -n '/^[[:space:]]*[0-9][0-9]*[[:space:]]*$/p' |
                     tr -d '[:space:]' |
@@ -252,7 +252,7 @@ launch_remote_job() (
     launch_attempt=1
 
     while [ "$launch_attempt" -le 3 ]; do
-        if "$vers_bin" execute -t 60 "$vm_id" sh "$remote_launcher" "$@"; then
+        if "$vers_bin" execute "$vm_id" sh "$remote_launcher" "$@"; then
             return 0
         fi
 
@@ -277,7 +277,7 @@ wait_for_remote_job() {
 
     while :; do
         if inspection_output=$(
-            "$vers_bin" execute -t 60 "$vm_id" sh "$remote_inspector" \
+            "$vers_bin" execute "$vm_id" sh "$remote_inspector" \
                 "$status_file" "$runner_identity_file"
         ); then
             state=$(
@@ -319,7 +319,7 @@ wait_for_remote_job() {
         sleep 10
     done
 
-    "$vers_bin" execute -t 60 "$vm_id" tail -n 240 "$log_file" || true
+    "$vers_bin" execute "$vm_id" tail -n 240 "$log_file" || true
     if [ "$status" -ne 0 ]; then
         echo "$job_name failed with status $status" >&2
         return "$status"
@@ -330,8 +330,7 @@ echo "Booting Vers commit $commit_key"
 vm_phase=creating
 run_output=$(
     "$vers_bin" run-commit "$commit_key" \
-        --vm-alias "$vm_alias" \
-        --wait
+        --vm-alias "$vm_alias"
 )
 printf '%s\n' "$run_output"
 vm_id=$(
@@ -346,7 +345,7 @@ fi
 vm_phase=booted
 
 current_disk_kib=$(
-    "$vers_bin" execute -t 60 "$vm_id" env HOME=/root sh -lc \
+    "$vers_bin" execute "$vm_id" env HOME=/root sh -lc \
         "df -Pk / | awk 'NR == 2 { print \$2 }'" |
         sed -n '/^[0-9][0-9]*$/p' |
         sed -n '$p'
@@ -357,8 +356,7 @@ if [ -z "$current_disk_kib" ]; then
 fi
 current_disk_mib=$((current_disk_kib / 1024))
 if [ "$current_disk_mib" -lt "$disk_size_mib" ]; then
-    echo "Growing VM disk: ${current_disk_mib} MiB -> ${disk_size_mib} MiB"
-    "$vers_bin" resize "$vm_id" --size "$disk_size_mib"
+    echo "VM disk is ${current_disk_mib} MiB; current Vers CLI has no resize command, continuing with the provisioned disk" >&2
 fi
 
 echo "Preparing VM $vm_id"
@@ -369,13 +367,13 @@ remote_inspector=/tmp/handle-task-inspect-job.sh
 remote_state_dir=/run/handle-task
 prepare_status=$remote_state_dir/prepare.status
 prepare_log=$remote_state_dir/prepare.log
-"$vers_bin" execute -t 60 "$vm_id" mkdir -p "$remote_state_dir"
-"$vers_bin" execute -t 60 "$vm_id" chmod 700 "$remote_state_dir"
+"$vers_bin" execute "$vm_id" mkdir -p "$remote_state_dir"
+"$vers_bin" execute "$vm_id" chmod 700 "$remote_state_dir"
 copy_to_vm "$prepare_script" "$remote_prepare"
 copy_to_vm "$job_script" "$remote_job"
 copy_to_vm "$launch_script" "$remote_launcher"
 copy_to_vm "$inspect_script" "$remote_inspector"
-"$vers_bin" execute -t 60 "$vm_id" chmod 700 \
+"$vers_bin" execute "$vm_id" chmod 700 \
     "$remote_prepare" "$remote_job" "$remote_launcher" "$remote_inspector"
 launch_remote_job "VM preparation" \
     "$remote_state_dir/prepare-launch.log" \
@@ -397,7 +395,7 @@ printf '%s\n' \
 if [ "$prepare_only" = true ]; then
     printf '%s\n' \
         "Connect with: $vers_bin connect $vm_id" \
-        "Run Codex with: $vers_bin execute -t 0 $vm_id runuser -u jqagent -- env HOME=/home/jqagent sh -lc 'cd $repo_dir && codex'"
+        "Run Codex with: $vers_bin execute $vm_id runuser -u jqagent -- env HOME=/home/jqagent sh -lc 'cd $repo_dir && codex'"
     exit 0
 fi
 
@@ -423,9 +421,9 @@ codex_status=$remote_state_dir/codex.status
 codex_log=$remote_state_dir/codex.log
 copy_to_vm "$wrapped_prompt" "$remote_prompt"
 copy_to_vm "$codex_script" "$remote_codex"
-"$vers_bin" execute -t 60 "$vm_id" chmod 755 "$remote_codex"
-"$vers_bin" execute -t 60 "$vm_id" chown jqagent:jqagent "$remote_prompt"
-"$vers_bin" execute -t 60 "$vm_id" chmod 600 "$remote_prompt"
+"$vers_bin" execute "$vm_id" chmod 755 "$remote_codex"
+"$vers_bin" execute "$vm_id" chown jqagent:jqagent "$remote_prompt"
+"$vers_bin" execute "$vm_id" chmod 600 "$remote_prompt"
 launch_remote_job "Codex task" \
     "$remote_state_dir/codex-launch.log" \
     "$remote_job" "$codex_status" "$codex_log" \
