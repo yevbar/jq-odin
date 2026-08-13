@@ -4341,6 +4341,32 @@ html_escape_text :: proc(text: string, allocator: runtime.Allocator) -> (string,
 
 @(private)
 strftime_array_result :: proc(input: ^value.Value, format: string, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if format == "%Y" || format == "%m" || format == "%d" {
+		moment: datetime.DateTime
+		if value.kind_of(input) == .Array {
+			length, length_ok := value.array_length(input)
+			if !length_ok || length < 1 do return {}, .Cannot_Iterate, nil
+			fields: [3]int
+			for i in 0..<min(length, 3) {
+				item, item_ok := value.array_element_copy(input, i)
+				if !item_ok { return {}, .Cannot_Iterate, nil }
+				number, number_ok := value.number_value_get(&item); _ = value.destroy_value(&item)
+				if !number_ok do return {}, .Cannot_Number, nil
+				fields[i] = int(number)
+			}
+			moment.year = i64(fields[0]); moment.month = i8(fields[1] + 1); moment.day = i8(fields[2])
+		} else if value.kind_of(input) == .Number {
+			number, number_ok := value.number_value_get(input)
+			if !number_ok do return {}, .Cannot_Number, nil
+			converted, converted_ok := time.time_to_datetime(time.unix(i64(number), 0))
+			if !converted_ok do return {}, .Cannot_Iterate, nil
+			moment = converted
+		} else { return {}, .Cannot_Iterate, nil }
+		text := fmt.tprintf("%04d", moment.year) if format == "%Y" else fmt.tprintf("%02d", int(moment.month)) if format == "%m" else fmt.tprintf("%02d", moment.day)
+		result, constructor_error := value.string_value(text, allocator)
+		if value.constructor_error_kind(&constructor_error) != .None do return {}, .None, .Out_Of_Memory
+		return result, .None, nil
+	}
 	if format == "%A, %B %d, %Y" {
 		if value.kind_of(input) != .Number do return {}, .Cannot_Number, nil
 		number, number_ok := value.number_value_get(input)

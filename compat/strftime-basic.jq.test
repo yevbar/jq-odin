@@ -1,0 +1,11 @@
+strftime("%Y")
+0
+"1970"
+
+strftime("%m")
+0
+"01"
+
+strftime("%d")
+0
+"01"
