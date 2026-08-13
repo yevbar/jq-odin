@@ -2304,15 +2304,31 @@ delete_path_value :: proc(input, path: ^value.Value, offset: int, allocator: run
 }
 
 @(private)
-delete_literal_path_argument :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, current: ^value.Value) -> bool {
+delete_literal_path_argument :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, current: ^value.Value, producer: int) -> bool {
 	instruction, instruction_ok := program.program_instruction(storage.compiled, index); if !instruction_ok do return false
-	if instruction.opcode == .Parenthesized { child, ok := child_instruction(storage, instruction, 0); return ok && delete_literal_path_argument(storage, child, current) }
+	if instruction.opcode == .Parenthesized { child, ok := child_instruction(storage, instruction, 0); return ok && delete_literal_path_argument(storage, child, current, producer) }
+	if instruction.opcode == .Variable {
+		path, path_ok := bound_literal_path_value(storage, index, producer)
+		if !path_ok do return false
+		updated, updated_ok := delete_path_value(current, &path, 0, storage.allocator)
+		_ = value.destroy_value(current); _ = value.destroy_value(&path)
+		if !updated_ok do return false
+		current^ = updated
+		return true
+	}
 	if instruction.opcode == .Fork || instruction.opcode == .Sequence {
 		left, left_ok := child_instruction(storage, instruction, 0); right, right_ok := child_instruction(storage, instruction, 1)
-		return left_ok && right_ok && delete_literal_path_argument(storage, left, current) && delete_literal_path_argument(storage, right, current)
+		return left_ok && right_ok && delete_literal_path_argument(storage, left, current, producer) && delete_literal_path_argument(storage, right, current, producer)
 	}
 	if instruction.opcode != .Array do return false
-	path, path_ok := literal_path_value(storage, index); if !path_ok do return false
+	path, path_ok := literal_path_value(storage, index)
+	if !path_ok && instruction.operands_count == 1 {
+		operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)))
+		if operand_ok && operand.kind == .Instruction {
+			path, path_ok = bound_literal_path_value(storage, operand.instruction, producer)
+		}
+	}
+	if !path_ok do return false
 	path_length, path_length_ok := value.array_length(&path); if !path_length_ok { _ = value.destroy_value(&path); return false }
 	if path_length == 0 { _ = value.destroy_value(current); current^ = value.null_value(); _ = value.destroy_value(&path); return true }
 	updated, updated_ok := delete_path_value(current, &path, 0, storage.allocator); _ = value.destroy_value(current); _ = value.destroy_value(&path); if !updated_ok do return false; current^ = updated; return true
@@ -6292,7 +6308,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				for offset in 0..<argument_instruction.operands_count {
 					operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(argument_instruction.operands_start)+u32(offset)))
 					if !operand_ok || operand.kind != .Instruction { _ = value.destroy_value(&current); return begin_terminal_misuse(storage, .Malformed_Program) }
-					if !delete_literal_path_argument(storage, operand.instruction, &current) { _ = value.destroy_value(&current); return begin_terminal_misuse(storage, .Malformed_Program) }
+					if !delete_literal_path_argument(storage, operand.instruction, &current, index) { _ = value.destroy_value(&current); return begin_terminal_misuse(storage, .Malformed_Program) }
 				}
 				_ = value.destroy_value(&frame.input); frame.input = current
 				output := value.clone_value(&frame.input); if value.kind_of(&output) == .Invalid { return resource_step(.Out_Of_Memory) }

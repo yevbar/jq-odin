@@ -1,0 +1,5 @@
+["foo",1] as $p | getpath($p), setpath($p; 20), delpaths([$p])
+{"foo":[0,1]}
+1
+{"foo":[0,20]}
+{"foo":[0]}
