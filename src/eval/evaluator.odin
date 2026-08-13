@@ -3266,6 +3266,10 @@ propagate_output :: proc(
 			// from `parent` skips that frame and makes try/optional suppression
 			// validate against the wrong phase (or report Malformed_Program).
 			result, ready := raise_runtime(storage, current, runtime_error)
+			if len(runtime_error.key) > 0 {
+				free_error = runtime.mem_free_bytes(transmute([]byte)runtime_error.key, storage.allocator)
+				if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error), true
+			}
 			if ready do return result, true
 			return {}, false
 		}
