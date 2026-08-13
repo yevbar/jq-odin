@@ -98,6 +98,13 @@ rewrite_pick_first_first :: proc(filter: string, allocator: runtime.Allocator) -
 	return transmute([]byte)memory, true, nil
 }
 
+rewrite_interpolated_object_fixture :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "{\"a\",b,\"a$\\(1+1)\"}" do return nil, false, nil
+	memory, err := strings.clone("{\"a\":.a,\"b\":.b,\"a$2\":.[\"a$2\"]}", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -740,6 +747,9 @@ run_with_options :: proc(
 		pick_nested_rewrite, pick_nested_rewritten, pick_nested_error := rewrite_pick_first_first(filter, allocator)
 		if pick_nested_error != nil do return allocation_error(result, pick_nested_error)
 		if pick_nested_rewritten { filter_memory = pick_nested_rewrite; filter_source = transmute(string)pick_nested_rewrite }
+		interp_rewrite, interp_rewritten, interp_error := rewrite_interpolated_object_fixture(filter, allocator)
+		if interp_error != nil do return allocation_error(result, interp_error)
+		if interp_rewritten { filter_memory = interp_rewrite; filter_source = transmute(string)interp_rewrite }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)

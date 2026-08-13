@@ -1,0 +1,4 @@
+# Bounded lowering for the upstream interpolated object shorthand fixture.
+{"a",b,"a$\(1+1)"}
+{"a":1, "b":2, "c":3, "a$2":4}
+{"a":1,"b":2,"a$2":4}
