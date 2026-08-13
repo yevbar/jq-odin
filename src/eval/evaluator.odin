@@ -7824,7 +7824,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				if child_ok && format_ok && (format_instruction.opcode != .Identity || !format_instruction.has_literal || format_instruction.literal_kind != .String) {
 					err := Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}
-					err.key = "strftime/1 requires a string format"
+					err.key = "strflocaltime/1 requires a string format" if instruction.format_local else "strftime/1 requires a string format"
 					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue
@@ -7838,7 +7838,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if format_cleanup != nil || format_error != .None || !format_text_ok {
 					_ = value.destroy_value(&format_value)
 					err := Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}
-					err.key = "strftime/1 requires a string format"
+					err.key = "strflocaltime/1 requires a string format" if instruction.format_local else "strftime/1 requires a string format"
 					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue
