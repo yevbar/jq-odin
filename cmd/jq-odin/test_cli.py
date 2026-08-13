@@ -426,6 +426,14 @@ def expect_module_loading(
             ["-L", directory, "-n", 'include "parameter"; identity(1, 2)'],
         )
 
+        (root / "tight-parameter.jq").write_text(
+            "def increment(x): x+1;\n", encoding="utf-8"
+        )
+        expect_oracle_case(
+            "parameterized filter body without operator whitespace",
+            ["-L", directory, "-n", 'include "tight-parameter"; increment(2)'],
+        )
+
         (root / "dollar-parameter.jq").write_text(
             "def value($x): $x;\n", encoding="utf-8"
         )

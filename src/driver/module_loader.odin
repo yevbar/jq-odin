@@ -655,7 +655,7 @@ read_data_module :: proc(name: string, paths: []string, allocator: runtime.Alloc
 	return read_module_extension(name, ".json", paths, allocator)
 }
 
-module_definition_body_is_valid :: proc(source: string, allocator: runtime.Allocator) -> (valid: bool, resource_error: runtime.Allocator_Error) {
+module_definition_body_is_valid :: proc(source: string, allocator: runtime.Allocator, parameters: string = "") -> (valid: bool, resource_error: runtime.Allocator_Error) {
 	trimmed := module_trim(source)
 	if len(trimmed) == 0 do return false, nil
 	// The scanner's trailing-dot boundary is unambiguously malformed even
@@ -664,12 +664,33 @@ module_definition_body_is_valid :: proc(source: string, allocator: runtime.Alloc
 	   is_module_identifier_byte(trimmed[len(trimmed)-2]) {
 		return false, nil
 	}
+	// Filter parameters are jq filters, so a bare parameter in a definition body
+	// is a valid source-level reference even though this parser slice does not yet
+	// have a callable-definition AST. Validate a parameterized body through a
+	// temporary identity filter, preserving strings/comments and postfix context;
+	// this is validation-only and never changes the source used for expansion.
+	validation_source := trimmed
+	validation_builder: strings.Builder
+	validation_builder_initialized := false
+	if module_has_filter_parameters(parameters) {
+		_, builder_error := strings.builder_init(&validation_builder, allocator)
+		if builder_error != nil do return false, builder_error
+		validation_builder_initialized = true
+		if !module_write_filter_parameter_validation(&validation_builder, trimmed, parameters) {
+			strings.builder_destroy(&validation_builder)
+			return false, .Out_Of_Memory
+		}
+		validation_source = strings.to_string(validation_builder)
+	}
+	defer {
+		if validation_builder_initialized do strings.builder_destroy(&validation_builder)
+	}
 	// The syntax parser is the source of truth for complete filter syntax. Module
 	// calls are expanded textually by this loader and are not yet represented in
 	// the parser AST; retain those call-bearing bodies for expansion while still
 	// rejecting parser errors in all ordinary filter bodies.
 	parser: syntax.Parser
-	source_view := diagnostic.borrow_source("<module-definition>", trimmed)
+	source_view := diagnostic.borrow_source("<module-definition>", validation_source)
 	if !syntax.init_parser(&parser, source_view, allocator) do return false, .Out_Of_Memory
 	parsed := syntax.parse_filter(&parser)
 	cleanup_error := syntax.destroy_parser(&parser)
@@ -689,6 +710,57 @@ module_definition_body_is_valid :: proc(source: string, allocator: runtime.Alloc
 		return false, .Invalid_Argument
 	}
 	return false, .Invalid_Argument
+}
+
+module_has_filter_parameters :: proc(parameters: string) -> bool {
+	for index in 0..<module_parameter_count(parameters) {
+		name := module_parameter_name_at(parameters, index)
+		if !module_parameter_is_value(parameters, name) do return true
+	}
+	return false
+}
+
+module_write_filter_parameter_validation :: proc(builder: ^strings.Builder, source, parameters: string) -> bool {
+	// Replace only whole bare identifiers. The surrounding spelling checks keep
+	// field (`.x`), variable (`$x`), and format (`@x`) references intact. Strings
+	// and comments are copied byte-for-byte so validation cannot reinterpret
+	// their contents as source identifiers.
+	start := 0
+	at := 0
+	in_string := false
+	escaped := false
+	in_comment := false
+	for at < len(source) {
+		byte := source[at]
+		if in_comment {
+			at += 1
+			if byte == '\n' do in_comment = false
+			continue
+		}
+		if in_string {
+			at += 1
+			if escaped { escaped = false } else if byte == '\\' { escaped = true } else if byte == '"' { in_string = false }
+			continue
+		}
+		if byte == '"' { in_string = true; at += 1; continue }
+		if byte == '#' { in_comment = true; at += 1; continue }
+		if !is_module_identifier_start(byte) { at += 1; continue }
+		word_start := at
+		at += 1
+		for at < len(source) && is_module_identifier_byte(source[at]) do at += 1
+		if word_start > 0 && (source[word_start-1] == '.' || source[word_start-1] == '$' || source[word_start-1] == '@') {
+			continue
+		}
+		word := source[word_start:at]
+		for index in 0..<module_parameter_count(parameters) {
+			name := module_parameter_name_at(parameters, index)
+			if module_parameter_is_value(parameters, name) || name != word do continue
+			if !module_write(builder, source[start:word_start]) || !module_write(builder, "(.)") do return false
+			start = at
+			break
+		}
+	}
+	return module_write(builder, source[start:])
 }
 
 module_body_ends_with_operator :: proc(source: string) -> bool {
@@ -1028,7 +1100,7 @@ find_module_definitions :: proc(bytes: string, definitions: ^[dynamic]module_def
 			if in_string || i > len(bytes) || i == len(bytes) && (len(bytes) == 0 || bytes[i-1] != ';') || parentheses != 0 || brackets != 0 || braces != 0 do return {kind = .Unsupported_Syntax}
 			body := bytes[body_start:i-1]
 			if !module_body_has_filter(body) do return {kind = .Unsupported_Syntax}
-			body_valid, body_resource_error := module_definition_body_is_valid(body, allocator)
+			body_valid, body_resource_error := module_definition_body_is_valid(body, allocator, bytes[parameters_start:parameters_end])
 			if body_resource_error != nil do return {kind = .Read_Failure, resource_error = body_resource_error}
 			if !body_valid do return {kind = .Unsupported_Syntax}
 			owned_name, name_error := strings.clone(bytes[name_start:name_end], allocator)
@@ -1908,7 +1980,7 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 	outcome = find_module_definitions(bytes[i:], &local, allocator)
 	if outcome.kind != .None { delete(data, allocator); destroy_module_definitions(&local, allocator); active^[active_count] = ""; return outcome }
 	for definition in local {
-		body_valid, body_resource_error := module_definition_body_is_valid(definition.body, allocator)
+		body_valid, body_resource_error := module_definition_body_is_valid(definition.body, allocator, definition.parameters)
 		if body_resource_error != nil {
 			delete(data, allocator)
 			destroy_module_definitions(&local, allocator)

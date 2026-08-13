@@ -666,6 +666,13 @@ module_definition_call_arguments_keep_filter_boundaries :: proc(t: ^testing.T) {
 }
 
 @(test)
+filter_parameter_body_without_operator_whitespace_is_validated :: proc(t: ^testing.T) {
+	// Bare filter parameters are replaced only in the temporary validation
+	// source; expansion still substitutes the original filter argument.
+	module_expansion_matches(t, "def increment(x): x+1;", "increment(2)", "( (2)+1)")
+}
+
+@(test)
 parameterized_module_calls_require_exact_arity :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def f(x): x;", &definitions, context.allocator)
