@@ -7809,6 +7809,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			case .Strftime:
 				child, child_ok := child_instruction(storage, instruction, 0)
 				format_instruction, format_ok := program.program_instruction(storage.compiled, child)
+				// jq validates the datetime input before the format type when the
+				// input cannot be interpreted as a parsed datetime. Preserve that
+				// observable error precedence for caught invalid-input calls such as
+				// `try strflocaltime({}) catch .`.
+				input_kind := value.kind_of(&frame.input)
+				input_is_datetime := input_kind == .Array || (input_kind == .Number && !instruction.format_local)
+				if !input_is_datetime {
+					err := Runtime_Error{kind=.Cannot_Iterate, input_kind=input_kind, span=instruction.span}
+					err.key = "strflocaltime/1 requires parsed datetime inputs" if instruction.format_local else "strftime/1 requires parsed datetime inputs"
+					result, ready := raise_runtime(storage, index, err)
+					if ready do return result
+					continue
+				}
 				if child_ok && format_ok && (format_instruction.opcode != .Identity || !format_instruction.has_literal || format_instruction.literal_kind != .String) {
 					err := Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span}
 					err.key = "strftime/1 requires a string format"
