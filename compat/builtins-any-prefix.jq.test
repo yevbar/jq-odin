@@ -1,0 +1,4 @@
+# Bounded lowering from any(predicate) to the supported generator form.
+builtins|any(.[:1] == "_")
+null
+false

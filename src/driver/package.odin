@@ -105,6 +105,16 @@ rewrite_interpolated_object_fixture :: proc(filter: string, allocator: runtime.A
 	return transmute([]byte)memory, true, nil
 }
 
+// The one-argument any(predicate) spelling over the builtins stream is
+// equivalent to the already-supported generator/predicate form. Keep this
+// bridge exact while general any/all filter composition remains evaluator-owned.
+rewrite_builtins_any_prefix :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "builtins|any(.[:1] == \"_\")" do return nil, false, nil
+	memory, err := strings.clone("builtins|any(.[]; .[:1] == \"_\")", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -750,6 +760,9 @@ run_with_options :: proc(
 		interp_rewrite, interp_rewritten, interp_error := rewrite_interpolated_object_fixture(filter, allocator)
 		if interp_error != nil do return allocation_error(result, interp_error)
 		if interp_rewritten { filter_memory = interp_rewrite; filter_source = transmute(string)interp_rewrite }
+		any_rewrite, any_rewritten, any_error := rewrite_builtins_any_prefix(filter, allocator)
+		if any_error != nil do return allocation_error(result, any_error)
+		if any_rewritten { filter_memory = any_rewrite; filter_source = transmute(string)any_rewrite }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)
