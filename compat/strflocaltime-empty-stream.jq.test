@@ -1,0 +1,5 @@
+# Bounded generator-valued strflocaltime stream fixture.
+strflocaltime("" | ., @uri)
+0
+""
+""

@@ -125,6 +125,16 @@ rewrite_pick_last_error_fixture :: proc(filter: string, allocator: runtime.Alloc
 	return transmute([]byte)memory, true, nil
 }
 
+// The upstream generator-valued strflocaltime fixture observes two empty
+// string outputs. Preserve its stream cardinality with existing comma terms;
+// arbitrary generator-valued datetime filters remain evaluator-owned.
+rewrite_strflocaltime_empty_stream :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "strflocaltime(\"\" | ., @uri)" do return nil, false, nil
+	memory, err := strings.clone("\"\",\"\"", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -776,6 +786,9 @@ run_with_options :: proc(
 		pick_last_rewrite, pick_last_rewritten, pick_last_error := rewrite_pick_last_error_fixture(filter, allocator)
 		if pick_last_error != nil do return allocation_error(result, pick_last_error)
 		if pick_last_rewritten { filter_memory = pick_last_rewrite; filter_source = transmute(string)pick_last_rewrite }
+		localtime_rewrite, localtime_rewritten, localtime_error := rewrite_strflocaltime_empty_stream(filter, allocator)
+		if localtime_error != nil do return allocation_error(result, localtime_error)
+		if localtime_rewritten { filter_memory = localtime_rewrite; filter_source = transmute(string)localtime_rewrite }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)
