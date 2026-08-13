@@ -1778,6 +1778,24 @@ dynamic_path_prefix :: proc(storage: ^evaluator_storage, index: program.Instruct
 				}
 				_ = value.destroy_value(&prefix)
 			}
+			// A pipe into the empty-field iterator (`.a | .[]`) denotes the
+			// same bounded dynamic path as the postfix spelling `.a[]`.
+			// Preserve only static prefixes here; arbitrary filters after the
+			// iterator still require a general resumable path continuation.
+			right_prefix, right_wildcard, right_prefix_ok := dynamic_path_prefix(storage, right)
+			if right_prefix_ok && right_wildcard {
+				right_length, right_length_ok := value.array_length(&right_prefix)
+				if right_length_ok && right_length == 0 {
+					left_prefix, left_wildcard, left_prefix_ok := dynamic_path_prefix(storage, left)
+					_ = value.destroy_value(&right_prefix)
+					if left_prefix_ok && !left_wildcard {
+						return left_prefix, true, true
+					}
+					_ = value.destroy_value(&left_prefix)
+					return {}, false, false
+				}
+			}
+			_ = value.destroy_value(&right_prefix)
 		}
 	}
 	result, result_ok := path_array(storage.allocator)

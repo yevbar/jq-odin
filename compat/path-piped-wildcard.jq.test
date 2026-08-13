@@ -1,0 +1,11 @@
+# A piped wildcard after a static prefix has the same path semantics as `.a[]`.
+try path(.a | .[]) catch .
+{"a":[1,2]}
+["a",0]
+["a",1]
+
+# `try` remains transparent when the bounded path expression succeeds.
+try path(.a | .[]) catch "caught"
+{"a":[{"b":0},{"b":1}]}
+["a",0]
+["a",1]
