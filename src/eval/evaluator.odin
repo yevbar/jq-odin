@@ -1700,10 +1700,16 @@ dynamic_index_result :: proc(
 		case .Object:
 			return value.null_value(), {}, true
 		case:
-			return {}, Runtime_Error{kind = .Cannot_Index_With_String, input_kind = value.kind_of(base), span = instruction.span}, true
+			message := strings.concatenate([]string{
+				"Cannot index ", runtime_value_kind_name(value.kind_of(base)), " with number",
+			}, storage.allocator)
+			return {}, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(base), span=instruction.span, key=message}, true
 		}
 	}
-	return {}, Runtime_Error{kind = .Cannot_Index_With_String, input_kind = value.kind_of(base), span = instruction.span}, true
+	message := strings.concatenate([]string{
+		"Cannot index ", runtime_value_kind_name(value.kind_of(base)), " with ", runtime_value_kind_name(key_kind),
+	}, storage.allocator)
+	return {}, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(base), span=instruction.span, key=message}, true
 }
 
 @(private)
