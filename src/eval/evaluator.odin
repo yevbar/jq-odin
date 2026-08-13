@@ -3255,7 +3255,11 @@ propagate_output :: proc(
 		if free_error != nil do return resource_step(free_error), true
 		if !valid do return begin_terminal_misuse(storage, .Malformed_Program), true
 		if runtime_error.kind != .None {
-			result, ready := raise_runtime(storage, parent, runtime_error)
+			// The key child has just retired; the dynamic Index frame is the
+			// producer whose continuation owns the original base/input.  Raising
+			// from `parent` skips that frame and makes try/optional suppression
+			// validate against the wrong phase (or report Malformed_Program).
+			result, ready := raise_runtime(storage, current, runtime_error)
 			if ready do return result, true
 			return {}, false
 		}
