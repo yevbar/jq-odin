@@ -2020,7 +2020,7 @@ module_expand_source :: proc(
 	return {}
 }
 
-collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dynamic]module_definition, allocator: runtime.Allocator, depth: int, active: ^[module_loader_depth]string, active_count: int) -> Module_Outcome {
+collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dynamic]module_definition, data_imports: ^[dynamic]module_data_import, allocator: runtime.Allocator, depth: int, active: ^[module_loader_depth]string, active_count: int) -> Module_Outcome {
 	if depth >= module_loader_depth do return {kind = .Depth_Overflow}
 	for previous in active^[:active_count] {
 		if previous == name do return {kind = .Cycle}
@@ -2055,7 +2055,7 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 				child_paths, paths_error = module_search_paths(child_search, paths, allocator)
 				if child_search_owned do delete(child_search, allocator)
 				if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
-				outcome = collect_module(child, prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
+				outcome = collect_module(child, prefix, child_paths[:], definitions, data_imports, allocator, depth+1, active, active_count+1)
 				destroy_module_search_paths(child_paths, search, allocator)
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
 			i = next; continue
@@ -2063,6 +2063,39 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 		if module_word(bytes, i, "import") {
 			child, alias, search, next, imported, unsupported := parse_module_import(bytes, i)
 			if unsupported || !imported { delete(data, allocator); active^[active_count] = ""; return {kind = .Unsupported_Syntax} }
+			if module_import_uses_data_binding(bytes, i) {
+				child_search := search
+				child_search_owned := false
+				paths_error: runtime.Allocator_Error
+				child_paths: [dynamic]string
+				if len(search) > 0 && search[0] == '.' {
+					child_search, paths_error = strings.concatenate([]string{name, "/", search}, allocator)
+					if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
+					child_search_owned = true
+				}
+				child_paths, paths_error = module_search_paths(child_search, paths, allocator)
+				if child_search_owned do delete(child_search, allocator)
+				if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
+				data_bytes, data_outcome := read_data_module(child, child_paths[:], allocator)
+				destroy_module_search_paths(child_paths, search, allocator)
+				if data_outcome.kind == .None {
+					owned_alias, alias_error := strings.clone(alias, allocator)
+					owned_data, data_error := module_data_array_literal(transmute(string)data_bytes, allocator)
+					delete(data_bytes, allocator)
+					if alias_error != nil || data_error != nil {
+						delete(owned_alias, allocator); delete(owned_data, allocator); delete(data, allocator); active^[active_count] = ""
+						if data_error == .Invalid_Argument do return {kind = .Unsupported_Syntax}
+						return {kind = .Read_Failure, resource_error = alias_error if alias_error != nil else data_error}
+					}
+					_, data_append_error := append(data_imports, module_data_import{alias = owned_alias, data = owned_data})
+					if data_append_error != nil {
+						delete(owned_alias, allocator); delete(owned_data, allocator); delete(data, allocator); active^[active_count] = ""
+						return {kind = .Read_Failure, resource_error = data_append_error}
+					}
+					i = next; continue
+				}
+				if data_outcome.kind != .Not_Found { delete(data, allocator); active^[active_count] = ""; return data_outcome }
+			}
 			child_prefix := alias
 			if len(prefix) > 0 {
 				prefix_error: runtime.Allocator_Error
@@ -2081,7 +2114,7 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 			child_paths, paths_error = module_search_paths(child_search, paths, allocator)
 			if child_search_owned do delete(child_search, allocator)
 			if paths_error != nil { if len(prefix) > 0 { delete(child_prefix, allocator) }; delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
-			outcome = collect_module(child, child_prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
+			outcome = collect_module(child, child_prefix, child_paths[:], definitions, data_imports, allocator, depth+1, active, active_count+1)
 			destroy_module_search_paths(child_paths, search, allocator)
 			if len(prefix) > 0 { delete(child_prefix, allocator) }
 			if outcome.kind != .None { delete(data, allocator); active^[active_count] = ""; return outcome }
@@ -2180,7 +2213,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 			}
 			search_paths, paths_error := module_search_paths(search, paths, allocator)
 			if paths_error != nil { destroy_module_definitions(&definitions, allocator); return nil, {kind = .Read_Failure, resource_error = paths_error} }
-			outcome := collect_module(name, "", search_paths[:], &definitions, allocator, 0, &active_modules, 0)
+			outcome := collect_module(name, "", search_paths[:], &definitions, &data_imports, allocator, 0, &active_modules, 0)
 			destroy_module_search_paths(search_paths, search, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
@@ -2229,7 +2262,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				code_probe, code_probe_outcome := read_module(name, search_paths[:], allocator)
 				if code_probe_outcome.kind == .None {
 					delete(code_probe, allocator)
-					outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
+					outcome := collect_module(name, alias, search_paths[:], &definitions, &data_imports, allocator, 0, &active_modules, 0)
 					destroy_module_search_paths(search_paths, search, allocator)
 					if outcome.kind != .None {
 						destroy_module_definitions(&definitions, allocator)
@@ -2246,7 +2279,7 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 				destroy_module_definitions(&definitions, allocator)
 				return nil, {kind = .Not_Found}
 			}
-			outcome := collect_module(name, alias, search_paths[:], &definitions, allocator, 0, &active_modules, 0)
+			outcome := collect_module(name, alias, search_paths[:], &definitions, &data_imports, allocator, 0, &active_modules, 0)
 			destroy_module_search_paths(search_paths, search, allocator)
 			if outcome.kind != .None { destroy_module_definitions(&definitions, allocator); return nil, outcome }
 			has_module = true; i = next; continue
