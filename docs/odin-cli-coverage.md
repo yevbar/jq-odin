@@ -643,7 +643,7 @@ behavioral oracle.
 
 ## Current authoritative measurement (2026-08-13)
 
-- Integration head `878a57d2` includes the reviewed CLI lineage, the
+- Integration head `18b7e1d5` includes the reviewed CLI lineage, the
   `asinh`/`atanh` unary math builtins, filter-parameter validation, the
   static `path`/`paths`/literal `getpath` slice, literal `setpath`, and
   bounded literal `delpaths`, bounded dynamic path iteration, and static path
