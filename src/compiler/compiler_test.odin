@@ -487,6 +487,26 @@ every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.
 		seen[node.kind] = true
 	}
 	testing.expect_value(t, syntax.destroy_parser(&call_parser), runtime.Allocator_Error.None)
+	loop_parser: syntax.Parser
+	loop_source := diagnostic.borrow_source("<loop-shape>", `while(.<2; .+1)`)
+	testing.expect(t, syntax.init_parser(&loop_parser, loop_source, context.allocator))
+	loop_parsed := syntax.parse_filter(&loop_parser)
+	testing.expect_value(t, loop_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&loop_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&loop_parser), runtime.Allocator_Error.None)
+	until_parser: syntax.Parser
+	until_source := diagnostic.borrow_source("<until-shape>", `until(.>2; .+1)`)
+	testing.expect(t, syntax.init_parser(&until_parser, until_source, context.allocator))
+	until_parsed := syntax.parse_filter(&until_parser)
+	testing.expect_value(t, until_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&until_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&until_parser), runtime.Allocator_Error.None)
 	for kind in syntax.Node_Kind {
 		testing.expect(t, seen[kind])
 	}

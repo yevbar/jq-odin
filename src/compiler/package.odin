@@ -115,6 +115,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       !node.has_string_text && string_header_absent(node.string_text)
 	case .If:
 		return node.has_if_condition && node.has_if_then && node.has_if_else && no_child && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .While, .Until:
+		return no_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Null:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
@@ -331,6 +333,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate:
 		return true
 	case .Limit:
+		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .While, .Until:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Skip:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
@@ -631,6 +635,8 @@ lower_filter :: proc(
 			if node.has_reduce_update && (!node_reference_valid(node.reduce_update, len(nodes)) || !checked_count_add(&operand_count, 1)) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .If:
 			if !node_reference_valid(node.if_condition, len(nodes)) || !node_reference_valid(node.if_then, len(nodes)) || !node_reference_valid(node.if_else, len(nodes)) || !checked_count_add(&operand_count, 3) { return Lower_Outcome{kind = .Invalid_AST} }
+		case .While, .Until:
+			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .Strftime, .Strptime:
 			if !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .Try:
@@ -984,6 +990,14 @@ lower_filter :: proc(
 			for child in children {
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(child)})); operand_at += 1
 			}
+		case .While, .Until:
+			instruction.opcode = .While if node.kind == .While else .Until
+			children := [2]syntax.Node_Id{node.left, node.right}
+			for child in children {
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(child)}))
+				operand_at += 1
+			}
+			instruction.operands_count = 2
 		case .Static_Field_Add_Number, .Static_Field_Set_Number:
 			instruction.opcode = .Static_Field_Add_Number if node.kind == .Static_Field_Add_Number else .Static_Field_Set_Number
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

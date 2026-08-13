@@ -145,6 +145,14 @@ frame_phase :: enum u8 {
 	If_Condition_Active,
 	If_Then_Active,
 	If_Else_Active,
+	Loop_Condition_Active,
+	Loop_Condition_Result,
+	Loop_Emit_While,
+	Loop_Emit_Until,
+	Loop_Start_Update,
+	Loop_Update_Active,
+	Loop_Update_Result,
+	Loop_Start_Condition,
 	Recurse_Children,
 	Paths_Active,
 	Path_Active,
@@ -185,6 +193,7 @@ eval_frame :: struct {
 	binary_left: value.Value,
 	// Tracks whether a defined result was emitted by a defined-or left stream.
 	binary_defined_or_left_seen: bool,
+	loop_value: value.Value,
 	if_branch_active: bool,
 	iterator_cursor: int,
 	reduce_accumulator: value.Value,
@@ -1401,6 +1410,11 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		return child_ok
+	case .While, .Until:
+		if instruction.operands_count != 2 do return false
+		_, condition_ok := child_instruction(storage, instruction, 0)
+		_, update_ok := child_instruction(storage, instruction, 1)
+		if !condition_ok || !update_ok do return false
 	case:
 		return false
 	}
@@ -1470,6 +1484,9 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || !is_binary_opcode(instruction.opcode) do return false
 	case .If_Condition_Active, .If_Then_Active, .If_Else_Active:
 		if frame.mode != .Normal || instruction.opcode != .If do return false
+	case .Loop_Condition_Active, .Loop_Condition_Result, .Loop_Emit_While, .Loop_Emit_Until,
+	     .Loop_Start_Update, .Loop_Update_Active, .Loop_Update_Result, .Loop_Start_Condition:
+		if frame.mode != .Normal || (instruction.opcode != .While && instruction.opcode != .Until) do return false
 	case .Recurse_Children:
 		if frame.mode != .Normal || instruction.opcode != .Recurse do return false
 	case:
@@ -1496,6 +1513,8 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = 3
 	} else if frame.phase == .If_Condition_Active || frame.phase == .If_Then_Active || frame.phase == .If_Else_Active {
 		expected_operand_count = 3
+	} else if frame.phase == .Loop_Condition_Active || frame.phase == .Loop_Condition_Result || frame.phase == .Loop_Emit_While || frame.phase == .Loop_Emit_Until || frame.phase == .Loop_Start_Update || frame.phase == .Loop_Update_Active || frame.phase == .Loop_Update_Result || frame.phase == .Loop_Start_Condition {
+		expected_operand_count = 2
 	} else if frame.phase == .Binary_Start_Left || frame.phase == .Binary_Left_Active || frame.phase == .Binary_Start_Right || frame.phase == .Binary_Right_Active {
 		expected_operand_count = 2
 	} else if frame.phase == .Call_Start || frame.phase == .Call_Active {
@@ -2688,6 +2707,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .If_Then_Active, .If_Else_Active:
 		frame.if_branch_active = false
 		frame.phase = .If_Condition_Active
+	case .Loop_Condition_Result, .Loop_Update_Result:
+		// The loop consumes the retained child result on the next step.
+	case .Loop_Condition_Active, .Loop_Update_Active:
+		return false
 	case .Recurse_Children:
 		// A completed child returns control to the parent's next sibling. The
 		// parent remains active until every container member has been visited.
@@ -3074,6 +3097,11 @@ propagate_output :: proc(
 			return {}, false
 		case .Sequence_Right_Active:
 			current = parent
+		case .Loop_Condition_Active, .Loop_Update_Active:
+			if value.kind_of(&frame.loop_value) != .Invalid do return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			frame.loop_value = value.take_value(owned)
+			frame.phase = .Loop_Condition_Result if frame.phase == .Loop_Condition_Active else .Loop_Update_Result
+			return {}, false
 		case .If_Condition_Active:
 			kind := value.kind_of(owned)
 			truthy := kind != .Null
@@ -8260,6 +8288,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				frame.if_branch_active = false
 				frame.phase = .If_Condition_Active
+			case .While, .Until:
+				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Loop_Start_Condition
 			case .Fork:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
@@ -8304,7 +8335,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right, .Call_Start:
+		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right, .Call_Start, .Loop_Start_Condition, .Loop_Start_Update:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -8337,6 +8368,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				offset, next_phase = 1, .Binary_Right_Active
 			case .Call_Start:
 				offset, next_phase = 0, .Call_Active
+			case .Loop_Start_Condition:
+				offset, next_phase = 0, .Loop_Condition_Active
+			case .Loop_Start_Update:
+				offset, next_phase = 1, .Loop_Update_Active
 			case:
 			}
 			child, ok := child_instruction(storage, instruction, offset)
@@ -8351,6 +8386,28 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		case .Try_Expression_Active, .Try_Catch_Active:
 			return begin_terminal_misuse(storage, .Malformed_Program)
+		case .Loop_Condition_Result:
+			kind := value.kind_of(&frame.loop_value)
+			if kind == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+			truthy := kind != .Null
+			if kind == .Boolean { truthy, _ = value.boolean_value_get(&frame.loop_value) }
+			free_error := value.destroy_value(&frame.loop_value)
+			if free_error != nil do return resource_step(free_error)
+			if instruction.opcode == .While && !truthy { frame.phase = .Complete; continue }
+			if instruction.opcode == .Until && truthy { frame.phase = .Loop_Emit_Until; continue }
+			if instruction.opcode == .While { frame.phase = .Loop_Emit_While } else { frame.phase = .Loop_Start_Update }
+		case .Loop_Emit_While, .Loop_Emit_Until:
+			output := value.clone_value(&frame.input)
+			if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+			if frame.phase == .Loop_Emit_While { frame.phase = .Loop_Start_Update } else { frame.phase = .Complete }
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
+		case .Loop_Update_Result:
+			if value.kind_of(&frame.loop_value) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+			free_error := value.destroy_value(&frame.input)
+			if free_error != nil do return resource_step(free_error)
+			frame.input = value.take_value(&frame.loop_value)
+			frame.phase = .Loop_Start_Condition
 		case .Slice_Child_Active, .Slice_Result_Active:
 			return begin_terminal_misuse(storage, .Malformed_Program)
 
@@ -8588,6 +8645,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				_ = value.destroy_value(&child_input)
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
+
+		case .Loop_Condition_Active, .Loop_Update_Active:
+			// The child is launched by the corresponding Start phase; a second
+			// entry here indicates a malformed continuation.
+			return begin_terminal_misuse(storage, .Malformed_Program)
 
 		case .First_Empty, .Last_Result, .Last_Empty:
 			if frame.phase == .First_Empty || frame.phase == .Last_Empty {

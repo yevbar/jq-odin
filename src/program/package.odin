@@ -291,6 +291,9 @@ Opcode :: enum u8 {
 	Or,
 	And,
 	Call,
+	// While and Until are appended to preserve existing serialized opcodes.
+	While,
+	Until,
 }
 
 Operand_Kind :: enum u8 {
@@ -548,7 +551,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Defined_Or, .Or, .And:
 		return true
-	case .Pow, .Identity, .If, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Dynamic_Field_Set, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
+	case .Pow, .Identity, .If, .While, .Until, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Dynamic_Field_Set, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 	     .In, .Inside, .Setpath, .Delpaths,
 	     .Array, .Object, .Variable, .Binding, .Reduce, .Foreach, .Call, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Paths:
 		return false
@@ -638,6 +641,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if count != 1 && count != 2 && count != 3 { return false }; expected_count = count
 	case .If:
 		if count != 3 { return false }; expected_count = 3
+	case .While, .Until:
+		if count != 2 { return false }; expected_count = 2
 	case .Limit:
 		if count != 2 { return false }; expected_count = 2
 	case .Skip:
@@ -770,6 +775,8 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return 2
 	case .If:
 		return 3
+	case .While, .Until:
+		return 2
 	case .Limit:
 		return 2
 	case .Skip:

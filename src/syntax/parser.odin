@@ -262,6 +262,9 @@ Node_Kind :: enum {
 	Dynamic_Field_Set,
 	// Call invokes a top-level zero-argument definition captured by the parser.
 	Call,
+	// While and Until are appended to preserve existing AST discriminants.
+	While,
+	Until,
 }
 
 Node_Id :: distinct int
@@ -1338,6 +1341,10 @@ parse_pipe :: proc(
 					kind = .Log
 				} else if spelling == "pow" {
 					kind = .Pow
+				} else if spelling == "while" {
+					kind = .While
+				} else if spelling == "until" {
+					kind = .Until
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
@@ -1664,6 +1671,20 @@ parse_pipe :: proc(
 						if !ok { return {}, false }
 						term = new_term
 					}
+				} else if (spelling == "while" || spelling == "until") && token_is(parser, .Open_Paren) {
+					advance(parser)
+					condition, condition_ok := parse_pipe(parser, .Semicolon, false)
+					if !condition_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }
+					advance(parser)
+					update, update_ok := parse_pipe(parser, .Close_Paren, false)
+					if !update_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token
+					advance(parser)
+					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+					loop_kind := Node_Kind.While if spelling == "while" else .Until
+					new_term, ok := append_node(parser, Node{kind=loop_kind, span=span, left=condition, right=update})
+					if !ok { return {}, false }
+					term = new_term
 				} else {
 				// The same identifier spellings select jq's call production when
 				// followed by `(`. Calls have no node/lowering contract in this
@@ -3951,6 +3972,18 @@ literal_numeric_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id,
 	}
 	if node.has_child || node.has_value || (node.kind != .Number && !(node.kind == .Negate && node.has_child)) { return {}, false }
 	return node_id, true
+}
+
+@(private="package")
+scalar_literal_or_identity :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+	if parser == nil || int(node_id) < 0 || int(node_id) >= parser.nodes.count do return false
+	node := parser.nodes.storage[int(node_id)]
+	if node.form != .Kinded || node.has_child || node.has_value || node.container_kind != .None do return false
+	#partial switch node.kind {
+	case .Identity, .Null, .Boolean, .Number, .String:
+		return true
+	}
+	return false
 }
 
 numeric_count_call_sequence :: proc(parser: ^Parser, counts, generator: Node_Id, kind: Node_Kind) -> (Node_Id, bool) {
