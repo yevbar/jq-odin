@@ -1,0 +1,4 @@
+# Caught typed indexing errors retain jq's descriptive message.
+[0,1,2,3] | [.[] | try if . == 0 then error("foo") elif . == 1 then .a elif . == 2 then empty else . end catch .]
+null
+["foo", "Cannot index number with string \"a\"", 3]

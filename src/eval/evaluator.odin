@@ -2817,6 +2817,13 @@ continue_suppression :: proc(storage: ^evaluator_storage) -> (Step_Result, bool)
 	if free_error != nil do return resource_step(free_error), true
 	if storage.suppress_try {
 		message := storage.runtime_error.key
+		formatted_message: string
+		formatted_error: runtime.Allocator_Error
+		if storage.runtime_error.kind == .Cannot_Index_With_String {
+			formatted_message, formatted_error = cannot_index_runtime_key(storage.runtime_error, storage.allocator)
+			if formatted_error != nil do return resource_step(formatted_error), true
+			message = formatted_message
+		}
 		catch_instruction, child_ok := child_instruction(storage, instruction, 1)
 		catch_value: value.Value
 		if value.kind_of(&storage.pending_value) != .Invalid {
@@ -2832,6 +2839,10 @@ continue_suppression :: proc(storage: ^evaluator_storage) -> (Step_Result, bool)
 		}
 		free_error = release_runtime_error(storage)
 		if free_error != nil do return resource_step(free_error), true
+		if len(formatted_message) > 0 {
+			free_error = runtime.mem_free_bytes(transmute([]byte)formatted_message, storage.allocator)
+			if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error), true
+		}
 		if storage.frame_count == len(storage.frames) {
 			free_error = grow_frames(storage)
 			if free_error != nil { _ = value.destroy_value(&catch_value); return resource_step(free_error), true }
@@ -4276,6 +4287,12 @@ runtime_value_kind_name :: proc(kind: value.Kind) -> string {
 	case .Object: return "object"
 	}
 	return "invalid"
+}
+
+@(private)
+cannot_index_runtime_key :: proc(err: Runtime_Error, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	if err.kind != .Cannot_Index_With_String do return err.key, nil
+	return strings.concatenate([]string{"Cannot index ", runtime_value_kind_name(err.input_kind), " with string \"", err.key, "\""}, allocator)
 }
 
 // jq preserves the typed iterator failure as the catch value. Keep the
