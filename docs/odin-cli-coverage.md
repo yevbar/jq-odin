@@ -641,6 +641,18 @@ behavioral oracle.
   recursive-descent builtin and reuses the existing explicit preorder frame;
   its focused shard passes 3/3. Parameterized `recurse(f)` remains deferred.
 
+## Current authoritative measurement (2026-08-13)
+
+- Integration head `b1120b6d` includes the reviewed CLI lineage plus the
+  `asinh` and `atanh` unary math builtins. A pinned jq 1.8.1 catalog run
+  selects all **522** upstream cases and passes **326**, with **196** failing
+  and no harness errors. Package tests, `make validate`, and the CLI harness
+  (333 subprocess / 43 differential checks) pass.
+- The `atanh` focused shard passes 4/5 selected cases; one ordinary finite
+  value is explicitly skipped for the known native-number last-digit spelling
+  difference. The full catalog does not increase because the upstream atanh
+  cases are embedded in broader unsupported expressions.
+
 ## Remaining high-value clusters
 
 ## CLI transplant measurement (2026-08-12)
