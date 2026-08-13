@@ -1,0 +1,4 @@
+# Invalid path filters remain catchable when nested in map/select.
+try path(.a | map(select(.b == 0))) catch "caught"
+{"a":[{"b":0},{"b":1}]}
+"caught"

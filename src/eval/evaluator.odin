@@ -6176,7 +6176,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					path, path_ok := bound_literal_path_value(storage, child, index)
 					if path_ok { output, runtime_kind, valid = lookup_path(&frame.input, &path); _ = value.destroy_value(&path) }
 				}
-				if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
+				if !valid {
+					// `path(f)` accepts only filters that resolve to a concrete
+					// path (or one of the explicitly supported path generators).
+					// An otherwise well-formed filter such as
+					// `path(.a | map(select(.b == 0)))` is a jq runtime error,
+					// not a malformed evaluator/program state; preserving that
+					// distinction lets `try ... catch` observe the error.
+					result, ready := raise_runtime(storage, index, Runtime_Error{
+						kind = .User_Error,
+						input_kind = value.kind_of(&frame.input),
+						span = instruction.span,
+						key = "Invalid path expression",
+					})
+					if ready do return result
+					continue
+				}
 				if runtime_kind != .None { result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}); if ready do return result; continue }
 				frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result; continue
 			}
