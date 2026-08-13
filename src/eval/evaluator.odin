@@ -2366,10 +2366,41 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .Iterator_Active:
 		frame.phase = .Complete
 	case .Binary_Left_Active:
-		frame.phase = .Complete
+		// Defined-or treats an empty left stream like a null/false result and
+		// must start its right-hand generator when the producer exhausts without
+		// yielding. This is observable for `try error(0) // 1`: try suppresses
+		// the error by producing an empty stream, then // evaluates its fallback.
+		if instruction.opcode == .Defined_Or {
+			child, child_ok := child_instruction(storage, instruction, 1)
+			input_copy := value.clone_value(&frame.input)
+			if !child_ok || value.kind_of(&input_copy) == .Invalid {
+				_ = value.destroy_value(&input_copy)
+				return false
+			}
+			if storage.frame_count == len(storage.frames) {
+				capacity_error := grow_frames(storage)
+				if capacity_error != nil {
+					_ = value.destroy_value(&input_copy)
+					return false
+				}
+				frame = &storage.frames[parent]
+			}
+			if !push_frame(storage, child, parent, &input_copy) {
+				_ = value.destroy_value(&input_copy)
+				return false
+			}
+			frame = &storage.frames[parent]
+			frame.phase = .Binary_Right_Active
+		} else {
+			frame.phase = .Complete
+		}
 	case .Binary_Right_Active:
-		_ = value.destroy_value(&frame.binary_left)
-		frame.phase = .Binary_Left_Active
+		if instruction.opcode == .Defined_Or {
+			frame.phase = .Complete
+		} else {
+			_ = value.destroy_value(&frame.binary_left)
+			frame.phase = .Binary_Left_Active
+		}
 	case .If_Condition_Active:
 		if frame.if_branch_active {
 			frame.if_branch_active = false

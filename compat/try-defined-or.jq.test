@@ -1,0 +1,15 @@
+try error(0) // 1
+null
+1
+
+try 1 + 2
+null
+3
+
+try (error(0)) // 1
+null
+1
+
+try error(0) + 2 // 1
+null
+1

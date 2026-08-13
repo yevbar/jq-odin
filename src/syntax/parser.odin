@@ -695,6 +695,7 @@ parse_pipe :: proc(
 	stop_at_catch := false,
 	stop_at_binary := false,
 	stop_at_pipe := false,
+	stop_at_defined_or := false,
 ) -> (Node_Id, bool) {
 	invalid_id := Node_Id(-1)
 	entry_frame_depth := parser.frames.count
@@ -906,7 +907,13 @@ parse_pipe :: proc(
 				// explicit catch filter.  Otherwise `1, try error(2), 3` would
 				// absorb the trailing comma and suppress `3` with the erroring
 				// expression.
-				expression, expression_ok := parse_pipe(parser, closing, true, true)
+				// jq's unparenthesized `try EXP` captures one pipeline term.  The
+				// following binary/comma/pipe operators remain outside the try,
+				// while parentheses can still group a complete expression.  In
+				// particular, `try error(0) // 1` must let the defined-or fallback
+				// observe the suppressed error rather than swallowing the fallback
+				// inside the try expression.
+				expression, expression_ok := parse_pipe(parser, closing, true, true, false, false, true)
 				if !expression_ok {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
@@ -1701,6 +1708,10 @@ parse_pipe :: proc(
 			return {}, false
 		}
 		if stop_at_binary && has_binary_operator {
+			result := current if current != invalid_id else term
+			return result, result != invalid_id
+		}
+		if stop_at_defined_or && has_binary_operator && next_operator == .Defined_Or {
 			result := current if current != invalid_id else term
 			return result, result != invalid_id
 		}
