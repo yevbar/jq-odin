@@ -1240,6 +1240,23 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 		return -1
 	}
 	if qualified {
+		// Within an imported module body, a qualified reference such as
+		// `foo::a` denotes that module's imported alias before the module's
+		// own externally-prefixed definition of the same spelling.  The latter
+		// remains the top-level resolution when no lexical namespace is active.
+		if len(namespace) > 0 {
+			qualified_length := qualified_end-at
+			for index := limit; index >= 0; index -= 1 {
+				definition_name := definitions[index].name
+				if len(definition_name) == len(namespace)+2+qualified_length &&
+					definition_name[:len(namespace)] == namespace &&
+					definition_name[len(namespace):len(namespace)+2] == "::" &&
+					definition_name[len(namespace)+2:] == input[at:qualified_end] && definitions[index].active {
+					name_match = true
+					if module_parameter_count(definitions[index].parameters) == wanted_arity do return index
+				}
+			}
+		}
 		for index := limit; index >= 0; index -= 1 {
 			if definitions[index].active && definitions[index].name == input[at:qualified_end] {
 				name_match = true
