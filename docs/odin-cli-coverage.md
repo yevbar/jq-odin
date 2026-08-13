@@ -643,19 +643,20 @@ behavioral oracle.
 
 ## Current authoritative measurement (2026-08-13)
 
-- Integration head `c84323d4` includes the reviewed CLI lineage, the
+- Integration head `5eca0d9f` includes the reviewed CLI lineage, the
   `asinh`/`atanh` unary math builtins, filter-parameter validation, the
   static `path`/`paths`/literal `getpath` slice, literal `setpath`, and
   bounded literal `delpaths`, bounded dynamic path iteration, and static path
   forks, and whitespace-tolerant literal postfix module parameters, plus numeric `%Y`, `%m`, and `%d` strftime directives.
   A pinned jq 1.8.1 catalog run selects all **522** upstream cases and passes
-  **344**, with **178**
+  **345**, with **177**
   failing and no harness errors. Package tests, `make validate`, and the CLI
   harness (333 subprocess / 43 differential checks) pass.
 - The basic strftime shard passes 4/4. Computed-key, dynamic-path-identity,
-  predicate-path, multi-seed-foreach, Cartesian-foreach, index-assignment-error,
-  path-mutation-error, and try-defined-or shards pass 3/3, 2/2, 2/2, 2/2,
-  1/1, 5/5, 2/2, and 4/4 respectively. The static path focused shard passes 3/3, the dynamic path shard passes 3/3,
+  predicate-path, piped-wildcard-path, multi-seed-foreach, Cartesian-foreach,
+  index-assignment-error, path-mutation-error, try-defined-or, and nested
+  defined-or shards pass 3/3, 2/2, 2/2, 2/2, 2/2, 1/1, 5/5, 2/2, 4/4,
+  and 1/1 respectively. The static path focused shard passes 3/3, the dynamic path shard passes 3/3,
   the static path-fork shard passes 2/2. The driver differential harness
   remains green at 333 subprocess and 43 differential checks; the module
   postfix whitespace case is outside the 522-case upstream catalog.
