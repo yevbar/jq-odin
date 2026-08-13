@@ -1561,6 +1561,7 @@ index_result :: proc(
 	)
 	index_text, text_ok := program.operand_text(storage.compiled, operand)
 	if !operand_ok || !text_ok || operand.kind != .Text do return {}, {}, false
+	if index_text == "nan" do return value.null_value(), {}, true
 	index_value, parse_error := value.literal_number_value(index_text, storage.allocator)
 	if value.constructor_error_kind(&parse_error) != .None {
 		_ = value.destroy_constructor_error(&parse_error)
@@ -1647,18 +1648,22 @@ slice_result :: proc(
 	}
 	start, end := 0, length
 	if len(start_text) > 0 {
+		if start_text == "nan" { start = 0 } else {
 		v, e := value.literal_number_value(start_text, storage.allocator)
 		if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true }
 		n, ok := value.number_value_get(&v); _ = value.destroy_value(&v)
 		if !ok do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
 		start = int(math.floor(n)); if start < 0 { start += length }; if start < 0 { start = 0 }; if start > length { start = length }
+		}
 	}
 	if len(end_text) > 0 {
+		if end_text == "nan" { end = length } else {
 		v, e := value.literal_number_value(end_text, storage.allocator)
 		if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true }
 		n, ok := value.number_value_get(&v); _ = value.destroy_value(&v)
 		if !ok do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=.Array, span=instruction.span}, true
 		end = int(math.ceil(n)); if end < 0 { end += length }; if end < 0 { end = 0 }; if end > length { end = length }
+		}
 	}
 	if start > end {
 		if value.kind_of(&frame.input) == .String {

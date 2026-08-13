@@ -3600,7 +3600,7 @@ append_postfix :: proc(
 					end_negative := false
 					end_span := diagnostic.Span{}
 					if token_is(parser, .Minus) { end_span = parser.lookahead.token.span; advance(parser); end_negative = true }
-					if !token_is(parser, .Number) { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
+					if !token_is(parser, .Number) && !(token_is(parser, .Identifier) && token_spelling(parser, parser.lookahead.token) == "nan") { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
 					end_number_span := parser.lookahead.token.span
 					if end_negative { end_number_span, _ = spanning(parser, end_span, end_number_span) }
 					end_index, ok = append_number_node(parser, end_number_span)
@@ -3615,7 +3615,7 @@ append_postfix :: proc(
 				node = new_term
 				continue
 			}
-			if !token_is(parser, .Number) {
+			if !token_is(parser, .Number) && !(token_is(parser, .Identifier) && token_spelling(parser, parser.lookahead.token) == "nan") {
 				fail_from_lookahead(parser, .Close_Bracket)
 				return {}, false
 			}
@@ -3634,7 +3634,7 @@ append_postfix :: proc(
 					end_negative := false
 					end_span := diagnostic.Span{}
 					if token_is(parser, .Minus) { end_span = parser.lookahead.token.span; advance(parser); end_negative = true }
-					if !token_is(parser, .Number) { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
+					if !token_is(parser, .Number) && !(token_is(parser, .Identifier) && token_spelling(parser, parser.lookahead.token) == "nan") { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
 					end_number_span := parser.lookahead.token.span
 					if end_negative { end_number_span, _ = spanning(parser, end_span, end_number_span) }
 					end_index, ok = append_number_node(parser, end_number_span)

@@ -1,0 +1,11 @@
+[range(3)] | .[nan:1]
+null
+[0]
+
+[range(3)] | .[1:nan]
+null
+[1,2]
+
+[range(3)] | .[nan]
+null
+null
