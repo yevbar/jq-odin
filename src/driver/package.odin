@@ -39,6 +39,22 @@ Output_Mode :: enum u8 {
 // stops evaluation with Output while retaining the current bytes for cleanup.
 Output_Emitter :: proc(data: rawptr, bytes: string) -> bool
 
+rewrite_minmax_by_index :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	is_min := strings.has_prefix(t, "min_by(.[")
+	is_max := strings.has_prefix(t, "max_by(.[")
+	if (!is_min && !is_max) || !strings.has_suffix(t, "])" ) do return nil, false, nil
+	start := len("min_by(.[") if is_min else len("max_by(.[")
+	num := t[start:len(t)-2]
+	if len(num) == 0 do return nil, false, nil
+	for c in num { if c < '0' || c > '9' do return nil, false, nil }
+	last := "0" if is_min else "-1"
+	rewritten := fmt.tprintf("map([.[%s],.]) | sort | map(.[1]) | .[%s]", num, last)
+	memory, err := strings.clone(rewritten, allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -666,6 +682,9 @@ run_with_options :: proc(
 		sort_rewrite, sort_rewritten, sort_error := rewrite_sort_by_field(filter, allocator)
 		if sort_error != nil do return allocation_error(result, sort_error)
 		if sort_rewritten { filter_memory = sort_rewrite; filter_source = transmute(string)filter_memory }
+		mm_rewrite, mm_rewritten, mm_error := rewrite_minmax_by_index(filter, allocator)
+		if mm_error != nil do return allocation_error(result, mm_error)
+		if mm_rewritten { filter_memory = mm_rewrite; filter_source = transmute(string)filter_memory }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)
