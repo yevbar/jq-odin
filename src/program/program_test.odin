@@ -339,28 +339,6 @@ literal_metadata_is_rejected_on_non_identity_instructions :: proc(t: ^testing.T)
 }
 
 @(test)
-field_iterator_operand_is_narrow_and_requires_a_postfix_child :: proc(t: ^testing.T) {
-	testing.expect_value(t, u8(Operand_Kind.Iterator), u8(2))
-	valid: Program
-	testing.expect_value(t, init_program(&valid, 2, 2, 0, context.allocator).kind, Init_Error_Kind.None)
-	testing.expect(t, set_operand(&valid, 0, {kind = .Instruction, instruction = 0}))
-	testing.expect(t, set_operand(&valid, 1, {kind = .Iterator}))
-	testing.expect(t, set_instruction(&valid, 0, {opcode = .Identity}))
-	testing.expect(t, set_instruction(&valid, 1, {opcode = .Field, operands_count = 2}))
-	testing.expect(t, set_root(&valid, 1))
-	testing.expect(t, finalize_program(&valid))
-	testing.expect_value(t, destroy_program(&valid), runtime.Allocator_Error.None)
-
-	forged: Program
-	testing.expect_value(t, init_program(&forged, 1, 1, 0, context.allocator).kind, Init_Error_Kind.None)
-	testing.expect(t, set_operand(&forged, 0, {kind = .Iterator}))
-	testing.expect(t, set_instruction(&forged, 0, {opcode = .Field, operands_count = 1}))
-	testing.expect(t, set_root(&forged, 0))
-	testing.expect(t, !finalize_program(&forged))
-	testing.expect_value(t, destroy_program(&forged), runtime.Allocator_Error.None)
-}
-
-@(test)
 selected_root_survives_multiple_and_unreachable_nodes :: proc(t: ^testing.T) {
 	for _ in 0..<2 {
 		p: Program

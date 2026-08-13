@@ -291,7 +291,6 @@ Opcode :: enum u8 {
 Operand_Kind :: enum u8 {
 	Instruction,
 	Text,
-	Iterator,
 }
 
 Literal_Kind :: enum u8 {
@@ -305,9 +304,7 @@ Literal_Kind :: enum u8 {
 // Sequence operands are ordered left then right. Fork operands are likewise
 // left then right, but describe independently resumable generator branches.
 // Field has an optional leading Instruction operand followed by one Text
-// operand. A final Iterator operand distinguishes empty brackets from a
-// quoted empty-string Text read and is valid only on a two-operand Field.
-// Object operands alternate a static Text key or compiled key
+// operand. Object operands alternate a static Text key or compiled key
 // Instruction with a value Instruction. Literal has one Text operand for
 // Number/String and none for Null/Boolean. Parenthesized and Optional have
 // one Instruction operand.
@@ -710,10 +707,6 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if (instruction.opcode == .Reduce || instruction.opcode == .Foreach) && offset == 3 {
 			expected_kind = .Text
 		}
-		if instruction.opcode == .Field && offset == count-1 && operand.kind == .Iterator {
-			if count != 2 || operand.instruction != 0 || operand.text_start != 0 || operand.text_count != 0 do return false
-			expected_kind = .Iterator
-		}
 		if operand.kind != expected_kind {
 			return false
 		}
@@ -721,7 +714,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 			if u64(operand.instruction) >= u64(len(program.instructions)) {
 				return false
 			}
-		} else if operand.kind == .Text {
+		} else {
 			text_start := u64(operand.text_start)
 			text_count := u64(operand.text_count)
 			if text_start != next_text^ || text_start > u64(len(program.text)) ||
