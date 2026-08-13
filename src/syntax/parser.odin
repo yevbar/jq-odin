@@ -1400,13 +1400,10 @@ parse_pipe :: proc(
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
 					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
-					close := parser.lookahead.token; advance(parser)
-					paths, paths_ok := lower_static_del_paths(parser, argument)
+					advance(parser)
+					lowered, paths_ok := lower_static_del_filter(parser, argument)
 					if !paths_ok { fail_from_lookahead(parser, .Expression); return {}, false }
-					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
-					term_ok: bool
-					term, term_ok = append_node(parser, Node{kind=.Delpaths, span=span, child=paths, has_child=true})
-					if !term_ok { return {}, false }
+					term = lowered
 					term_ready = true
 					continue
 				}
@@ -4044,6 +4041,24 @@ literal_numeric_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id,
 // Dynamic filters, slices, and computed indexes deliberately remain rejected
 // until the general path continuation contract exists.
 @(private="package")
+lower_static_del_filter :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
+	invalid := Node_Id(-1)
+	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return invalid, false
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Parenthesized && node.has_child do return lower_static_del_filter(parser, node.child)
+	if node.kind == .Comma {
+		left, left_ok := lower_static_del_filter(parser, node.left)
+		right, right_ok := lower_static_del_filter(parser, node.right)
+		if !left_ok || !right_ok do return invalid, false
+		sequence, sequence_ok := append_node(parser, Node{kind=.Pipe, span=node.span, left=left, right=right})
+		if !sequence_ok do return invalid, false
+		return sequence, true
+	}
+	paths, paths_ok := lower_static_del_paths(parser, node_id)
+	if !paths_ok do return invalid, false
+	return append_node(parser, Node{kind=.Delpaths, span=node.span, child=paths, has_child=true})
+}
+
 lower_static_del_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
 	invalid := Node_Id(-1)
 	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return invalid, false

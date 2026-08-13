@@ -1,0 +1,12 @@
+# Sequential lowering of comma-separated static deletion paths.
+del(.a,.b)
+{"a":1,"b":2,"c":3}
+{"c":3}
+
+del(.[0],.[-1])
+[1,2,3]
+[2]
+
+del(.a[0],.b[0])
+{"a":[1,2],"b":[10,20]}
+{"a":[2],"b":[20]}
