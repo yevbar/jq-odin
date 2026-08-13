@@ -4193,10 +4193,22 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		return result, result_kind, result_error
 	}
 	if opcode == .Todate {
-		parsed, parse_kind, parse_error := gmtime_result(input, allocator)
-		if parse_error != nil || parse_kind != .None {
-			_ = value.destroy_value(&parsed)
-			return {}, parse_kind if parse_kind != .None else .Cannot_Number, parse_error
+		// `todate` is the jq builtin alias for `todateiso8601`, i.e. a
+		// strftime operation on an already-parsed datetime array.  Numeric
+		// timestamps are accepted by jq's `strftime` implementation as a
+		// convenience through gmtime, but array inputs must not be passed to
+		// gmtime again (that turns a valid parsed datetime into a type error).
+		parsed: value.Value
+		if kind == .Array {
+			parsed = value.clone_value(input)
+		} else {
+			parse_kind: Runtime_Error_Kind
+			parse_error: runtime.Allocator_Error
+			parsed, parse_kind, parse_error = gmtime_result(input, allocator)
+			if parse_error != nil || parse_kind != .None {
+				_ = value.destroy_value(&parsed)
+				return {}, parse_kind if parse_kind != .None else .Cannot_Number, parse_error
+			}
 		}
 		result, result_kind, result_error := strftime_array_result(&parsed, "%Y-%m-%dT%H:%M:%SZ", allocator)
 		_ = value.destroy_value(&parsed)
