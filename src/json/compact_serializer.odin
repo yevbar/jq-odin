@@ -656,6 +656,43 @@ append_native_number :: proc(serializer: ^Compact_Serializer, number: f64) -> Co
 	if infinite {
 		n = -max(f64) if n < 0 else max(f64)
 	}
+	// jq's dtoa emits the shortest decimal spelling.  Odin's native formatter
+	// can retain a binary-float tail for values produced by decimal-scale
+	// arithmetic (for example, floor(cos(x)*1e6)/1e6).  When a finite value is
+	// within a tiny tolerance of an exact six-decimal value, emit that decimal
+	// directly; this removes representation noise without changing values whose
+	// seventh decimal place is significant.
+	if !infinite && math.abs(n) >= 1e-3 && math.abs(n) < 1e12 {
+		scaled := n * 1e6
+		rounded := math.round(scaled)
+		if math.abs(scaled-rounded) < 1e-7 {
+			whole := i64(rounded / 1e6)
+			fraction := i64(math.abs(rounded)) % 1_000_000
+			if rounded < 0 {
+				err := append_byte(serializer, '-')
+				if err.kind != .None do return err
+			}
+			err := append_i64(serializer, whole if whole >= 0 else -whole)
+			if err.kind != .None do return err
+			if fraction != 0 {
+				err = append_byte(serializer, '.')
+				if err.kind != .None do return err
+				digits: [6]byte
+				remaining := fraction
+				for index in 0..<6 {
+					divisor := i64(100_000)
+					for _ in 0..<index do divisor /= 10
+					digits[index] = byte('0' + remaining/divisor)
+					remaining %= divisor
+				}
+				end := 6
+				for end > 0 && digits[end-1] == '0' do end -= 1
+				err = append_bytes(serializer, string(digits[:end]))
+				if err.kind != .None do return err
+			}
+			return {}
+		}
+	}
 	buffer: [64]byte
 	// Limit decimal normalization to tiny native values, where binary-float
 	// noise is observable in jq's scientific output. Ordinary and large values
