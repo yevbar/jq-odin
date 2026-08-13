@@ -1636,6 +1636,38 @@ lookup_path :: proc(input, path: ^value.Value) -> (value.Value, Runtime_Error_Ki
 }
 
 @(private)
+set_path_value :: proc(input, path: ^value.Value, offset: int, replacement: ^value.Value, allocator: runtime.Allocator) -> (value.Value, bool) {
+	length, ok := value.array_length(path); if !ok do return {}, false
+	if offset >= length { result := value.clone_value(replacement); return result, value.kind_of(&result) != .Invalid }
+	component, component_ok := value.array_element_copy(path, offset); if !component_ok do return {}, false
+	current_kind := value.kind_of(input)
+	if value.kind_of(&component) == .String {
+		key, key_ok := value.string_borrowed(&component); if !key_ok { _ = value.destroy_value(&component); return {}, false }
+		result: value.Value
+		if current_kind == .Object { result = value.clone_value(input) } else if current_kind == .Null { result, _ = value.object_value(allocator) } else { _ = value.destroy_value(&component); return {}, false }
+		child: value.Value; found := false
+		if current_kind == .Object { child, found = value.object_get_copy(input, key) }
+		if !found { child = value.null_value() }
+		updated, updated_ok := set_path_value(&child, path, offset+1, replacement, allocator); _ = value.destroy_value(&child); _ = value.destroy_value(&component)
+		if !updated_ok { _ = value.destroy_value(&result); return {}, false }
+		key_value, key_error := value.string_value(key, allocator); if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_constructor_error(&key_error); _ = value.destroy_value(&updated); _ = value.destroy_value(&result); return {}, false }
+		_, displaced, set_error := value.object_set_take(&result, &key_value, &updated); _ = value.destroy_value(&displaced)
+		if value.object_error_kind(&set_error) != .None { _ = value.destroy_object_error(&set_error); _ = value.destroy_value(&result); return {}, false }
+		return result, true
+	}
+	if value.kind_of(&component) == .Number {
+		n, number_ok := value.number_value_get(&component); if !number_ok || math.floor(n) != n { _ = value.destroy_value(&component); return {}, false }; idx := int(n); _ = value.destroy_value(&component)
+		result: value.Value
+		if current_kind == .Array { result = value.clone_value(input) } else if current_kind == .Null { result, _ = value.array_value(allocator) } else { return {}, false }
+		count, _ := value.array_length(&result); if idx < 0 { idx += count }; if idx < 0 { _ = value.destroy_value(&result); return {}, false }
+		child: value.Value; if idx < count { child, _ = value.array_element_copy(&result, idx) } else { child = value.null_value() }
+		updated, updated_ok := set_path_value(&child, path, offset+1, replacement, allocator); _ = value.destroy_value(&child); if !updated_ok { _ = value.destroy_value(&result); return {}, false }
+		_, set_error := value.array_set_take(&result, idx, &updated); if value.array_error_kind(&set_error) != .None { _ = value.destroy_array_error(&set_error); _ = value.destroy_value(&result); return {}, false }; return result, true
+	}
+	_ = value.destroy_value(&component); return {}, false
+}
+
+@(private)
 paths_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, bool) {
 	output, ok := path_array(allocator); if !ok do return {}, false
 	walk :: proc(v, prefix, out: ^value.Value, depth: int) -> bool {
@@ -5508,6 +5540,23 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		switch frame.phase {
 		case .Enter:
+			if instruction.opcode == .Setpath {
+				if instruction.operands_count != 2 { return begin_terminal_misuse(storage, .Malformed_Program) }
+				path_instruction, path_child_ok := child_instruction(storage, instruction, 0)
+				value_instruction, value_ok := child_instruction(storage, instruction, 1)
+				if !path_child_ok || !value_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+				path, path_literal_ok := literal_path_value(storage, path_instruction)
+				value_instruction_data, value_instruction_ok := program.program_instruction(storage.compiled, value_instruction)
+				if !value_instruction_ok { _ = value.destroy_value(&path); return begin_terminal_misuse(storage, .Malformed_Program) }
+				replacement, _, replacement_cleanup := literal_value(storage, value_instruction_data)
+				if !path_literal_ok || replacement_cleanup != nil || value.kind_of(&replacement) == .Invalid { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
+				updated, updated_ok := set_path_value(&frame.input, &path, 0, &replacement, storage.allocator)
+				_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
+				if !updated_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+				_ = value.destroy_value(&frame.input); frame.input = updated
+				output := value.clone_value(&frame.input); if value.kind_of(&output) == .Invalid { return resource_step(.Out_Of_Memory) }
+				frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result; continue
+			}
 			if instruction.opcode == .Path || instruction.opcode == .Getpath {
 				if instruction.operands_count != 1 do return begin_terminal_misuse(storage, .Malformed_Program)
 				child, child_ok := child_instruction(storage, instruction, 0); if !child_ok do return begin_terminal_misuse(storage, .Malformed_Program)
@@ -5593,7 +5642,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			}
 
 			switch instruction.opcode {
-			case .Path, .Getpath, .Paths:
+			case .Path, .Getpath, .Paths, .Setpath:
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			case .Identity:
 				capacity_error := prepare_output(storage, index)

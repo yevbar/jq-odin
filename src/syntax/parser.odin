@@ -252,6 +252,7 @@ Node_Kind :: enum {
 	Path,
 	Paths,
 	Getpath,
+	Setpath,
 }
 
 Node_Id :: distinct int
@@ -1217,6 +1218,8 @@ parse_pipe :: proc(
 					kind = .Path
 				} else if spelling == "getpath" {
 					kind = .Getpath
+				} else if spelling == "setpath" {
+					kind = .Setpath
 				} else if spelling == "paths" {
 					kind = .Paths
 				} else if spelling == "strftime" || spelling == "strflocaltime" {
@@ -1250,6 +1253,21 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					term_ok: bool
 					term, term_ok = append_node(parser, Node{kind=kind, span=span, child=argument, has_child=true})
+					if !term_ok { return {}, false }
+					term_ready = true
+					continue
+				}
+				if spelling == "setpath" && token_is(parser, .Open_Paren) {
+					advance(parser)
+					path_arg, path_ok := parse_pipe(parser, .Semicolon, true)
+					if !path_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					advance(parser)
+					value_arg, value_ok := parse_pipe(parser, .Close_Paren, false)
+					if !value_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token; advance(parser)
+					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
+					term_ok: bool
+					term, term_ok = append_node(parser, Node{kind=.Setpath, span=span, left=path_arg, right=value_arg})
 					if !term_ok { return {}, false }
 					term_ready = true
 					continue
