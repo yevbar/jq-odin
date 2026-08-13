@@ -162,6 +162,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       string_header_absent(node.string_text)
 	case .Path, .Getpath:
 		return node.container_kind == .None && node.has_child && node.child >= 0 && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Setpath:
+		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Paths:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Static_Index_Set_Number:
@@ -338,6 +340,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Path, .Getpath:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Setpath:
+		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Paths:
 		return true
 	case .Static_Index_Set_Number:
@@ -550,6 +554,8 @@ lower_filter :: proc(
 			}
 		case .Path, .Getpath:
 			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
+		case .Setpath:
+			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .Paths:
 		case .Static_Index_Set_Number:
 			rhs_text := nodes[int(node.right)].number_text
@@ -1229,6 +1235,11 @@ lower_filter :: proc(
 			instruction.operands_count = 1
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
 			operand_at += 1
+		case .Setpath:
+			instruction.opcode = .Setpath
+			instruction.operands_count = 2
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.left)})); operand_at += 1
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)})); operand_at += 1
 		case .Parenthesized, .Optional:
 			instruction.opcode = .Parenthesized if node.kind == .Parenthesized else .Optional if node.kind == .Optional else .Negate
 			instruction.operands_count = 1
