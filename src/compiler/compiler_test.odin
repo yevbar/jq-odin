@@ -432,6 +432,16 @@ every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.
 		seen[node.kind] = true
 	}
 	testing.expect_value(t, syntax.destroy_parser(&transpose_parser), runtime.Allocator_Error.None)
+	dynamic_parser: syntax.Parser
+	dynamic_source := diagnostic.borrow_source("<dynamic-assignment-shape>", `.a = .b`)
+	testing.expect(t, syntax.init_parser(&dynamic_parser, dynamic_source, context.allocator))
+	dynamic_parsed := syntax.parse_filter(&dynamic_parser)
+	testing.expect_value(t, dynamic_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&dynamic_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&dynamic_parser), runtime.Allocator_Error.None)
 	for node in syntax.parser_nodes(&parser) {
 		testing.expect(t, node_payload_shape_valid(node))
 		seen[node.kind] = true

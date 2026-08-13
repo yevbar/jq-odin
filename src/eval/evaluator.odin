@@ -1116,6 +1116,18 @@ static_field_add_operands :: proc(
 }
 
 @(private)
+dynamic_field_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (key: string, rhs: program.Instruction, ok: bool) {
+	if instruction.opcode != .Dynamic_Field_Set || instruction.operands_count != 2 do return
+	key_operand, key_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	rhs_operand, rhs_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+	if !key_ok || !rhs_ok || key_operand.kind != .Text || rhs_operand.kind != .Instruction do return
+	key, key_ok = program.operand_text(storage.compiled, key_operand)
+	rhs, rhs_ok = program.program_instruction(storage.compiled, rhs_operand.instruction)
+	ok = key_ok && rhs_ok
+	return
+}
+
+@(private)
 existing_object_key_copy :: proc(object: ^value.Value, wanted: string) -> (value.Value, bool) {
 	length, length_ok := value.object_length(object)
 	if !length_ok do return {}, false
@@ -6169,6 +6181,38 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Dynamic_Field_Set:
+				key_text, rhs_instruction, operands_ok := dynamic_field_operands(storage, instruction)
+				if !operands_ok || value.kind_of(&frame.input) != .Object do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				replacement: value.Value
+				if rhs_instruction.opcode == .Identity && !rhs_instruction.has_literal {
+					replacement = value.clone_value(&frame.input)
+				} else if rhs_instruction.opcode == .Field {
+					runtime_error: Runtime_Error
+					valid: bool
+					replacement, runtime_error, valid = field_result(storage, frame, rhs_instruction)
+					if !valid do return begin_terminal_misuse(storage, .Malformed_Program)
+					if runtime_error.kind != .None { result, ready := raise_runtime(storage, index, runtime_error); if ready do return result; continue }
+				} else {
+					literal_error: value.Error
+					cleanup_error: runtime.Allocator_Error
+					replacement, literal_error, cleanup_error = literal_value(storage, rhs_instruction)
+					if cleanup_error != nil do return resource_step(cleanup_error)
+					if literal_error != .None || value.kind_of(&replacement) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				key, key_ok := existing_object_key_copy(&frame.input, key_text)
+				if !key_ok {
+					key_error: value.Constructor_Error
+					key, key_error = value.string_value(key_text, storage.allocator)
+					if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_value(&replacement); _ = value.destroy_constructor_error(&key_error); return resource_step(.Out_Of_Memory) }
+				}
+				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &replacement)
+				if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&replacement); _ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced); _ = value.destroy_object_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
+			_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
 				output := value.take_value(&frame.input)
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)

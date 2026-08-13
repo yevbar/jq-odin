@@ -254,6 +254,10 @@ Node_Kind :: enum {
 	Getpath,
 	Setpath,
 	Delpaths,
+	// Dynamic_Field_Set is the bounded filter-valued form `.name = FILTER`.
+	// The first implementation accepts identity, fields, and scalar literals as
+	// FILTER; generator-valued assignments remain a continuation contract.
+	Dynamic_Field_Set,
 }
 
 Node_Id :: distinct int
@@ -1857,7 +1861,13 @@ parse_pipe :: proc(
 			if current >= 0 && parser.nodes.storage[int(current)].kind == .Index {
 				return parse_static_index_set_number(parser, current, pipe_root, pipe_tail, closing)
 			}
-			return parse_static_field_set_number(parser, current if pipe_root != invalid_id else result, pipe_root, pipe_tail, closing)
+			left := current if pipe_root != invalid_id else result
+			left_node := parser.nodes.storage[int(left)]
+			if left_node.form == .Kinded && left_node.kind == .Field && left_node.container_kind == .None &&
+				left_node.has_name_span && !left_node.has_child {
+				return parse_dynamic_field_set(parser, left, pipe_root, pipe_tail, closing)
+			}
+			return parse_static_field_set_number(parser, left, pipe_root, pipe_tail, closing)
 		}
 
 		// jq's `expr as $name | body` is a low-precedence lexical binding.
@@ -2110,6 +2120,35 @@ parse_pipe :: proc(
 		}
 		return result, true
 	}
+}
+
+@(private="package")
+parse_dynamic_field_set :: proc(parser: ^Parser, left, pipe_root, pipe_tail: Node_Id, closing: Token_Kind) -> (Node_Id, bool) {
+	left_node := parser.nodes.storage[int(left)]
+	advance(parser)
+	right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+	if !right_ok do return {}, false
+	for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+		right = parser.nodes.storage[int(right)].child
+	}
+	right_node := parser.nodes.storage[int(right)]
+	valid_rhs := right_node.kind == .Identity || right_node.kind == .Field ||
+		right_node.kind == .Number || right_node.kind == .Boolean ||
+		right_node.kind == .Null || right_node.kind == .String
+	if right_node.form != .Kinded || right_node.container_kind != .None || right_node.has_child || right_node.has_value || !valid_rhs {
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	span, span_ok := spanning(parser, left_node.span, right_node.span); assert(span_ok)
+	kind := Node_Kind.Dynamic_Field_Set
+	if right_node.kind == .Number || right_node.kind == .Boolean || right_node.kind == .Null || right_node.kind == .String {
+		kind = .Static_Field_Set_Number
+	}
+	update, update_ok := append_node(parser, Node{kind=kind, span=span, right=right, name_span=left_node.name_span, has_name_span=true})
+	if !update_ok do return {}, false
+	if int(pipe_root) < 0 do return update, true
+	tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+	return pipe_root, true
 }
 
 @(private="package")

@@ -276,6 +276,8 @@ Opcode :: enum u8 {
 	Static_Field_Set_Number,
 	// Static_Index_Set_Number is appended to preserve existing serialized opcodes.
 	Static_Index_Set_Number,
+	// Dynamic_Field_Set is a bounded filter-valued object-field assignment.
+	Dynamic_Field_Set,
 	Path,
 	Paths,
 	Getpath,
@@ -543,7 +545,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 	case .Add, .Subtract, .Multiply, .Divide, .Modulo,
 	     .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal, .Defined_Or, .Or, .And:
 		return true
-	case .Pow, .Identity, .If, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
+	case .Pow, .Identity, .If, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Dynamic_Field_Set, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 	     .In, .Inside, .Setpath, .Delpaths,
 	     .Array, .Object, .Variable, .Binding, .Reduce, .Foreach, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Paths:
 		return false
@@ -617,6 +619,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if count != 3 { return false }; expected_count = 3
 	case .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number:
 		if count != 2 { return false }; expected_count = 2
+	case .Dynamic_Field_Set:
+		if count != 2 { return false }; expected_count = 2
 	case .Path, .Getpath, .Delpaths:
 		if count != 1 { return false }; expected_count = 1
 	case .Setpath:
@@ -686,7 +690,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	for offset in 0..<count {
 		operand := program.operands[int(start+offset)]
 		expected_kind := Operand_Kind.Instruction
-		if instruction.opcode == .Static_Field_Add_Number || instruction.opcode == .Static_Field_Set_Number || instruction.opcode == .Static_Index_Set_Number ||
+		if instruction.opcode == .Static_Field_Add_Number || instruction.opcode == .Static_Field_Set_Number || instruction.opcode == .Static_Index_Set_Number || (instruction.opcode == .Dynamic_Field_Set && offset == 0) ||
 		   ((instruction.opcode == .Field || instruction.opcode == .Index) && offset == count-1) ||
 		   (instruction.opcode == .Slice && offset > 0) ||
 		   (instruction.has_literal && offset == 0) {
@@ -743,7 +747,7 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return 1
 	case .Slice:
 		return 1
-	case .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number:
+	case .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Dynamic_Field_Set:
 		return 0
 	case .Path, .Getpath, .Delpaths:
 		return 1
