@@ -5513,6 +5513,11 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 				preserved := value.clone_value(input)
 				if value.kind_of(&preserved) != .Invalid do return preserved, .None, nil
 			}
+			if native_ok && native_number < 0 {
+				preserved, negate_error, negate_ok := value.number_negate(input, allocator)
+				if negate_ok && negate_error == nil do return preserved, .None, nil
+				if negate_error != nil do _ = value.destroy_constructor_error(&negate_error)
+			}
 		}
 		if (kind == .String || kind == .Array || kind == .Object) && opcode == .Abs {
 			copy := value.clone_value(input)
@@ -5566,6 +5571,10 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 		if kind == .Number {
 			number, number_ok := value.number_value_get(input)
 			if !number_ok do return {}, .Cannot_Length, nil
+			if number >= 0 { preserved := value.clone_value(input); if value.kind_of(&preserved) != .Invalid do return preserved, .None, nil }
+			preserved, negate_error, negate_ok := value.number_negate(input, allocator)
+			if negate_ok && negate_error == nil do return preserved, .None, nil
+			if negate_error != nil do _ = value.destroy_constructor_error(&negate_error)
 			return value.number_value(math.abs(number)), .None, nil
 		}
 		if kind == .Array { n, ok := value.array_length(input); if ok do return value.number_value(f64(n)), .None, nil }
