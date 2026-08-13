@@ -32,7 +32,7 @@ cat >"$tmp/vms.json" <<EOF
   {"vm_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","owner_id":"owner","state":"running","created_at":"1970-01-01T00:00:00Z","labels":{"name":"old-2"}},
   {"vm_id":"cccccccc-cccc-cccc-cccc-cccccccccccc","owner_id":"owner","state":"running","created_at":"1970-01-01T00:00:00Z","labels":{"name":"old-3"}},
   {"vm_id":"dddddddd-dddd-dddd-dddd-dddddddddddd","owner_id":"owner","state":"running","created_at":"1970-01-01T00:00:00Z","labels":{"name":"old-4"}},
-  {"vm_id":"eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee","owner_id":"owner","state":"running","created_at":"2999-01-01T00:00:00Z","labels":{"name":"new"}}
+  {"vm_id":"eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee","owner_id":"owner","state":"running","created_at":"2030-01-01T00:00:00Z","labels":{"name":"new"}}
 ]
 EOF
 
