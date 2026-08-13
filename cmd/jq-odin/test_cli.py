@@ -434,6 +434,21 @@ def expect_module_loading(
             ["-L", directory, "-n", 'include "tight-parameter"; increment(2)'],
         )
 
+        (root / "postfix-parameter.jq").write_text(
+            'def field(x): .[x];\ndef index(x): .[x];\n',
+            encoding="utf-8",
+        )
+        expect_oracle_case(
+            "literal string filter parameter in postfix index",
+            ["-L", directory, 'include "postfix-parameter"; field("a")'],
+            b'{"a":8}\n',
+        )
+        expect_oracle_case(
+            "literal numeric filter parameter in postfix index",
+            ["-L", directory, 'include "postfix-parameter"; index(0)'],
+            b'[8,9]\n',
+        )
+
         (root / "dollar-parameter.jq").write_text(
             "def value($x): $x;\n", encoding="utf-8"
         )

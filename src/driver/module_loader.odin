@@ -1455,6 +1455,38 @@ module_parameter_count :: proc(parameters: string) -> int {
 	return count
 }
 
+// The current parser accepts literal postfix indexes (`.["field"]`, `.[0]`)
+// but does not yet lower a parenthesized expression inside the brackets.  A
+// filter parameter used directly as `.[x]` can therefore be
+// substituted without the ordinary grouping parentheses only when its call
+// argument is already a JSON scalar literal.  Expression arguments retain
+// the grouped form and remain outside this textual-loader slice.
+module_argument_is_postfix_literal :: proc(argument: string) -> bool {
+	text := module_trim(argument)
+	if len(text) == 0 do return false
+	if text == "null" || text == "true" || text == "false" do return true
+	if text[0] == '"' {
+		if len(text) < 2 || text[len(text)-1] != '"' do return false
+		escaped := false
+		for at := 1; at < len(text)-1; at += 1 {
+			if escaped { escaped = false; continue }
+			if text[at] == '\\' { escaped = true; continue }
+		}
+		return !escaped
+	}
+	start := 0
+	if text[0] == '-' || text[0] == '+' do start = 1
+	if start == len(text) do return false
+	digits := 0
+	dots := 0
+	for at := start; at < len(text); at += 1 {
+		if text[at] == '.' { dots += 1; if dots > 1 do return false; continue }
+		if text[at] < '0' || text[at] > '9' do return false
+		digits += 1
+	}
+	return digits > 0
+}
+
 module_write :: proc(builder: ^strings.Builder, text: string) -> bool {
 	return strings.write_string(builder, text) == len(text)
 }
@@ -1760,14 +1792,19 @@ module_expand_source :: proc(
 			// resolved before the containing definition continues. Keep the
 			// current depth: the containing definition remains active on the
 			// cycle stack while the argument is expanded.
-			if !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+			// A literal filter argument directly inside a postfix index must not
+			// acquire grouping parentheses: `.[("a")]` is not accepted by the
+			// current parser, while jq's equivalent `.["a"]` is.
+			postfix_literal := start > 0 && input[start-1] == '[' && at < len(input) &&
+				input[at] == ']' && module_argument_is_postfix_literal(args[parameter_index])
+			if !postfix_literal && !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			outcome := module_expand_source(
 				args[parameter_index], definitions, builder, stack, depth,
 				parameters, args, arg_count, allocator, namespace,
 				runtime_subtraction, runtime_factorial,
 			)
 			if outcome.kind != .None do return outcome
-			if !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
+			if !postfix_literal && !module_write(builder, ")") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			continue
 		}
 		index := module_definition_at(input, start, definitions, namespace)

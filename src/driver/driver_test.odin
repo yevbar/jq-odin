@@ -673,6 +673,22 @@ filter_parameter_body_without_operator_whitespace_is_validated :: proc(t: ^testi
 }
 
 @(test)
+filter_parameter_literal_postfix_indexes_avoid_grouping :: proc(t: ^testing.T) {
+	// The parser accepts a literal postfix index but not a parenthesized
+	// expression inside the brackets.  Keep the argument literal at this
+	// narrow textual-expansion boundary; non-literals retain normal grouping.
+	module_expansion_matches(
+		t, "def field(x): .[x];", "field(\"a\")", "( .[\"a\"])",
+	)
+	module_expansion_matches(
+		t, "def index(x): .[x];", "index(0)", "( .[0])",
+	)
+	module_expansion_matches(
+		t, "def field(x): .[x];", "field(.a)", "( .[(.a)])",
+	)
+}
+
+@(test)
 parameterized_module_calls_require_exact_arity :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def f(x): x;", &definitions, context.allocator)
