@@ -657,10 +657,11 @@ append_native_number :: proc(serializer: ^Compact_Serializer, number: f64) -> Co
 		n = -max(f64) if n < 0 else max(f64)
 	}
 	buffer: [64]byte
-	// Limit decimal normalization to tiny native values, where binary-float
-	// noise is observable in jq's scientific output. Ordinary and large values
-	// retain the full-precision path so existing jq dtoa boundaries remain exact.
-	precision := 15 if !infinite && math.abs(n) < 1e-10 else -1
+	// Emit the shortest practical decimal for native binary64 values. A fixed
+	// 14-digit significant precision matches jq's decimal rendering and avoids
+	// exposing binary-float residue (for example, 0.891006 becoming
+	// 0.89100599999999996).
+	precision := 14 if !infinite && math.abs(n) < 1e12 else -1
 	scientific := strconv.write_float(buffer[:], n, 'e', precision, 64)
 	at := 0
 	if scientific[at] == '+' do at += 1

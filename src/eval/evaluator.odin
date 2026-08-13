@@ -3356,7 +3356,13 @@ text_append_json_value :: proc(builder: ^strings.Builder, input: ^value.Value) -
 			return strings.write_string(builder, text) == len(text)
 		}
 		buffer: [64]byte
-		formatted := strconv.write_float(buffer[:], number, 'f', -1, 64)
+		// Match jq's compact decimal rendering for ordinary computed values;
+		// retain full precision for large integers where decimal rounding would
+		// change the represented value.
+		ordinary := math.abs(number) < 1e12
+		precision := 14 if ordinary else -1
+		format := 'g' if ordinary else 'f'
+		formatted := strconv.write_float(buffer[:], number, u8(format), precision, 64)
 		normalized_formatted := formatted[1:] if len(formatted) > 0 && formatted[0] == '+' else formatted
 		return strings.write_string(builder, normalized_formatted) == len(normalized_formatted)
 	case .String:
