@@ -339,6 +339,11 @@ Node :: struct {
 	strflocaltime:     bool,
 	key:               Node_Id,
 	has_key:           bool,
+	// Dynamic postfix indexes retain their key query separately from object
+	// constructor key links. This child is evaluated against the original
+	// input for every base result.
+	index_key:         Node_Id,
+	has_index_key:     bool,
 	boolean_value:     bool,
 	number_text:       string,
 	has_number_text:   bool,
@@ -3851,8 +3856,25 @@ append_postfix :: proc(
 				continue
 			}
 			if !token_is(parser, .Number) && !(token_is(parser, .Identifier) && token_spelling(parser, parser.lookahead.token) == "nan") {
-				fail_from_lookahead(parser, .Close_Bracket)
-				return {}, false
+				key, key_ok := parse_pipe(parser, .Close_Bracket, false)
+				if !key_ok || !token_is(parser, .Close_Bracket) {
+					fail_from_lookahead(parser, .Close_Bracket)
+					return {}, false
+				}
+				close := parser.lookahead.token
+				advance(parser)
+				span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+				assert(span_ok)
+				node, ok = append_node(parser, Node{
+					kind = .Index,
+					span = span,
+					child = node,
+					has_child = true,
+					index_key = key,
+					has_index_key = true,
+				})
+				if !ok do return {}, false
+				continue
 			}
 			number_span := parser.lookahead.token.span
 			index_span := number_span

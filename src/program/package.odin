@@ -308,6 +308,8 @@ Literal_Kind :: enum u8 {
 	String,
 }
 
+Index_Key_Kind :: enum u8 { String, Number, Instruction }
+
 // Instruction operands are stored consecutively beginning at operands_start.
 // Sequence operands are ordered left then right. Fork operands are likewise
 // left then right, but describe independently resumable generator branches.
@@ -325,6 +327,7 @@ Instruction :: struct {
 	operands_start: Operand_Index,
 	operands_count: Count,
 	span:           Source_Span,
+	index_key_kind: Index_Key_Kind,
 	operator_span:  Source_Span,
 	has_operator_span: bool,
 }
@@ -702,8 +705,9 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	for offset in 0..<count {
 		operand := program.operands[int(start+offset)]
 		expected_kind := Operand_Kind.Instruction
+		index_key_instruction := instruction.opcode == .Index && instruction.index_key_kind == .Instruction && offset == 1
 		if instruction.opcode == .Static_Field_Add_Number || instruction.opcode == .Static_Field_Set_Number || instruction.opcode == .Static_Index_Set_Number || (instruction.opcode == .Dynamic_Field_Set && offset == 0) ||
-		   ((instruction.opcode == .Field || instruction.opcode == .Index) && offset == count-1) ||
+		   (!index_key_instruction && (instruction.opcode == .Field || instruction.opcode == .Index) && offset == count-1) ||
 		   (instruction.opcode == .Slice && offset > 0) ||
 		   (instruction.has_literal && offset == 0) {
 			expected_kind = .Text
@@ -790,7 +794,7 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 	case .Field:
 		return 1 if instruction.operands_count == 2 else 0
 	case .Index:
-		return 1
+		return 2 if instruction.index_key_kind == .Instruction else 1
 	case .Parenthesized, .Optional:
 		return 1
 	case .Negate:

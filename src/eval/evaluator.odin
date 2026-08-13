@@ -127,6 +127,7 @@ frame_phase :: enum u8 {
 	Index_Start_Child,
 	Index_Child_Active,
 	Index_Result_Active,
+	Index_Key_Active,
 	Slice_Start_Child,
 	Slice_Child_Active,
 	Slice_Result_Active,
@@ -169,6 +170,7 @@ eval_frame :: struct {
 	mode:        frame_mode,
 	phase:       frame_phase,
 	input:       value.Value,
+	dynamic_index_base: value.Value,
 	// Composite continuations retain the exact sealed instruction and operands
 	// that established their phase. Resumption compares the live Program bytes
 	// before using either the saved phase or a current operand.
@@ -611,6 +613,8 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	free_error = value.destroy_value(&frame.reduce_binding)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.selected_value)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.dynamic_index_base)
 	if free_error != nil do return free_error
 	frame.selected_seen = false
 	frame.limit_remaining = 0
@@ -1332,7 +1336,7 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 2 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
-		if !child_ok || !index_ok || index_operand.kind != .Text do return false
+		if !child_ok || !index_ok || (index_operand.kind != .Text && index_operand.kind != .Instruction) do return false
 	case .Slice:
 		if instruction.operands_count != 3 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1468,6 +1472,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Try do return false
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
+	case .Index_Key_Active:
+		if frame.mode != .Normal || instruction.opcode != .Index || instruction.index_key_kind != .Instruction do return false
 	case .Iterator_Active:
 		if (frame.mode != .Normal && frame.mode != .Field_Only) || (instruction.opcode != .Field && instruction.opcode != .Range && instruction.opcode != .Foreach) {
 			return false
@@ -1509,7 +1515,7 @@ resumed_composite_instruction_valid :: proc(
 	else if frame.phase == .Map_Start || frame.phase == .Map_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Recurse_Children do expected_operand_count = 0
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
-	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active {
+	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active || frame.phase == .Index_Key_Active {
 		expected_operand_count = 2
 	}
 	else if frame.phase == .Slice_Start_Child || frame.phase == .Slice_Child_Active || frame.phase == .Slice_Result_Active {
@@ -1655,6 +1661,49 @@ index_result :: proc(
 	case .Invalid:
 	}
 	return {}, {}, false
+}
+
+@(private)
+dynamic_index_result :: proc(
+	storage: ^evaluator_storage,
+	frame: ^eval_frame,
+	instruction: program.Instruction,
+	key_value: ^value.Value,
+) -> (value.Value, Runtime_Error, bool) {
+	base := &frame.dynamic_index_base
+	key_kind := value.kind_of(key_value)
+	if key_kind == .String {
+		key, key_ok := value.string_borrowed(key_value)
+		if !key_ok do return {}, {}, false
+		if value.kind_of(base) == .Object {
+			result, found := value.object_get_copy(base, key)
+			if found do return result, {}, true
+			return value.null_value(), {}, true
+		}
+		if value.kind_of(base) == .Null do return value.null_value(), {}, true
+		return {}, Runtime_Error{kind = .Cannot_Index_With_String, input_kind = value.kind_of(base), span = instruction.span, key = key}, true
+	}
+	if key_kind == .Number {
+		number, number_ok := value.number_value_get(key_value)
+		if !number_ok || number != f64(int(number)) do return {}, {}, false
+		index := int(number)
+		#partial switch value.kind_of(base) {
+		case .Array:
+			length, length_ok := value.array_length(base)
+			if !length_ok do return {}, {}, false
+			if index < 0 do index += length
+			if index < 0 || index >= length do return value.null_value(), {}, true
+			result, element_ok := value.array_element_copy(base, index)
+			return result, {}, element_ok
+		case .Null:
+			return value.null_value(), {}, true
+		case .Object:
+			return value.null_value(), {}, true
+		case:
+			return {}, Runtime_Error{kind = .Cannot_Index_With_String, input_kind = value.kind_of(base), span = instruction.span}, true
+		}
+	}
+	return {}, Runtime_Error{kind = .Cannot_Index_With_String, input_kind = value.kind_of(base), span = instruction.span}, true
 }
 
 @(private)
@@ -2664,6 +2713,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Field_Child_Active
 	case .Index_Child_Active:
 		frame.phase = .Complete
+	case .Index_Key_Active:
+		free_error := value.destroy_value(&frame.dynamic_index_base)
+		if free_error != nil do return false
+		frame.phase = .Index_Child_Active
 	case .Index_Result_Active:
 		frame.phase = .Index_Child_Active
 	case .Slice_Child_Active:
@@ -3176,13 +3229,39 @@ propagate_output :: proc(
 			return {}, false
 		case .Field_Result_Active:
 			current = parent
-		case .Index_Child_Active:
-			index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
-			if !index_ok || index_operand.kind != .Text || !push_frame(storage, frame.instruction, parent, owned, .Index_Only) {
-				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+	case .Index_Child_Active:
+		index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+		if !index_ok {
+			return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+		}
+		if index_operand.kind == .Instruction {
+			frame.dynamic_index_base = value.take_value(owned)
+			input_copy := value.clone_value(&frame.input)
+			if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, index_operand.instruction, parent, &input_copy) {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true
 			}
-			frame.phase = .Index_Result_Active
+			frame.phase = .Index_Key_Active
 			return {}, false
+		}
+		if index_operand.kind != .Text || !push_frame(storage, frame.instruction, parent, owned, .Index_Only) {
+			return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+		}
+		frame.phase = .Index_Result_Active
+		return {}, false
+	case .Index_Key_Active:
+		if value.kind_of(owned) == .Invalid do return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+		output, runtime_error, valid := dynamic_index_result(storage, frame, instruction, owned)
+		free_error := value.destroy_value(owned)
+		if free_error != nil do return resource_step(free_error), true
+		if !valid do return begin_terminal_misuse(storage, .Malformed_Program), true
+		if runtime_error.kind != .None {
+			result, ready := raise_runtime(storage, parent, runtime_error)
+			if ready do return result, true
+			return {}, false
+		}
+		result, ready := propagate_output(storage, parent, &output)
+		if ready do return result, true
+		return {}, false
 	case .Index_Result_Active:
 		current = parent
 	case .Slice_Child_Active:
@@ -8763,7 +8842,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		     .Limit_Active, .Skip_Active, .Nth_Active,
 		     .Sequence_Left_Active, .Sequence_Right_Active,
 		     .Field_Child_Active, .Field_Result_Active,
-		     .Index_Child_Active, .Index_Result_Active,
+		     .Index_Child_Active, .Index_Result_Active, .Index_Key_Active,
 		     .Binary_Left_Active, .Binary_Right_Active, .Call_Active,
 		     .Binding_Left_Active, .Binding_Body_Active, .Constructor_Child_Active:
 			// An active consumer is never the top frame: its producer is above it.

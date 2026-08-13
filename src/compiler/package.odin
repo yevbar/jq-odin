@@ -184,6 +184,11 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       node.has_number_text && len(node.number_text) > 0 && node.has_name_span == false && !node.has_value &&
 		       !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text)
 	case .Index:
+		if node.has_index_key {
+			return node.container_kind == .None && node.has_child && node.index_key >= 0 && no_edges && no_name &&
+				no_container_links && !node.has_value && !node.boolean_value && no_number &&
+				!node.has_string_text && string_header_absent(node.string_text)
+		}
 		header := transmute(runtime.Raw_String)node.number_text
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && node.has_number_text && header.data != nil && header.len > 0 &&
@@ -403,7 +408,9 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		}
 		if node.has_child do return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Index:
-		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+		if !validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) do return false
+		if node.has_index_key do return validate_binding_scopes(nodes, node.index_key, source, scopes, depth, next_budget)
+		return true
 	case .Flatten:
 		if node.has_child do return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr:
@@ -561,9 +568,13 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Index:
-			if !node.has_child || !node_reference_valid(node.child, len(nodes)) ||
-			   !checked_count_add(&operand_count, 2) ||
-			   !checked_count_add(&text_count, u64(len(node.number_text))) {
+			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 2) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+			if !node.has_index_key && !checked_count_add(&text_count, u64(len(node.number_text))) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
+			if node.has_index_key && (!node_reference_valid(node.index_key, len(nodes))) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Static_Field_Add_Number, .Static_Field_Set_Number:
@@ -924,16 +935,26 @@ lower_filter :: proc(
 			})
 			assert(child_ok)
 			operand_at += 1
-			text_ok := program.set_text(output, program.Byte_Offset(text_at), node.number_text)
-			assert(text_ok)
-			index_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
-				kind = .Text,
-				text_start = program.Byte_Offset(text_at),
-				text_count = program.Count(len(node.number_text)),
-			})
-			assert(index_ok)
-			operand_at += 1
-			text_at += u32(len(node.number_text))
+			if node.has_index_key {
+				instruction.index_key_kind = .Instruction
+				key_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+					kind = .Instruction,
+					instruction = program.Instruction_Index(node.index_key),
+				})
+				assert(key_ok)
+				operand_at += 1
+			} else {
+				text_ok := program.set_text(output, program.Byte_Offset(text_at), node.number_text)
+				assert(text_ok)
+				index_ok := program.set_operand(output, program.Operand_Index(operand_at), program.Operand{
+					kind = .Text,
+					text_start = program.Byte_Offset(text_at),
+					text_count = program.Count(len(node.number_text)),
+				})
+				assert(index_ok)
+				operand_at += 1
+				text_at += u32(len(node.number_text))
+			}
 		case .Flatten:
 			instruction.opcode = .Flatten
 			instruction.operands_count = 0
