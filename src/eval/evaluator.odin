@@ -1865,6 +1865,70 @@ dynamic_path_results :: proc(input, prefix: ^value.Value, allocator: runtime.All
 	return output, .None, true
 }
 
+// predicate_path_threshold recognizes the deliberately bounded predicate
+// continuation supported by path(): `.[] | select(. > N)`.  General
+// predicate-valued paths still require resumable filter frames; keeping this
+// shape explicit prevents the path evaluator from guessing at arbitrary ASTs.
+predicate_path_threshold :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (f64, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok || instruction.opcode != .Sequence || instruction.operands_count != 2 do return 0, false
+	left, left_ok := child_instruction(storage, instruction, 0)
+	right, right_ok := child_instruction(storage, instruction, 1)
+	if !left_ok || !right_ok do return 0, false
+	_, wildcard, prefix_ok := dynamic_path_prefix(storage, left)
+	if !prefix_ok || !wildcard do return 0, false
+	filter, filter_ok := program.program_instruction(storage.compiled, right)
+	if !filter_ok || filter.opcode != .If || filter.operands_count != 3 do return 0, false
+	condition, condition_ok := child_instruction(storage, filter, 0)
+	then_branch, then_ok := child_instruction(storage, filter, 1)
+	else_branch, else_ok := child_instruction(storage, filter, 2)
+	if !condition_ok || !then_ok || !else_ok do return 0, false
+	condition_instruction, condition_valid := program.program_instruction(storage.compiled, condition)
+	then_instruction, then_valid := program.program_instruction(storage.compiled, then_branch)
+	else_instruction, else_valid := program.program_instruction(storage.compiled, else_branch)
+	if !condition_valid || !then_valid || !else_valid || condition_instruction.opcode != .Greater do return 0, false
+	if then_instruction.opcode != .Identity || then_instruction.has_literal || else_instruction.opcode != .Empty do return 0, false
+	condition_left, condition_left_ok := child_instruction(storage, condition_instruction, 0)
+	condition_right, condition_right_ok := child_instruction(storage, condition_instruction, 1)
+	if !condition_left_ok || !condition_right_ok do return 0, false
+	left_instruction, left_valid := program.program_instruction(storage.compiled, condition_left)
+	right_instruction, right_valid := program.program_instruction(storage.compiled, condition_right)
+	if !left_valid || !right_valid || left_instruction.opcode != .Identity || left_instruction.has_literal do return 0, false
+	bound, bound_error, cleanup := literal_value(storage, right_instruction)
+	if cleanup != nil || bound_error != .None || value.kind_of(&bound) != .Number { _ = value.destroy_value(&bound); return 0, false }
+	result, number_ok := value.number_value_get(&bound)
+	_ = value.destroy_value(&bound)
+	return result, number_ok
+}
+
+dynamic_path_results_filtered :: proc(input, prefix: ^value.Value, threshold: f64, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, bool) {
+	container, runtime_kind, lookup_ok := lookup_path(input, prefix)
+	if !lookup_ok { return {}, runtime_kind, false }
+	output, output_ok := path_array(allocator)
+	if !output_ok { _ = value.destroy_value(&container); return {}, .None, false }
+	if value.kind_of(&container) != .Array {
+		_ = value.destroy_value(&container); _ = value.destroy_value(&output)
+		return {}, .Cannot_Iterate, true
+	}
+	length, length_ok := value.array_length(&container)
+	if !length_ok { _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false }
+	for offset in 0..<length {
+		item, item_ok := value.array_element_copy(&container, offset)
+		if !item_ok { _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false }
+		number, number_ok := value.number_value_get(&item)
+	_ = value.destroy_value(&item)
+		if !number_ok || !(number > threshold) do continue
+		path := value.clone_value(prefix)
+		if value.kind_of(&path) == .Invalid { _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false }
+		component := value.number_value(f64(offset))
+		if !path_append_take(&path, &component) || !path_append_take(&output, &path) {
+			_ = value.destroy_value(&path); _ = value.destroy_value(&container); _ = value.destroy_value(&output); return {}, .None, false
+		}
+	}
+	_ = value.destroy_value(&container)
+	return output, .None, true
+}
+
 @(private)
 literal_path_value :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (value.Value, bool) {
 	instruction, ok := program.program_instruction(storage.compiled, index); if !ok do return {}, false
@@ -6001,9 +6065,37 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				child, child_ok := child_instruction(storage, instruction, 0); if !child_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 				output: value.Value; valid := false; runtime_kind := Runtime_Error_Kind.None
 				if instruction.opcode == .Path {
+					predicate_threshold, predicate_path_ok := predicate_path_threshold(storage, child)
+					if predicate_path_ok {
+						child_instruction_data, child_instruction_ok := program.program_instruction(storage.compiled, child)
+						left_path, left_path_ok := child_instruction(storage, child_instruction_data, 0)
+						prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, left_path)
+						if child_instruction_ok && child_instruction_data.opcode == .Sequence && left_path_ok && prefix_ok && wildcard {
+							results, dynamic_kind, results_ok := dynamic_path_results_filtered(&frame.input, &prefix, predicate_threshold, storage.allocator)
+							_ = value.destroy_value(&prefix)
+							if results_ok {
+								frame.paths_results = value.take_value(&results)
+								frame.paths_cursor = 0
+								frame.phase = .Path_Active
+								if dynamic_kind != .None {
+									_ = value.destroy_value(&frame.paths_results)
+									result, ready := raise_runtime(storage, index, Runtime_Error{kind=dynamic_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+									if ready do return result
+									continue
+								}
+								continue
+							}
+						}
+						_ = value.destroy_value(&prefix)
+					}
 					prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, child)
 					if prefix_ok && wildcard {
+						threshold, predicate_ok := predicate_path_threshold(storage, child)
 						results, dynamic_kind, results_ok := dynamic_path_results(&frame.input, &prefix, storage.allocator)
+						if predicate_ok {
+							_ = value.destroy_value(&results)
+							results, dynamic_kind, results_ok = dynamic_path_results_filtered(&frame.input, &prefix, threshold, storage.allocator)
+						}
 						_ = value.destroy_value(&prefix)
 						if results_ok {
 							frame.paths_results = value.take_value(&results)
