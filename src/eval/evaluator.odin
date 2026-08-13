@@ -1274,7 +1274,7 @@ capture_composite_instruction :: proc(
 		frame.saved_operand_count = 0
 		frame.has_saved_instruction = true
 		return true
-	case .Path, .Getpath:
+	case .Path, .Getpath, .Delpaths:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		return child_ok
@@ -1665,6 +1665,60 @@ set_path_value :: proc(input, path: ^value.Value, offset: int, replacement: ^val
 		_, set_error := value.array_set_take(&result, idx, &updated); if value.array_error_kind(&set_error) != .None { _ = value.destroy_array_error(&set_error); _ = value.destroy_value(&result); return {}, false }; return result, true
 	}
 	_ = value.destroy_value(&component); return {}, false
+}
+
+// delete_path_value removes one literal path using jq's copy-on-write value
+// semantics. Missing object keys and out-of-range array indexes are no-ops.
+@(private)
+delete_path_value :: proc(input, path: ^value.Value, offset: int, allocator: runtime.Allocator) -> (value.Value, bool) {
+	length, length_ok := value.array_length(path); if !length_ok || offset >= length do return value.clone_value(input), true
+	component, component_ok := value.array_element_copy(path, offset); if !component_ok do return {}, false
+	if value.kind_of(&component) == .String {
+		key, key_ok := value.string_borrowed(&component); if !key_ok { _ = value.destroy_value(&component); return {}, false }
+		if value.kind_of(input) != .Object { _ = value.destroy_value(&component); return {}, false }
+		result := value.clone_value(input); if value.kind_of(&result) == .Invalid { _ = value.destroy_value(&component); return {}, false }
+		child, found := value.object_get_copy(input, key)
+		if offset+1 == length {
+			if found { _, removed_value, _, delete_error := value.object_delete_take(&result, key); _ = value.destroy_value(&removed_value); if value.object_error_kind(&delete_error) != .None { _ = value.destroy_object_error(&delete_error); _ = value.destroy_value(&result); _ = value.destroy_value(&component); return {}, false } }
+			if found { _ = value.destroy_value(&child) }; _ = value.destroy_value(&component); return result, true
+		}
+		if !found { _ = value.destroy_value(&component); return result, true }
+		updated, updated_ok := delete_path_value(&child, path, offset+1, allocator); _ = value.destroy_value(&child); _ = value.destroy_value(&component)
+		if !updated_ok { _ = value.destroy_value(&result); return {}, false }
+		key_value, key_error := value.string_value(key, allocator); if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_constructor_error(&key_error); _ = value.destroy_value(&updated); _ = value.destroy_value(&result); return {}, false }
+		_, displaced, set_error := value.object_set_take(&result, &key_value, &updated); _ = value.destroy_value(&displaced)
+		if value.object_error_kind(&set_error) != .None { _ = value.destroy_object_error(&set_error); _ = value.destroy_value(&result); return {}, false }
+		return result, true
+	}
+	if value.kind_of(&component) == .Number {
+		n, number_ok := value.number_value_get(&component); if !number_ok || math.floor(n) != n || value.kind_of(input) != .Array { _ = value.destroy_value(&component); return {}, false }
+		idx := int(n); count, count_ok := value.array_length(input); if !count_ok { _ = value.destroy_value(&component); return {}, false }; if idx < 0 do idx += count
+		if idx < 0 || idx >= count { _ = value.destroy_value(&component); return value.clone_value(input), true }
+		if offset+1 == length {
+			result, result_error := value.array_value(allocator); if value.array_error_kind(&result_error) != .None { _ = value.destroy_array_error(&result_error); _ = value.destroy_value(&component); return {}, false }
+			for i in 0..<count { if i == idx { continue }; item, item_ok := value.array_element_copy(input, i); if !item_ok || !path_append_take(&result, &item) { _ = value.destroy_value(&item); _ = value.destroy_value(&result); _ = value.destroy_value(&component); return {}, false } }
+			_ = value.destroy_value(&component); return result, true
+		}
+		child, child_ok := value.array_element_copy(input, idx); if !child_ok { _ = value.destroy_value(&component); return {}, false }
+		updated, updated_ok := delete_path_value(&child, path, offset+1, allocator); _ = value.destroy_value(&child); _ = value.destroy_value(&component); if !updated_ok { return {}, false }
+		result := value.clone_value(input); if value.kind_of(&result) == .Invalid { _ = value.destroy_value(&updated); return {}, false }; _, set_error := value.array_set_take(&result, idx, &updated); if value.array_error_kind(&set_error) != .None { _ = value.destroy_array_error(&set_error); _ = value.destroy_value(&result); return {}, false }; return result, true
+	}
+	_ = value.destroy_value(&component); return {}, false
+}
+
+@(private)
+delete_literal_path_argument :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, current: ^value.Value) -> bool {
+	instruction, instruction_ok := program.program_instruction(storage.compiled, index); if !instruction_ok do return false
+	if instruction.opcode == .Parenthesized { child, ok := child_instruction(storage, instruction, 0); return ok && delete_literal_path_argument(storage, child, current) }
+	if instruction.opcode == .Fork || instruction.opcode == .Sequence {
+		left, left_ok := child_instruction(storage, instruction, 0); right, right_ok := child_instruction(storage, instruction, 1)
+		return left_ok && right_ok && delete_literal_path_argument(storage, left, current) && delete_literal_path_argument(storage, right, current)
+	}
+	if instruction.opcode != .Array do return false
+	path, path_ok := literal_path_value(storage, index); if !path_ok do return false
+	path_length, path_length_ok := value.array_length(&path); if !path_length_ok { _ = value.destroy_value(&path); return false }
+	if path_length == 0 { _ = value.destroy_value(current); current^ = value.null_value(); _ = value.destroy_value(&path); return true }
+	updated, updated_ok := delete_path_value(current, &path, 0, storage.allocator); _ = value.destroy_value(current); _ = value.destroy_value(&path); if !updated_ok do return false; current^ = updated; return true
 }
 
 @(private)
@@ -5540,6 +5594,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		switch frame.phase {
 		case .Enter:
+			if instruction.opcode == .Delpaths {
+				if instruction.operands_count != 1 { return begin_terminal_misuse(storage, .Malformed_Program) }
+				argument, argument_ok := child_instruction(storage, instruction, 0)
+				argument_instruction, argument_instruction_ok := program.program_instruction(storage.compiled, argument)
+				if !argument_ok || !argument_instruction_ok || argument_instruction.opcode != .Array { return begin_terminal_misuse(storage, .Malformed_Program) }
+				current := value.clone_value(&frame.input); if value.kind_of(&current) == .Invalid { return resource_step(.Out_Of_Memory) }
+				for offset in 0..<argument_instruction.operands_count {
+					operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(argument_instruction.operands_start)+u32(offset)))
+					if !operand_ok || operand.kind != .Instruction { _ = value.destroy_value(&current); return begin_terminal_misuse(storage, .Malformed_Program) }
+					if !delete_literal_path_argument(storage, operand.instruction, &current) { _ = value.destroy_value(&current); return begin_terminal_misuse(storage, .Malformed_Program) }
+				}
+				_ = value.destroy_value(&frame.input); frame.input = current
+				output := value.clone_value(&frame.input); if value.kind_of(&output) == .Invalid { return resource_step(.Out_Of_Memory) }
+				frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result; continue
+			}
 			if instruction.opcode == .Setpath {
 				if instruction.operands_count != 2 { return begin_terminal_misuse(storage, .Malformed_Program) }
 				path_instruction, path_child_ok := child_instruction(storage, instruction, 0)
@@ -5642,7 +5711,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			}
 
 			switch instruction.opcode {
-			case .Path, .Getpath, .Paths, .Setpath:
+			case .Path, .Getpath, .Paths, .Setpath, .Delpaths:
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			case .Identity:
 				capacity_error := prepare_output(storage, index)

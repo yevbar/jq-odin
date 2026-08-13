@@ -160,7 +160,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       node.has_name_span && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
-	case .Path, .Getpath:
+	case .Path, .Getpath, .Delpaths:
 		return node.container_kind == .None && node.has_child && node.child >= 0 && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Setpath:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
@@ -338,7 +338,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Static_Field_Add_Number, .Static_Field_Set_Number:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
-	case .Path, .Getpath:
+	case .Path, .Getpath, .Delpaths:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Setpath:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
@@ -552,7 +552,7 @@ lower_filter :: proc(
 			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(rhs_len)) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
-		case .Path, .Getpath:
+		case .Path, .Getpath, .Delpaths:
 			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Setpath:
 			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Invalid_AST} }
@@ -1230,8 +1230,9 @@ lower_filter :: proc(
 			} else {
 				instruction.operands_count = 0
 			}
-		case .Path, .Getpath:
+		case .Path, .Getpath, .Delpaths:
 			instruction.opcode = .Path if node.kind == .Path else .Getpath
+			if node.kind == .Delpaths do instruction.opcode = .Delpaths
 			instruction.operands_count = 1
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
 			operand_at += 1

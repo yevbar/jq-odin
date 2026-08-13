@@ -1,0 +1,29 @@
+# Delete one object field.
+delpaths([["a"]])
+{"a":1,"b":2}
+{"b":2}
+
+# Delete a nested object field.
+delpaths([["a","b"]])
+{"a":{"b":2,"c":3}}
+{"a":{"c":3}}
+
+# Delete multiple fields in one literal path list.
+delpaths([["a"],["b"]])
+{"a":1,"b":2,"c":3}
+{"c":3}
+
+# Delete one array element (indexes shift as jq does).
+delpaths([[1]])
+[10,20,30]
+[10,30]
+
+# Missing paths are no-ops.
+delpaths([["missing"]])
+{"a":1}
+{"a":1}
+
+# An empty path deletes the root.
+delpaths([[]])
+{"a":1}
+null
