@@ -753,20 +753,101 @@ collect_constructor_key_stream :: proc(
 	}
 	_ = value.destroy_value(&left_stream); _ = value.destroy_value(&right_stream)
 	case .Field:
-		if instruction.operands_count != 1 do return false
-		temp := eval_frame{input = value.clone_value(input)}
-		key, runtime_error, field_ok := field_result(storage, &temp, instruction)
-		_ = value.destroy_value(&temp.input)
-		if !field_ok || runtime_error.kind != .None {
-			_ = value.destroy_value(&key)
+		name, name_ok := field_text(storage, instruction)
+		if !name_ok do return false
+		if instruction.operands_count == 1 {
+			temp := eval_frame{input = value.clone_value(input)}
+			key, runtime_error, field_ok := field_result(storage, &temp, instruction)
+			_ = value.destroy_value(&temp.input)
+			if !field_ok || runtime_error.kind != .None {
+				_ = value.destroy_value(&key)
+				return false
+			}
+			_, append_error := value.array_append_take(output, &key)
+			if value.array_error_kind(&append_error) != .None {
+				_ = value.destroy_array_error(&append_error)
+				_ = value.destroy_value(&key)
+				return false
+			}
+			break
+		}
+		// A computed object key may itself be a postfix generator, notably
+		// `(.[])`.  Collect the child stream first, then flatten each child
+		// through the requested field.  This preserves jq's stream order while
+		// keeping constructor key collection deterministic and owned.
+		if instruction.operands_count != 2 do return false
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
+		child_stream, child_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&child_error) != .None {
+			_ = value.destroy_array_error(&child_error)
 			return false
 		}
-		_, append_error := value.array_append_take(output, &key)
-		if value.array_error_kind(&append_error) != .None {
-			_ = value.destroy_array_error(&append_error)
-			_ = value.destroy_value(&key)
+		if !collect_constructor_key_stream(storage, child, producer, input, &child_stream) {
+			_ = value.destroy_value(&child_stream)
 			return false
 		}
+		child_length, child_length_ok := value.array_length(&child_stream)
+		if !child_length_ok { _ = value.destroy_value(&child_stream); return false }
+		for child_index in 0..<child_length {
+			child_value, child_value_ok := value.array_element_copy(&child_stream, child_index)
+			if !child_value_ok { _ = value.destroy_value(&child_stream); return false }
+			if name == "" {
+				kind := value.kind_of(&child_value)
+				length: int
+				length_ok := false
+				if kind == .Array { length, length_ok = value.array_length(&child_value) }
+				if kind == .Object { length, length_ok = value.object_length(&child_value) }
+				if !length_ok {
+					_ = value.destroy_value(&child_value)
+					_ = value.destroy_value(&child_stream)
+					return false
+				}
+				for item_index in 0..<length {
+					item: value.Value
+					item_ok := false
+					if kind == .Array {
+						item, item_ok = value.array_element_copy(&child_value, item_index)
+					} else {
+						key, entry, entry_ok := value.object_entry_copy(&child_value, item_index)
+						_ = value.destroy_value(&key)
+						item, item_ok = entry, entry_ok
+					}
+					if !item_ok || value.kind_of(&item) == .Invalid {
+						_ = value.destroy_value(&item)
+						_ = value.destroy_value(&child_value)
+						_ = value.destroy_value(&child_stream)
+						return false
+					}
+					_, append_error := value.array_append_take(output, &item)
+					if value.array_error_kind(&append_error) != .None {
+						_ = value.destroy_array_error(&append_error)
+						_ = value.destroy_value(&item)
+						_ = value.destroy_value(&child_value)
+						_ = value.destroy_value(&child_stream)
+						return false
+					}
+				}
+			} else {
+				temp := eval_frame{input = value.take_value(&child_value)}
+				key, runtime_error, field_ok := field_result(storage, &temp, instruction)
+				_ = value.destroy_value(&temp.input)
+				if !field_ok || runtime_error.kind != .None {
+					_ = value.destroy_value(&key)
+					_ = value.destroy_value(&child_stream)
+					return false
+				}
+				_, append_error := value.array_append_take(output, &key)
+				if value.array_error_kind(&append_error) != .None {
+					_ = value.destroy_array_error(&append_error)
+					_ = value.destroy_value(&key)
+					_ = value.destroy_value(&child_stream)
+					return false
+				}
+			}
+			_ = value.destroy_value(&child_value)
+		}
+		_ = value.destroy_value(&child_stream)
 	case:
 		return false
 	}
