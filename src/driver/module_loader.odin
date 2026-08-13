@@ -557,6 +557,18 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 		at += 1
 		for at < len(input) && is_module_identifier_byte(input[at]) do at += 1
 		alias := input[start+1:at]
+		// Qualified data aliases (`$d::d`) retain the imported array binding;
+		// consume the namespace segment before applying the ordinary stream
+		// postfix (`[]`, `.field`, etc.).
+		qualified_data := false
+		if at+2 < len(input) && input[at:at+2] == "::" {
+			segment_end := at+2
+			for segment_end < len(input) && is_module_identifier_byte(input[segment_end]) do segment_end += 1
+			if segment_end > at+2 && input[at+2:segment_end] == alias {
+				qualified_data = true
+				at = segment_end
+			}
+		}
 		// `as $name` introduces a lexical binding whose RHS shadows an
 		// imported data alias. Find the binder's variable position once per
 		// input and leave that binding (and its scoped expression) untouched.
@@ -567,6 +579,24 @@ module_expand_data_references :: proc(input: string, imports: [dynamic]module_da
 			if imported.alias != alias do continue
 			if shadow_start >= 0 && start >= shadow_start && (shadow_end < 0 || start < shadow_end) do continue
 			matched = true
+			// Object shorthand `{ $a, $b }` uses each data alias as both key and
+			// value in jq. Materialize the explicit key/value pair before parsing.
+			prev := start-1
+			for prev >= 0 && (input[prev] == ' ' || input[prev] == '\t' || input[prev] == '\n' || input[prev] == '\r') do prev -= 1
+			next := at
+			for next < len(input) && (input[next] == ' ' || input[next] == '\t' || input[next] == '\n' || input[next] == '\r') do next += 1
+			if (prev >= 0 && (input[prev] == '{' || input[prev] == ',')) && (next >= len(input) || input[next] == ',' || input[next] == '}') {
+				if !module_write(builder, fmt.tprintf("\"%s\":", alias)) || !module_write(builder, imported.data) do return false
+				break
+			}
+			if qualified_data {
+				if !module_write(builder, imported.data) do return false
+				if at+2 <= len(input) && input[at:at+2] == "[]" {
+					if !module_write(builder, "[]") do return false
+					at += 2
+				}
+				break
+			}
 			if module_trim(input) == fmt.tprintf(". + $%s[0]", alias) {
 				if !module_write(builder, ".") do return false
 				at += 3

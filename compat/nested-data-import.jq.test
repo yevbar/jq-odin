@@ -1,0 +1,7 @@
+import "data" as $e; import "data" as $d; [$d[].this,$e[].that,$d::d[].this,$e::e[].that]|join(";")
+null
+"is a test;is too;is a test;is too"
+
+import "data" as $a; import "data" as $b; def f: {$a, $b}; f
+null
+{"a":[{"this":"is a test","that":"is too"}],"b":[{"this":"is a test","that":"is too"}]}
