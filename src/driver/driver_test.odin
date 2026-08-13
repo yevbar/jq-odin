@@ -684,6 +684,9 @@ filter_parameter_literal_postfix_indexes_avoid_grouping :: proc(t: ^testing.T) {
 		t, "def index(x): .[x];", "index(0)", "( .[0])",
 	)
 	module_expansion_matches(
+		t, "def spaced(x): .[ x ];", "spaced(\"a\")", "( .[ \"a\" ])",
+	)
+	module_expansion_matches(
 		t, "def field(x): .[x];", "field(.a)", "( .[(.a)])",
 	)
 }

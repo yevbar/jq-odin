@@ -1487,6 +1487,15 @@ module_argument_is_postfix_literal :: proc(argument: string) -> bool {
 	return digits > 0
 }
 
+module_parameter_is_postfix_index :: proc(input: string, start, end: int) -> bool {
+	left := start
+	for left > 0 && (input[left-1] == ' ' || input[left-1] == '\t' || input[left-1] == '\r' || input[left-1] == '\n') do left -= 1
+	if left == 0 || input[left-1] != '[' do return false
+	right := end
+	for right < len(input) && (input[right] == ' ' || input[right] == '\t' || input[right] == '\r' || input[right] == '\n') do right += 1
+	return right < len(input) && input[right] == ']'
+}
+
 module_write :: proc(builder: ^strings.Builder, text: string) -> bool {
 	return strings.write_string(builder, text) == len(text)
 }
@@ -1795,8 +1804,8 @@ module_expand_source :: proc(
 			// A literal filter argument directly inside a postfix index must not
 			// acquire grouping parentheses: `.[("a")]` is not accepted by the
 			// current parser, while jq's equivalent `.["a"]` is.
-			postfix_literal := start > 0 && input[start-1] == '[' && at < len(input) &&
-				input[at] == ']' && module_argument_is_postfix_literal(args[parameter_index])
+			postfix_literal := module_parameter_is_postfix_index(input, start, at) &&
+				module_argument_is_postfix_literal(args[parameter_index])
 			if !postfix_literal && !module_write(builder, "(") do return {kind = .Read_Failure, resource_error = .Out_Of_Memory}
 			outcome := module_expand_source(
 				args[parameter_index], definitions, builder, stack, depth,
