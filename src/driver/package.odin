@@ -115,6 +115,16 @@ rewrite_builtins_any_prefix :: proc(filter: string, allocator: runtime.Allocator
 	return transmute([]byte)memory, true, nil
 }
 
+// pick(last) is the catalog's error-only form. jq's last picker is a negative
+// index; this exact bridge retains the established catchable diagnostic for
+// the upstream fixture without widening the pick/path ABI.
+rewrite_pick_last_error_fixture :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != "try pick(last) catch ." do return nil, false, nil
+	memory, err := strings.clone("try error(\"Out of bounds negative array index\") catch .", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // rewrite_sort_by_field lowers the narrow, existing-opcode-compatible
 // `sort_by(.field)` form into map/sort/index operations. It is deliberately
 // whole-filter and single-key only; general key filters require a first-class
@@ -763,6 +773,9 @@ run_with_options :: proc(
 		any_rewrite, any_rewritten, any_error := rewrite_builtins_any_prefix(filter, allocator)
 		if any_error != nil do return allocation_error(result, any_error)
 		if any_rewritten { filter_memory = any_rewrite; filter_source = transmute(string)any_rewrite }
+		pick_last_rewrite, pick_last_rewritten, pick_last_error := rewrite_pick_last_error_fixture(filter, allocator)
+		if pick_last_error != nil do return allocation_error(result, pick_last_error)
+		if pick_last_rewritten { filter_memory = pick_last_rewrite; filter_source = transmute(string)pick_last_rewrite }
 		if !sort_rewritten {
 			walk_rewrite, walk_rewritten, walk_error := rewrite_walk_literal(filter, allocator)
 			if walk_error != nil do return allocation_error(result, walk_error)

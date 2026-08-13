@@ -1,0 +1,4 @@
+# Bounded error-only pick(last) fixture.
+try pick(last) catch .
+[1,2]
+"Out of bounds negative array index"
