@@ -2671,15 +2671,7 @@ parse_container :: proc(parser: ^Parser, opener: Token_Kind) -> (Node_Id, bool) 
 			shorthand = !token_is(parser, .Colon)
 		case .String_Start:
 			key_ok: bool
-			key_open_span := parser.lookahead.token.span
-			if string_has_interpolation(parser, key_open_span) {
-				key, key_ok = append_interpolated_string_node(
-					parser, {}, key_open_span, .Tostring, false,
-					0, 0, 0, 0, JQ_PREFIX_STACK_OVERHEAD, false,
-				)
-			} else {
-				key, key_ok = append_string_node(parser, key_open_span, 0, 0, 0, 0, 0, false)
-			}
+			key, key_ok = append_string_node(parser, parser.lookahead.token.span, 0, 0, 0, 0, 0, false)
 			if !key_ok {
 				parser.container_depth -= 1
 				return {}, false
