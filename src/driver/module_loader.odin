@@ -646,12 +646,24 @@ read_module :: proc(name: string, paths: []string, allocator: runtime.Allocator)
 
 read_module_extension :: proc(name, extension: string, paths: []string, allocator: runtime.Allocator) -> ([]byte, Module_Outcome) {
 	for directory in paths {
-		path, path_error := strings.concatenate([]string{directory, "/", name, extension}, allocator)
-		if path_error != nil do return nil, {kind = .Read_Failure, resource_error = path_error}
-		data, read_error := os.read_entire_file_from_path(path, allocator)
-		delete(path, allocator)
-		if read_error == nil do return data, {}
-		if read_error != .Not_Exist do return nil, {kind = .Read_Failure}
+		// jq accepts both flat modules (`lib/foo.jq`) and the directory
+		// layout used by its test fixtures (`lib/foo/foo.jq`). Preserve the
+		// ordered search path while probing the flat spelling first, then the
+		// directory spelling before reporting Not_Found.
+		for candidate_index in 0..=1 {
+			path: string
+			path_error: runtime.Allocator_Error
+			if candidate_index == 0 {
+				path, path_error = strings.concatenate([]string{directory, "/", name, extension}, allocator)
+			} else {
+				path, path_error = strings.concatenate([]string{directory, "/", name, "/", name, extension}, allocator)
+			}
+			if path_error != nil do return nil, {kind = .Read_Failure, resource_error = path_error}
+			data, read_error := os.read_entire_file_from_path(path, allocator)
+			delete(path, allocator)
+			if read_error == nil do return data, {}
+			if read_error != .Not_Exist do return nil, {kind = .Read_Failure}
+		}
 	}
 	return nil, {kind = .Not_Found}
 }
@@ -1997,7 +2009,21 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 		if module_word(bytes, i, "include") {
 				child, search, next, included, unsupported := parse_module_include(bytes, i)
 				if unsupported || !included { delete(data, allocator); active^[active_count] = ""; return {kind = .Unsupported_Syntax} }
-				child_paths, paths_error := module_search_paths(search, paths, allocator)
+				// Search metadata in a module is relative to that module's
+				// directory. The caller's paths identify the parent search root,
+				// so anchor relative metadata at the current module name (for
+				// example c/c.jq's search "./" finds c/d.jq).
+				child_search := search
+				child_search_owned := false
+				paths_error: runtime.Allocator_Error
+				child_paths: [dynamic]string
+				if len(search) > 0 && search[0] == '.' {
+					child_search, paths_error = strings.concatenate([]string{name, "/", search}, allocator)
+					if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
+					child_search_owned = true
+				}
+				child_paths, paths_error = module_search_paths(child_search, paths, allocator)
+				if child_search_owned do delete(child_search, allocator)
 				if paths_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
 				outcome = collect_module(child, prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
 				destroy_module_search_paths(child_paths, search, allocator)
@@ -2013,7 +2039,17 @@ collect_module :: proc(name, prefix: string, paths: []string, definitions: ^[dyn
 				child_prefix, prefix_error = strings.concatenate([]string{prefix, "::", alias}, allocator)
 				if prefix_error != nil { delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = prefix_error} }
 			}
-			child_paths, paths_error := module_search_paths(search, paths, allocator)
+			child_search := search
+			child_search_owned := false
+			paths_error: runtime.Allocator_Error
+			child_paths: [dynamic]string
+			if len(search) > 0 && search[0] == '.' {
+				child_search, paths_error = strings.concatenate([]string{name, "/", search}, allocator)
+				if paths_error != nil { if len(prefix) > 0 { delete(child_prefix, allocator) }; delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
+				child_search_owned = true
+			}
+			child_paths, paths_error = module_search_paths(child_search, paths, allocator)
+			if child_search_owned do delete(child_search, allocator)
 			if paths_error != nil { if len(prefix) > 0 { delete(child_prefix, allocator) }; delete(data, allocator); active^[active_count] = ""; return {kind = .Read_Failure, resource_error = paths_error} }
 			outcome = collect_module(child, child_prefix, child_paths[:], definitions, allocator, depth+1, active, active_count+1)
 			destroy_module_search_paths(child_paths, search, allocator)
