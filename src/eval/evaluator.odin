@@ -6072,8 +6072,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, left_path)
 						if child_instruction_ok && child_instruction_data.opcode == .Sequence && left_path_ok && prefix_ok && wildcard {
 							results, dynamic_kind, results_ok := dynamic_path_results_filtered(&frame.input, &prefix, predicate_threshold, storage.allocator)
-							_ = value.destroy_value(&prefix)
 							if results_ok {
+								_ = value.destroy_value(&prefix)
 								frame.paths_results = value.take_value(&results)
 								frame.paths_cursor = 0
 								frame.phase = .Path_Active
@@ -6084,9 +6084,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 									continue
 								}
 								continue
+							} else {
+								_ = value.destroy_value(&prefix)
 							}
 						}
-						_ = value.destroy_value(&prefix)
 					}
 					prefix, wildcard, prefix_ok := dynamic_path_prefix(storage, child)
 					if prefix_ok && wildcard {
