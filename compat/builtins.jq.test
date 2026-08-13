@@ -1,0 +1,6 @@
+# builtins returns jq's builtin name/arity inventory
+builtins | length
+226
+
+builtins | any(. == "builtins/0")
+true

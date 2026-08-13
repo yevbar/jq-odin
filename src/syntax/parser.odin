@@ -143,6 +143,8 @@ Node_Kind :: enum {
 	Max,
 	// Toboolean is appended to preserve existing AST discriminants.
 	Toboolean,
+	// Builtins is appended to preserve existing AST discriminants.
+	Builtins,
 	// Base64 and Base64d are appended to preserve existing AST discriminants.
 	Base64,
 	Base64d,
@@ -1242,6 +1244,8 @@ parse_pipe :: proc(
 					kind = .Max
 				} else if spelling == "toboolean" {
 					kind = .Toboolean
+				} else if spelling == "builtins" {
+					kind = .Builtins
 				} else if spelling == "tojson" {
 					kind = .Tojson
 				} else if spelling == "fromjson" {

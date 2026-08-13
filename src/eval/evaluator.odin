@@ -5069,6 +5069,23 @@ gmtime_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (val
 
 builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: runtime.Allocator, flatten_depth: int = -1) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	kind := value.kind_of(input)
+	if opcode == .Builtins {
+		// Keep this bounded list synchronized with jq's builtins/0 surface.
+		text := "have_literal_numbers/0\nhave_decnum/0\ninput_line_number/0\ninput_filename/0\nnow/0\nlocaltime/0\ngmtime/0\nmktime/0\nstrflocaltime/1\nstrftime/1\nstrptime/1\nstderr/0\ndebug/0\ninput/0\nmodulemeta/0\nget_jq_origin/0\nget_prog_origin/0\nget_search_list/0\nhalt_error/1\nhalt/0\nenv/0\nformat/1\nerror/0\nmax/0\nmin/0\nbsearch/1\nunique/0\nsort/0\nnan/0\ninfinite/0\nisnormal/0\nisnan/0\nisinfinite/0\ntype/0\nutf8bytelength/0\nlength/0\ncontains/1\nhas/1\ndelpaths/1\ngetpath/1\nsetpath/2\nrtrim/0\nltrim/0\ntrim/0\nimplode/0\nexplode/0\nsplit/1\nendswith/1\nstartswith/1\nkeys_unsorted/0\nkeys/0\ntostring/0\ntoboolean/0\ntonumber/0\nfromjson/0\ntojson/0\nlgamma_r/0\nfrexp/0\nmodf/0\nldexp/2\ntrunc/0\nsignificand/0\nscalbln/2\nscalb/2\nround/0\nrint/0\nnexttoward/2\nnextafter/2\nnearbyint/0\nlogb/0\nlog1p/0\nlgamma/0\ngamma/0\nfmod/2\nfmin/2\nfmax/2\nfma/3\nfdim/2\nfabs/0\nexpm1/0\nexp10/0\nerfc/0\nerf/0\ndrem/2\ncopysign/2\nceil/0\nyn/2\njn/2\ny1/0\ny0/0\ntgamma/0\ntanh/0\ntan/0\nsqrt/0\nsinh/0\nsin/0\nremainder/2\npow/2\nlog2/0\nlog10/0\nlog/0\nj1/0\nj0/0\nhypot/2\nfloor/0\nexp2/0\nexp/0\ncosh/0\ncos/0\ncbrt/0\natanh/0\natan2/2\natan/0\nasinh/0\nasin/0\nacosh/0\nacos/0\nempty/0\nnot/0\npath/1\nlast/1\nrange/2\nhalt_error/0\nerror/1\nmap/1\nselect/1\nsort_by/1\ngroup_by/1\nunique_by/1\nmax_by/1\nmin_by/1\nadd/1\nadd/0\ndel/1\nabs/0\nmap_values/1\nrecurse/1\nrecurse/2\nrecurse/0\nto_entries/0\nfrom_entries/0\nwith_entries/1\nreverse/0\nindices/1\nindex/1\nrindex/1\npaths/0\npaths/1\nisfinite/0\narrays/0\nobjects/0\niterables/0\nbooleans/0\nnumbers/0\nnormals/0\nfinites/0\nstrings/0\nnulls/0\nvalues/0\nscalars/0\njoin/1\nflatten/1\nflatten/0\nrange/1\nfromdateiso8601/0\ntodateiso8601/0\nfromdate/0\ntodate/0\nltrimstr/1\nrtrimstr/1\ntrimstr/1\nmatch/2\nmatch/1\ntest/2\ntest/1\ncapture/2\ncapture/1\nscan/2\nscan/1\nsplits/2\nsplits/1\nsplit/2\nsub/3\nsub/2\ngsub/3\ngsub/2\nwhile/2\nuntil/2\nlimit/2\nskip/2\nrange/3\nfirst/1\nisempty/1\nall/2\nany/2\nall/1\nany/1\nall/0\nany/0\nnth/2\nfirst/0\nlast/0\nnth/1\ncombinations/0\ncombinations/1\ntranspose/0\nin/1\ninside/1\nrepeat/1\ninputs/0\nascii_downcase/0\nascii_upcase/0\ntruncate_stream/1\nfromstream/1\ntostream/0\nwalk/1\npick/1\ndebug/1\nINDEX/2\nINDEX/1\nJOIN/2\nJOIN/3\nJOIN/4\nIN/1\nIN/2\nbuiltins/0"
+		result, array_error := value.array_value(allocator)
+		if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+		start := 0
+		for i in 0..=len(text) {
+			if i == len(text) || text[i] == '\n' {
+				item, string_error := value.string_value(text[start:i], allocator)
+				if string_error != nil { _ = value.destroy_array_error(&array_error); return {}, .None, .Out_Of_Memory }
+				_, append_error := value.array_append_take(&result, &item)
+				if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+				start = i + 1
+			}
+		}
+		return result, .None, nil
+	}
 	if opcode == .Tonumber {
 		if kind == .Number {
 			result := value.clone_value(input)
@@ -6625,8 +6642,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			}
 
 			switch instruction.opcode {
-			case .Path, .Getpath, .Paths, .Setpath, .Delpaths:
-				return begin_terminal_misuse(storage, .Malformed_Program)
+				case .Path, .Getpath, .Paths, .Setpath, .Delpaths:
+					return begin_terminal_misuse(storage, .Malformed_Program)
 			case .Identity:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -7800,7 +7817,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				if instruction.opcode == .Add_Builtin && instruction.operands_count == 1 {
 					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 					child, child_ok := child_instruction(storage, instruction, 0)
