@@ -2334,7 +2334,7 @@ parse_pipe :: proc(
 
 		if token_is(parser, .Assign_Pipe) {
 			optional_left := current if pipe_root != invalid_id else result
-			if pipe_root == invalid_id && optional_left >= 0 {
+			if optional_left >= 0 {
 				left_node := parser.nodes.storage[int(optional_left)]
 				if left_node.form == .Kinded && left_node.kind == .Field && !left_node.has_child && left_node.has_name_span {
 					advance(parser)
@@ -2348,7 +2348,11 @@ parse_pipe :: proc(
 							span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
 							update, update_ok := append_node(parser, Node{kind=.Static_Field_Optional_Identity, span=span, name_span=left_node.name_span, has_name_span=true})
 							if !update_ok do return {}, false
-							return update, true
+							if pipe_root == invalid_id do return update, true
+							tail := &parser.nodes.storage[int(pipe_tail)]
+							tail.right = update
+							tail.has_child = false
+							return pipe_root, true
 						}
 					}
 					fail_from_lookahead(parser, .Expression); return {}, false
