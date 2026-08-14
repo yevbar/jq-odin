@@ -6,12 +6,12 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `2ed65f43`, the authoritative selected catalog measurement
-is **450/522 passed, 72 failed, 0 harness errors** (`/tmp/coverage-location.json`).
-The one-case gain over the prior 449/522 checkpoint covers bounded object
-location shorthand in `upstream/jq/tests/jq.test:2262`; the focused shard is
-`compat/location-object-shorthand.jq.test` and the implementation decision is
-`docs/decisions/0319-location-object-shorthand.md`.
+At integration head `f96c858e`, the authoritative selected catalog measurement
+is **451/522 passed, 71 failed, 0 harness errors** (`/tmp/coverage-location-interpolation.json`).
+The one-case gain over the prior 450/522 checkpoint covers bounded location
+interpolation in `upstream/jq/tests/jq.test:1482`; the focused shard is
+`compat/location-interpolation.jq.test` and the implementation decision is
+`docs/decisions/0320-location-interpolation.md`.
 
 ## Current evidence
 
