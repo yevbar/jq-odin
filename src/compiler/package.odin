@@ -175,6 +175,10 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 &&
 		       !node.has_name_span && !node.has_value && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
+	case .Static_Iterator_Delete:
+		return node.container_kind == .None && no_child && no_edges && !node.has_name_span &&
+		       !node.has_value && !node.boolean_value && no_number && !node.has_string_text &&
+		       string_header_absent(node.string_text)
 	case .Dynamic_Field_Set:
 		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right >= 0 &&
 			node.has_name_span && no_container_links && !node.has_value &&
@@ -455,6 +459,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Static_Iterator_Set_Number:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Static_Iterator_Delete:
+		return true
 	case .Dynamic_Field_Set:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Call:
@@ -730,6 +736,8 @@ lower_filter :: proc(
 			if !checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(rhs_len)) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
+		case .Static_Iterator_Delete:
+			// Operand-free opcode: the exact source syntax fixes the RHS to empty.
 		case .Dynamic_Field_Set:
 			if !node_reference_valid(node.right, len(nodes)) do return Lower_Outcome{kind = .Invalid_AST}
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
@@ -1261,6 +1269,9 @@ lower_filter :: proc(
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(rhs_text))})); text_at += u32(len(rhs_text)); operand_at += 1
 			}
 			instruction.operands_count = 1
+		case .Static_Iterator_Delete:
+			instruction.opcode = .Static_Iterator_Delete
+			instruction.operands_count = 0
 		case .Dynamic_Field_Set:
 			instruction.opcode = .Dynamic_Field_Set
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

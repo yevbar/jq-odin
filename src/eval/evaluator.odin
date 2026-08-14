@@ -7834,6 +7834,46 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Static_Iterator_Delete:
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Array && input_kind != .Object {
+					key, key_error := cannot_iterate_runtime_key(&frame.input, storage.allocator)
+					if key_error != nil do return resource_step(key_error)
+					err := Runtime_Error{kind = .Cannot_Iterate, input_kind = input_kind, span = instruction.span, key = key}
+					result, ready := raise_runtime(storage, index, err)
+					if len(key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator)
+						if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					}
+					if ready do return result
+					continue
+				}
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				if input_kind == .Array {
+					empty, empty_error := value.array_value(storage.allocator)
+					if value.array_error_kind(&empty_error) != .None {
+						cleanup_error := value.destroy_array_error(&empty_error)
+						if cleanup_error != nil do return resource_step(cleanup_error)
+						return resource_step(.Out_Of_Memory)
+					}
+					_ = value.destroy_value(&frame.input)
+					frame.input = empty
+				} else {
+					empty, empty_error := value.object_value(storage.allocator)
+					if value.object_error_kind(&empty_error) != .None {
+						cleanup_error := value.destroy_object_error(&empty_error)
+						if cleanup_error != nil do return resource_step(cleanup_error)
+						return resource_step(.Out_Of_Memory)
+					}
+					_ = value.destroy_value(&frame.input)
+					frame.input = empty
+				}
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Static_Field_Set_Number:
 				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
 				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)

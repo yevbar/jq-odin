@@ -273,6 +273,8 @@ Node_Kind :: enum {
 	// Label and Break carry lexical label names for non-local control flow.
 	Label,
 	Break,
+	// Static_Iterator_Delete is a bounded root `.[] |= empty` update.
+	Static_Iterator_Delete,
 }
 
 Node_Id :: distinct int
@@ -2320,6 +2322,33 @@ parse_pipe :: proc(
 		}
 
 		if token_is(parser, .Assign_Pipe) {
+			// Root `.[] |= empty` has jq's deletion semantics: every array
+			// element/object value is removed. Keep this as a dedicated AST
+			// contract rather than lowering it through a textual rewrite.
+			left := current if pipe_root != invalid_id else result
+			if pipe_root == invalid_id && left >= 0 {
+				left_node := parser.nodes.storage[int(left)]
+				if left_node.form == .Kinded && left_node.kind == .Field && left_node.has_child && left_node.has_name_span {
+					name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, left_node.name_span)
+					child := parser.nodes.storage[int(left_node.child)]
+					if name_ok && name_start == name_end && child.kind == .Identity && !child.has_child && !child.has_value {
+						advance(parser)
+						right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+						if !right_ok do return {}, false
+						for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+							right = parser.nodes.storage[int(right)].child
+						}
+						rhs := parser.nodes.storage[int(right)]
+						if rhs.form != .Kinded || rhs.kind != .Empty || rhs.has_child || rhs.has_value {
+							fail_from_lookahead(parser, .Expression); return {}, false
+						}
+						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+						update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Delete, span=span})
+						if !update_ok do return {}, false
+						return update, true
+					}
+				}
+			}
 			return parse_static_field_add_update(
 				parser,
 				current if pipe_root != invalid_id else result,

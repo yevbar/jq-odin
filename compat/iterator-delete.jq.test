@@ -1,0 +1,27 @@
+# Root iterator update with empty deletes every array element.
+.[] |= empty
+[1,2,3]
+[]
+
+# Root iterator update with empty removes object values while retaining an empty object.
+.[] |= empty
+{"a":1,"b":2}
+{}
+
+# Empty containers remain empty.
+try (.[] |= empty) catch .
+[]
+[]
+
+try (.[] |= empty) catch .
+{}
+{}
+
+# Non-iterable inputs retain jq's catchable iterator diagnostic.
+try (.[] |= empty) catch .
+null
+"Cannot iterate over null (null)"
+
+try (.[] |= empty) catch .
+1
+"Cannot iterate over number (1)"
