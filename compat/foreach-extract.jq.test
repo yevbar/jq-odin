@@ -10,3 +10,7 @@ null
 2
 6
 12
+
+[ foreach .[] as $try (1 as $catch | $catch - 1; . + $try; .) ]
+[10,9,8,7]
+[10,19,27,34]

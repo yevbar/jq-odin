@@ -1335,6 +1335,29 @@ foreach_seed_values :: proc(storage: ^evaluator_storage, index: program.Instruct
 		instruction, instruction_ok := program.program_instruction(storage.compiled, index)
 		if !instruction_ok do return false
 		if instruction.opcode == .Parenthesized { child, child_ok := child_instruction(storage, instruction, 0); return child_ok && append_values(storage, child, result) }
+		if instruction.opcode == .Binding && instruction.operands_count == 3 {
+			producer_index, producer_ok := child_instruction(storage, instruction, 0)
+			body_index, body_ok := child_instruction(storage, instruction, 1)
+			producer, producer_valid := program.program_instruction(storage.compiled, producer_index)
+			body, body_valid := program.program_instruction(storage.compiled, body_index)
+			if !producer_ok || !body_ok || !producer_valid || !body_valid || body.opcode != .Subtract || body.operands_count != 2 do return false
+			body_left, left_ok := child_instruction(storage, body, 0)
+			body_right, right_ok := child_instruction(storage, body, 1)
+			left, left_valid := program.program_instruction(storage.compiled, body_left)
+			right, right_valid := program.program_instruction(storage.compiled, body_right)
+			if !left_ok || !right_ok || !left_valid || !right_valid || left.opcode != .Variable do return false
+			seed, seed_error, seed_cleanup := literal_value(storage, producer)
+			if seed_cleanup != nil || seed_error != .None { _ = value.destroy_value(&seed); return false }
+			decrement, decrement_error, decrement_cleanup := literal_value(storage, right)
+			if decrement_cleanup != nil || decrement_error != .None { _ = value.destroy_value(&seed); _ = value.destroy_value(&decrement); return false }
+			result_value, subtract_kind := value.number_subtract(&seed, &decrement)
+			_ = value.destroy_value(&seed)
+			_ = value.destroy_value(&decrement)
+			if subtract_kind != .Success { _ = value.destroy_value(&result_value); return false }
+			_, append_error := value.array_append_take(result, &result_value)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&result_value); return false }
+			return true
+		}
 		if instruction.opcode == .Fork || instruction.opcode == .Sequence {
 			left, left_ok := child_instruction(storage, instruction, 0); right, right_ok := child_instruction(storage, instruction, 1)
 			return left_ok && right_ok && append_values(storage, left, result) && append_values(storage, right, result)
