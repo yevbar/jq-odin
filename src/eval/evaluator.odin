@@ -1179,6 +1179,17 @@ static_field_add_operands :: proc(
 }
 
 @(private)
+static_iterator_set_operand :: proc(
+	storage: ^evaluator_storage,
+	instruction: program.Instruction,
+) -> (string, bool) {
+	if instruction.opcode != .Static_Iterator_Set_Number || instruction.operands_count != 1 do return "", false
+	operand, ok := program.program_operand(storage.compiled, instruction.operands_start)
+	if !ok || operand.kind != .Text do return "", false
+	return program.operand_text(storage.compiled, operand)
+}
+
+@(private)
 static_slice_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (start, end, rhs: string, ok: bool) {
 	if instruction.opcode != .Static_Slice_Set_Number || instruction.operands_count != 3 do return
 	for offset in 0..<3 {
@@ -7758,6 +7769,71 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				frame.phase = .Slice_Start_Child
+			case .Static_Iterator_Set_Number:
+				rhs_text, rhs_ok := static_iterator_set_operand(storage, instruction)
+				if !rhs_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Array && input_kind != .Object {
+					key, key_error := cannot_iterate_runtime_key(&frame.input, storage.allocator)
+					if key_error != nil do return resource_step(key_error)
+					err := Runtime_Error{kind = .Cannot_Iterate, input_kind = input_kind, span = instruction.span, key = key}
+					result, ready := raise_runtime(storage, index, err)
+					if len(key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator)
+						if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					}
+					if ready do return result
+					continue
+				}
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				count := 0
+				if input_kind == .Array { count, _ = value.array_length(&frame.input) } else { count, _ = value.object_length(&frame.input) }
+				for offset in 0..<count {
+					updated: value.Value
+					constructor_error: value.Constructor_Error
+					if strings.has_prefix(rhs_text, "@str:") {
+						updated, constructor_error = value.string_value(rhs_text[5:], storage.allocator)
+					} else if rhs_text == "null" {
+						updated = value.null_value()
+					} else if rhs_text == "true" || rhs_text == "false" {
+						updated = value.boolean_value(rhs_text == "true")
+					} else {
+						updated, constructor_error = value.literal_number_value(rhs_text, storage.allocator)
+					}
+					if value.constructor_error_kind(&constructor_error) != .None {
+						cleanup_error := value.destroy_constructor_error(&constructor_error)
+						if cleanup_error != nil do return resource_step(cleanup_error)
+						return resource_step(.Out_Of_Memory)
+					}
+					if input_kind == .Array {
+						displaced, set_error := value.array_set_take(&frame.input, offset, &updated)
+						if value.array_error_kind(&set_error) != .None {
+							_ = value.destroy_value(&updated)
+							cleanup_error := value.destroy_array_error(&set_error)
+							if cleanup_error != nil do return resource_step(cleanup_error)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						_ = value.destroy_value(&displaced)
+					} else {
+						key, _, key_ok := value.object_entry_copy(&frame.input, offset)
+						if !key_ok { _ = value.destroy_value(&updated); return begin_terminal_misuse(storage, .Malformed_Program) }
+						duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &updated)
+						if value.object_error_kind(&set_error) != .None {
+							_ = value.destroy_value(&key); _ = value.destroy_value(&updated)
+							_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+							cleanup_error := value.destroy_object_error(&set_error)
+							if cleanup_error != nil do return resource_step(cleanup_error)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+					}
+				}
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
 			case .Static_Field_Set_Number:
 				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
 				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)

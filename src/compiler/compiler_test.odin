@@ -443,6 +443,16 @@ every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.
 		seen[node.kind] = true
 	}
 	testing.expect_value(t, syntax.destroy_parser(&dynamic_parser), runtime.Allocator_Error.None)
+	iterator_parser: syntax.Parser
+	iterator_source := diagnostic.borrow_source("<iterator-assignment-shape>", `.[] = 1`)
+	testing.expect(t, syntax.init_parser(&iterator_parser, iterator_source, context.allocator))
+	iterator_parsed := syntax.parse_filter(&iterator_parser)
+	testing.expect_value(t, iterator_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&iterator_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&iterator_parser), runtime.Allocator_Error.None)
 	for node in syntax.parser_nodes(&parser) {
 		testing.expect(t, node_payload_shape_valid(node))
 		seen[node.kind] = true

@@ -170,7 +170,11 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 &&
 		       node.has_name_span && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
-		string_header_absent(node.string_text)
+		       string_header_absent(node.string_text)
+	case .Static_Iterator_Set_Number:
+		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 &&
+		       !node.has_name_span && !node.has_value && !node.boolean_value && no_number &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Field_Set:
 		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right >= 0 &&
 			node.has_name_span && no_container_links && !node.has_value &&
@@ -449,6 +453,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Static_Field_Add_Number, .Static_Field_Set_Number:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Static_Iterator_Set_Number:
+		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Dynamic_Field_Set:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Call:
@@ -709,6 +715,19 @@ lower_filter :: proc(
 			if !name_ok || name_end < name_start ||
 			   !checked_count_add(&operand_count, 2) ||
 			   !checked_count_add(&text_count, u64(name_end-name_start)+u64(rhs_len)) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
+		case .Static_Iterator_Set_Number:
+			if !node_reference_valid(node.right, len(nodes)) ||
+			   (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null && nodes[int(node.right)].kind != .String) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+			rhs := nodes[int(node.right)]
+			rhs_len := len(rhs.number_text)
+			if rhs.kind == .Null { rhs_len = 4 }
+			if rhs.kind == .Boolean { rhs_len = 4 if rhs.boolean_value else 5 }
+			if rhs.kind == .String { rhs_len = 5 + len(rhs.string_text) }
+			if !checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(rhs_len)) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Dynamic_Field_Set:
@@ -1226,6 +1245,22 @@ lower_filter :: proc(
 				operand_at += 1
 			}
 			instruction.operands_count = 2
+		case .Static_Iterator_Set_Number:
+			instruction.opcode = .Static_Iterator_Set_Number
+			rhs := nodes[int(node.right)]
+			rhs_text := rhs.number_text
+			if rhs.kind == .Null do rhs_text = "null"
+			if rhs.kind == .Boolean do rhs_text = "true" if rhs.boolean_value else "false"
+			if rhs.kind == .String {
+				start := text_at
+				assert(program.set_text(output, program.Byte_Offset(text_at), "@str:")); text_at += 5
+				assert(program.set_text(output, program.Byte_Offset(text_at), rhs.string_text)); text_at += u32(len(rhs.string_text))
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(start), text_count=program.Count(5+len(rhs.string_text))})); operand_at += 1
+			} else {
+				assert(program.set_text(output, program.Byte_Offset(text_at), rhs_text))
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(rhs_text))})); text_at += u32(len(rhs_text)); operand_at += 1
+			}
+			instruction.operands_count = 1
 		case .Dynamic_Field_Set:
 			instruction.opcode = .Dynamic_Field_Set
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

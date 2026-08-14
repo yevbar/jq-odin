@@ -249,6 +249,8 @@ Node_Kind :: enum {
 	Static_Field_Add_Number,
 	// Static_Field_Set_Number is appended to preserve existing AST discriminants.
 	Static_Field_Set_Number,
+	// Static_Iterator_Set_Number is a bounded `.[] = scalar` path update.
+	Static_Iterator_Set_Number,
 	// Static_Index_Set_Number is appended to preserve existing AST discriminants.
 	Static_Index_Set_Number,
 	// Static_Slice_Set_Number is a bounded literal-RHS slice assignment.
@@ -2358,6 +2360,32 @@ parse_pipe :: proc(
 			}
 			left := current if pipe_root != invalid_id else result
 			left_node := parser.nodes.storage[int(left)]
+			// `.[] = scalar` is the first genuine iterator-path assignment
+			// contract.  Keep it separate from field/setpath lowering: the empty
+			// field name denotes an array/object value iterator, not an object key.
+			// Restrict this vertical slice to a root iterator and scalar RHS so the
+			// existing resumable path ABI is not widened accidentally.
+			if pipe_root == invalid_id && left_node.form == .Kinded &&
+				left_node.kind == .Field && left_node.has_child && left_node.has_name_span {
+				name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, left_node.name_span)
+				child := parser.nodes.storage[int(left_node.child)]
+				if name_ok && name_start == name_end && child.kind == .Identity && !child.has_child && !child.has_value {
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !right_ok do return {}, false
+					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+						right = parser.nodes.storage[int(right)].child
+					}
+					rhs := parser.nodes.storage[int(right)]
+					if rhs.form != .Kinded || (rhs.kind != .Number && rhs.kind != .Boolean && rhs.kind != .Null && rhs.kind != .String) || rhs.has_child || rhs.has_value {
+						fail_from_lookahead(parser, .Expression); return {}, false
+					}
+					span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+					update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Set_Number, span=span, right=right})
+					if !update_ok do return {}, false
+					return update, true
+				}
+			}
 			if left_node.form == .Kinded && (left_node.kind == .Field || left_node.kind == .Index) && left_node.has_child {
 				path, path_ok := static_assignment_path(parser, left)
 				if path_ok {

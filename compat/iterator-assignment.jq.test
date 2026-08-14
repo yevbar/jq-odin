@@ -1,0 +1,23 @@
+# Root iterator assignment replaces every array element.
+.[] = 1
+[1,null,3]
+[1,1,1]
+
+# The same path updates every object value while preserving keys.
+.[] = "x"
+{"a":1,"b":null}
+{"a":"x","b":"x"}
+
+# Empty containers remain empty.
+.[] = false
+{}
+{}
+
+.[] = false
+[]
+[]
+
+# Non-iterable inputs retain jq's catchable iterator diagnostic.
+try (.[] = 1) catch .
+null
+"Cannot iterate over null (null)"
