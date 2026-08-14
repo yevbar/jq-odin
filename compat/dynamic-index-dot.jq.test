@@ -1,0 +1,13 @@
+# A standalone identity is a valid dynamic postfix index key.
+[][.]
+0
+null
+
+[1][.]
+0
+1
+
+# Existing numeric postfix indexing remains unchanged.
+[1][0]
+0
+1

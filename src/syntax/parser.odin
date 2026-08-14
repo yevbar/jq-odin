@@ -4225,6 +4225,73 @@ append_postfix :: proc(
 				node = new_term
 				continue
 			}
+			// A bare dot is a valid dynamic index key.  The generic filter
+			// parser routes a standalone dot through the postfix diagnostic
+			// guard, which is correct at top level but loses the identity key
+			// when the dot is immediately closed by this bracket.  Lower the
+			// identity directly and keep the existing Index instruction ABI.
+			// If a suffix follows, let append_postfix preserve the already
+			// supported `.foo`/`.[]` dynamic-key forms; arithmetic expressions
+			// still fail at the enclosing close-bracket check.
+			if token_is(parser, .Dot) {
+				dot_span := parser.lookahead.token.span
+				advance(parser)
+				identity, identity_ok := append_node(parser, Node{kind=.Identity, span=dot_span})
+				if !identity_ok do return {}, false
+				if token_is(parser, .Close_Bracket) {
+					close := parser.lookahead.token
+					advance(parser)
+					span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+					assert(span_ok)
+					node, ok = append_node(parser, Node{
+						kind = .Index,
+						span = span,
+						child = node,
+						has_child = true,
+						index_key = identity,
+						has_index_key = true,
+					})
+					if !ok do return {}, false
+					continue
+				}
+				if token_is(parser, .Colon) {
+					// Preserve the existing bounded dynamic-start slice form
+					// (`[.:end]`) after recognizing the dot as identity.
+					advance(parser)
+					end_index := Node_Id(-1)
+					if !token_is(parser, .Close_Bracket) {
+						if token_is(parser, .Number) || (token_is(parser, .Identifier) && token_spelling(parser, parser.lookahead.token) == "nan") {
+							end_index, ok = append_number_node(parser, parser.lookahead.token.span)
+							if !ok do return {}, false
+							advance(parser)
+						} else {
+							end_index, ok = parse_pipe(parser, .Close_Bracket, false)
+							if !ok do return {}, false
+						}
+					}
+					if !token_is(parser, .Close_Bracket) { fail_from_lookahead(parser, .Close_Bracket); return {}, false }
+					close := parser.lookahead.token
+					advance(parser)
+					span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+					assert(span_ok)
+					new_term, slice_ok := append_node(parser, Node{kind=.Slice, span=span, child=node, has_child=true, left=identity, right=end_index})
+					if !slice_ok do return {}, false
+					node = new_term
+					continue
+				}
+				key, key_ok := append_postfix(parser, identity, live_prefix_depth, live_pipe_count, live_comma_count, live_binary_count, event_overhead, has_postfix)
+				if !key_ok || !token_is(parser, .Close_Bracket) {
+					fail_from_lookahead(parser, .Close_Bracket)
+					return {}, false
+				}
+				close := parser.lookahead.token
+				advance(parser)
+				span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+				assert(span_ok)
+				node, ok = append_node(parser, Node{kind=.Index, span=span, child=node, has_child=true, index_key=key, has_index_key=true})
+				if !ok do return {}, false
+				continue
+			}
 			// Dynamic start bounds (for example `[.:1]`) are filters evaluated
 			// against the pre-slice input.  Keep the filter as an instruction
 			// operand while retaining the ordinary numeric end lowering.
@@ -4253,7 +4320,19 @@ append_postfix :: proc(
 				}
 			}
 			if !token_is(parser, .Number) && !(token_is(parser, .Identifier) && token_spelling(parser, parser.lookahead.token) == "nan") {
-				key, key_ok := parse_pipe(parser, .Close_Bracket, false)
+				// A standalone identity is a valid dynamic index key in jq
+				// (`[][.]`, `[1][.]`).  The general postfix-dot guard below
+				// intentionally rejects a trailing dot, so recognize this
+				// immediate key here without broadening filter parsing.
+				key: Node_Id
+				key_ok: bool
+				if token_is(parser, .Dot) {
+					dot := parser.lookahead.token
+					advance(parser)
+					key, key_ok = append_node(parser, Node{kind=.Identity, span=dot.span})
+				} else {
+					key, key_ok = parse_pipe(parser, .Close_Bracket, false)
+				}
 				if !key_ok || !token_is(parser, .Close_Bracket) {
 					fail_from_lookahead(parser, .Close_Bracket)
 					return {}, false
