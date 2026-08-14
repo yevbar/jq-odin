@@ -1,0 +1,36 @@
+# Static slice assignment preserves RHS stream cardinality.
+.[2:4] = ([], ["a","b"], ["a","b","c"])
+[1,2,3,4,5]
+[1,2,5]
+[1,2,"a","b",5]
+[1,2,"a","b","c",5]
+
+# Existing static slice reads remain unchanged.
+.[2:4]
+[1,2,3,4,5]
+[3,4]
+
+# Null sources still materialize an array once per RHS output.
+null | .[2:4] = ([], [1])
+null
+[]
+[1]
+
+# Scalar source errors remain catchable and preserve jq wording.
+try (1 | .[2:4] = ([], [1])) catch .
+null
+"Cannot index number with object"
+
+# Non-array RHS values remain catchable after earlier stream outputs.
+try (.[1:2] = 1) catch .
+[1,2,3]
+"A slice of an array can only be assigned another array"
+
+try (.[1:2] = ([9],1)) catch .
+[1,2,3]
+[1,9,3]
+"A slice of an array can only be assigned another array"
+
+# An empty RHS is an empty stream, not an evaluator misuse.
+try (.[1:2] = empty) catch .
+[1,2,3]

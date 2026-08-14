@@ -153,6 +153,9 @@ frame_phase :: enum u8 {
 	Slice_End_Bound_Start,
 	Slice_End_Bound_Active,
 	Slice_Result_Active,
+	// Static slice assignments may retain several literal RHS outputs while
+	// they are emitted one step at a time.
+	Static_Slice_Active,
 	Iterator_Active,
 	Binding_Start_Left,
 	Binding_Left_Active,
@@ -241,6 +244,7 @@ eval_frame :: struct {
 	map_value_seen: bool,
 	paths_results: value.Value,
 	paths_cursor: int,
+	static_slice_error_pending: bool,
 	iterator_break_at: int,
 	iterator_break_enabled: bool,
 	iterator_break_name: string,
@@ -1202,6 +1206,54 @@ append_array_element_copy :: proc(target, source: ^value.Value, at: int) -> bool
 }
 
 @(private)
+static_slice_apply :: proc(
+	storage: ^evaluator_storage,
+	source: ^value.Value,
+	start_index, end_index: int,
+	rhs: ^value.Value,
+) -> (value.Value, bool) {
+	input_length, input_ok := value.array_length(source)
+	if !input_ok || value.kind_of(rhs) != .Array do return {}, false
+	updated, array_error := value.array_value(storage.allocator)
+	if value.array_error_kind(&array_error) != .None {
+		_ = value.destroy_array_error(&array_error)
+		return {}, false
+	}
+	for item_index in 0..<start_index {
+		if !append_array_element_copy(&updated, source, item_index) {
+			_ = value.destroy_value(&updated)
+			return {}, false
+		}
+	}
+	rhs_length, rhs_ok := value.array_length(rhs)
+	if !rhs_ok {
+		_ = value.destroy_value(&updated)
+		return {}, false
+	}
+	for item_index in 0..<rhs_length {
+		if !append_array_element_copy(&updated, rhs, item_index) {
+			_ = value.destroy_value(&updated)
+			return {}, false
+		}
+	}
+	for item_index in end_index..<input_length {
+		if !append_array_element_copy(&updated, source, item_index) {
+			_ = value.destroy_value(&updated)
+			return {}, false
+		}
+	}
+	return updated, true
+}
+
+@(private)
+static_slice_rhs_is_empty :: proc(text: string) -> bool {
+	start, end := 0, len(text)
+	for start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\n' || text[start] == '\r') { start += 1 }
+	for end > start && (text[end-1] == ' ' || text[end-1] == '\t' || text[end-1] == '\n' || text[end-1] == '\r') { end -= 1 }
+	return text[start:end] == "empty"
+}
+
+@(private)
 dynamic_field_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (key: string, rhs: program.Instruction, ok: bool) {
 	if instruction.opcode != .Dynamic_Field_Set || instruction.operands_count != 2 do return
 	key_operand, key_ok := program.program_operand(storage.compiled, instruction.operands_start)
@@ -1908,6 +1960,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
 	case .Slice_Start_Child, .Slice_Child_Active, .Slice_Start_Bound_Start, .Slice_Start_Bound_Active, .Slice_End_Bound_Start, .Slice_End_Bound_Active, .Slice_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Slice_Only || instruction.opcode != .Slice do return false
+	case .Static_Slice_Active:
+		if frame.mode != .Normal || instruction.opcode != .Static_Slice_Set_Number do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
 	case .Sequence_Start_Left, .Sequence_Left_Active, .Sequence_Right_Active:
@@ -1949,6 +2003,8 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = 2
 	}
 	else if frame.phase == .Slice_Start_Child || frame.phase == .Slice_Child_Active || frame.phase == .Slice_Start_Bound_Start || frame.phase == .Slice_Start_Bound_Active || frame.phase == .Slice_End_Bound_Start || frame.phase == .Slice_End_Bound_Active || frame.phase == .Slice_Result_Active {
+		expected_operand_count = 3
+	} else if frame.phase == .Static_Slice_Active {
 		expected_operand_count = 3
 	}
 	else if frame.phase == .Constructor_Start || frame.phase == .Constructor_Child_Active || frame.phase == .Constructor_Emit {
@@ -7260,6 +7316,32 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			frame.constructor_pending_failure = false
 			return begin_terminal_misuse(storage, .Malformed_Program)
 		}
+		if frame.phase == .Static_Slice_Active {
+			result_count, result_count_ok := value.array_length(&frame.paths_results)
+			if !result_count_ok || frame.paths_cursor >= result_count {
+				_ = value.destroy_value(&frame.paths_results)
+				if frame.static_slice_error_pending {
+					frame.static_slice_error_pending = false
+					frame.phase = .Complete
+					result, ready := raise_runtime(storage, index, Runtime_Error{
+						kind = .User_Error,
+						input_kind = value.kind_of(&frame.input),
+						span = instruction.span,
+						key = "A slice of an array can only be assigned another array",
+					})
+					if ready do return result
+					continue
+				}
+				frame.phase = .Complete
+				continue
+			}
+			output, output_ok := value.array_element_copy(&frame.paths_results, frame.paths_cursor)
+			if !output_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			frame.paths_cursor += 1
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
+			continue
+		}
 
 		#partial switch frame.phase {
 		case .In_Second_Start:
@@ -7826,25 +7908,113 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				end_index := int(math.ceil(end_number))
 				if start_index < 0 { start_index = max(0, input_length+start_index) }
 				if end_index < 0 { end_index = max(0, input_length+end_index) }
-				start_index = min(input_length, max(0, start_index)); end_index = min(input_length, max(start_index, end_index))
-				rhs, rhs_next, rhs_done, rhs_error := json.parse_next_value(rhs_text, 0, storage.allocator)
-				if rhs_error.kind != .None || rhs_done || rhs_next != len(rhs_text) || value.kind_of(&rhs) != .Array {
-					_ = value.destroy_value(&rhs)
-					return begin_terminal_misuse(storage, .Malformed_Program)
-				}
-				updated, array_error := value.array_value(storage.allocator)
-				if value.array_error_kind(&array_error) != .None {
-					_ = value.destroy_value(&rhs)
-					cleanup_error := value.destroy_array_error(&array_error); if cleanup_error != nil do return resource_step(cleanup_error)
+			start_index = min(input_length, max(0, start_index)); end_index = min(input_length, max(start_index, end_index))
+			if static_slice_rhs_is_empty(rhs_text) {
+				empty_results, empty_results_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&empty_results_error) != .None {
+					_ = value.destroy_array_error(&empty_results_error)
 					return resource_step(.Out_Of_Memory)
 				}
-				for item_index in 0..<start_index { if !append_array_element_copy(&updated, &frame.input, item_index) { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return resource_step(.Out_Of_Memory) } }
-				rhs_length, rhs_length_ok := value.array_length(&rhs); if !rhs_length_ok { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return begin_terminal_misuse(storage, .Malformed_Program) }
-				for item_index in 0..<rhs_length { if !append_array_element_copy(&updated, &rhs, item_index) { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return resource_step(.Out_Of_Memory) } }
-				for item_index in end_index..<input_length { if !append_array_element_copy(&updated, &frame.input, item_index) { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return resource_step(.Out_Of_Memory) } }
-			_ = value.destroy_value(&rhs); _ = value.destroy_value(&frame.input); frame.input = updated
-			output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded
-			result, ready := propagate_output(storage, index, &output); if ready do return result
+				frame.paths_results = value.take_value(&empty_results)
+				frame.paths_cursor = 0
+				frame.static_slice_error_pending = false
+				frame.saved_instruction = instruction
+				frame.saved_operand_count = u8(instruction.operands_count)
+				for operand_offset in 0..<int(instruction.operands_count) {
+					operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(operand_offset)))
+					if !operand_ok {
+						_ = value.destroy_value(&frame.paths_results)
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					frame.saved_operands[operand_offset] = operand
+				}
+				frame.has_saved_instruction = true
+				frame.phase = .Static_Slice_Active
+				continue
+			}
+			// The static opcode retains the source spelling of a literal RHS. A
+			// comma sequence therefore needs to be parsed as a stream of literal
+			// arrays, with one updated result retained per RHS output.
+			frame.static_slice_error_pending = false
+			rhs_values, rhs_values_error := value.array_value(storage.allocator)
+			if value.array_error_kind(&rhs_values_error) != .None {
+				_ = value.destroy_array_error(&rhs_values_error)
+				return resource_step(.Out_Of_Memory)
+			}
+			rhs_at := 0
+			for {
+				for rhs_at < len(rhs_text) && (rhs_text[rhs_at] == ' ' || rhs_text[rhs_at] == '\t' || rhs_text[rhs_at] == '\n' || rhs_text[rhs_at] == '\r') { rhs_at += 1 }
+				if rhs_at >= len(rhs_text) do break
+				rhs, rhs_next, rhs_done, rhs_error := json.parse_next_value(rhs_text, rhs_at, storage.allocator)
+				if rhs_error.kind != .None || rhs_done {
+					_ = value.destroy_value(&rhs); _ = value.destroy_value(&rhs_values)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				if value.kind_of(&rhs) != .Array {
+					_ = value.destroy_value(&rhs)
+					frame.static_slice_error_pending = true
+					break
+				}
+				rhs_at = rhs_next
+				append_error: value.Array_Operation_Error
+				_, append_error = value.array_append_take(&rhs_values, &rhs)
+				if value.array_error_kind(&append_error) != .None {
+					_ = value.destroy_value(&rhs); _ = value.destroy_value(&rhs_values); _ = value.destroy_array_error(&append_error)
+					return resource_step(.Out_Of_Memory)
+				}
+				for rhs_at < len(rhs_text) && (rhs_text[rhs_at] == ' ' || rhs_text[rhs_at] == '\t' || rhs_text[rhs_at] == '\n' || rhs_text[rhs_at] == '\r') { rhs_at += 1 }
+				if rhs_at >= len(rhs_text) do break
+				if rhs_text[rhs_at] != ',' {
+					_ = value.destroy_value(&rhs_values)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				rhs_at += 1
+			}
+			results, results_error := value.array_value(storage.allocator)
+			if value.array_error_kind(&results_error) != .None {
+				_ = value.destroy_value(&rhs_values); _ = value.destroy_array_error(&results_error)
+				return resource_step(.Out_Of_Memory)
+			}
+			rhs_count, rhs_count_ok := value.array_length(&rhs_values)
+			if !rhs_count_ok || (rhs_count == 0 && !frame.static_slice_error_pending) {
+				_ = value.destroy_value(&rhs_values); _ = value.destroy_value(&results)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			for rhs_index in 0..<rhs_count {
+				rhs, rhs_ok := value.array_element_copy(&rhs_values, rhs_index)
+				if !rhs_ok {
+					_ = value.destroy_value(&rhs_values); _ = value.destroy_value(&results)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				updated, updated_ok := static_slice_apply(storage, &frame.input, start_index, end_index, &rhs)
+				_ = value.destroy_value(&rhs)
+				if !updated_ok {
+					_ = value.destroy_value(&rhs_values); _ = value.destroy_value(&results)
+					return resource_step(.Out_Of_Memory)
+				}
+				append_error: value.Array_Operation_Error
+				_, append_error = value.array_append_take(&results, &updated)
+				if value.array_error_kind(&append_error) != .None {
+					_ = value.destroy_value(&updated); _ = value.destroy_value(&rhs_values); _ = value.destroy_value(&results); _ = value.destroy_array_error(&append_error)
+					return resource_step(.Out_Of_Memory)
+				}
+			}
+			_ = value.destroy_value(&rhs_values)
+			frame.paths_results = value.take_value(&results)
+			frame.paths_cursor = 0
+			frame.saved_instruction = instruction
+			frame.saved_operand_count = u8(instruction.operands_count)
+			for operand_offset in 0..<int(instruction.operands_count) {
+				operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(operand_offset)))
+				if !operand_ok {
+					_ = value.destroy_value(&frame.paths_results)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				frame.saved_operands[operand_offset] = operand
+			}
+			frame.has_saved_instruction = true
+			frame.phase = .Static_Slice_Active
+			continue
 			case .Static_Index_Set_Number:
 				if instruction.operands_count != 2 do return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				// jq treats null as an empty array for numeric path assignment,
