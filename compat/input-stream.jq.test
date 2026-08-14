@@ -1,0 +1,9 @@
+# input/0 consumes the next framed JSON value and returns jq's EOF sentinel.
+try input catch .
+null
+"break"
+
+# The provider must preserve the stream cursor while the outer value is live.
+try input catch .
+null
+"break"

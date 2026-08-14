@@ -6,6 +6,7 @@ import "core:io"
 import "core:os"
 import "core:sys/posix"
 import driver "jq:driver"
+import eval "jq:eval"
 import value "jq:value"
 
 CANDIDATE_VERSION :: "jq-1.8.1\n"
@@ -441,6 +442,7 @@ run_input :: proc(
 	raw: bool,
 	prepared: ^driver.Compiled_Filter,
 	sink: ^output_sink,
+	input_provider: eval.Input_Provider = {},
 ) -> int {
 	mode := driver.Output_Mode.Pretty
 	if compact do mode = .Compact
@@ -458,10 +460,18 @@ run_input :: proc(
 			emitter_data = sink,
 			diagnostic_emitter = emit_stderr,
 			diagnostic_emitter_data = sink,
+			input_provider = input_provider,
 		},
 	)
 
 	status := error_status(err.kind)
+	if err.kind == .Runtime && input_provider.data != nil {
+		provider_state := cast(^cli_input_provider)input_provider.data
+		if provider_state.error_line > 0 {
+			err.runtime_input_line = provider_state.error_line
+			err.runtime_input_path = provider_state.error_path
+		}
+	}
 	if err.kind == .Output {
 		_ = write_all(os.stderr, "jq-odin: stdout I/O error\n")
 	} else if err.kind != .None && !write_driver_error(err) do status = 2
@@ -1005,8 +1015,185 @@ consume_prefix :: proc(buffer: ^input_buffer, count: int) {
 	buffer.length = remaining
 }
 
+cli_source_cursor :: struct {
+	paths:       []string,
+	next_index:  int,
+	file:        ^os.File,
+	file_open:   bool,
+	file_owned:  bool,
+	current_path: string,
+	terminal:    bool,
+	advanced:    bool,
+}
+
+open_next_source :: proc(cursor: ^cli_source_cursor) -> (string, bool) {
+	if cursor == nil do return "", false
+	for cursor.next_index < len(cursor.paths) {
+		arg := cursor.paths[cursor.next_index]
+		cursor.next_index += 1
+		if arg == "-" {
+			cursor.advanced = cursor.file_open
+			cursor.file = os.stdin
+			cursor.file_open = true
+			cursor.file_owned = false
+			cursor.current_path = arg
+			cursor.terminal = false
+			return "", true
+		}
+		file, open_error := os.open(arg)
+		if open_error != nil {
+			cursor.current_path = arg
+			return "input file open failure", false
+		}
+		cursor.advanced = cursor.file_open
+		cursor.file = file
+		cursor.file_open = true
+		cursor.file_owned = true
+		cursor.current_path = arg
+		cursor.terminal = false
+		return "", true
+	}
+	cursor.terminal = true
+	return "", false
+}
+
+close_source :: proc(cursor: ^cli_source_cursor) -> bool {
+	if cursor == nil || !cursor.file_open do return true
+	cursor.file_open = false
+	if !cursor.file_owned do return true
+	err := os.close(cursor.file)
+	cursor.file_owned = false
+	return err == nil
+}
+
+cli_input_provider :: struct {
+	buffer: ^input_buffer,
+	eof:    bool,
+	start:  int,
+	line_base: int,
+	source_line_base: int,
+	source_mark: int,
+	error_line: int,
+	error_path: string,
+	file:   ^os.File,
+	cursor: ^cli_source_cursor,
+}
+
+cli_next_input :: proc(data: rawptr) -> (string, eval.Input_Provider_Status) {
+	state := cast(^cli_input_provider)data
+	if state == nil || state.buffer == nil do return "", .EOF
+	b := state.buffer
+	if state.cursor != nil {
+		if state.cursor.file_open {
+			state.file = state.cursor.file
+		} else {
+			state.file = nil
+		}
+		if state.cursor.terminal do state.eof = true
+	}
+	whitespace := 0
+	for state.start+whitespace < b.length && is_json_whitespace(b.memory[state.start+whitespace]) do whitespace += 1
+	state.start += whitespace
+	if state.start >= b.length {
+		if state.eof || state.file == nil {
+			if state.cursor != nil && !state.cursor.terminal {
+				// The outer source loop is still draining the old file. Mark the
+				// transition before retiring it so that loop does not close the
+				// newly opened successor on return from this run.
+				state.cursor.advanced = true
+				if !close_source(state.cursor) do return "input close failure", .Error
+				err, opened := open_next_source(state.cursor)
+				if !opened {
+					if state.cursor.terminal do return "", .EOF
+					return err, .Error
+				}
+				state.cursor.advanced = true
+				state.file = state.cursor.file
+				state.eof = false
+				for byte_value in b.memory[state.source_mark:b.length] {
+					if byte_value == '\n' do state.line_base += 1
+				}
+				state.source_line_base = 1
+				state.source_mark = state.start
+				return cli_next_input(data)
+			}
+			return "", .EOF
+		}
+		chunk: [INPUT_CHUNK_SIZE]byte
+		count, read_error := os.read(state.file, chunk[:])
+		if count > 0 {
+			if !append_input(b, chunk[:count]) do return "input allocation failure", .Error
+			state.eof = read_error == io.Error.EOF
+			return cli_next_input(data)
+		}
+		if read_error == io.Error.EOF {
+			state.eof = true
+			return cli_next_input(data)
+		}
+		if read_error != nil do return "input read failure", .Error
+		state.eof = true
+		return cli_next_input(data)
+	}
+	// The provider starts a fresh value framer at the unread suffix.  The
+	// outer framer may be in its terminal Found state for the current value;
+	// copying that state would make the next scalar look like a continuation
+	// of the previous one.
+	sub := input_buffer{memory=b.memory[state.start:], length=b.length-state.start, framer={}, bom_eligible=false}
+	end, status := next_value_end(&sub, state.eof)
+	if status == .Need_More {
+		if state.file == nil do return "", .EOF
+		chunk: [INPUT_CHUNK_SIZE]byte
+		count, read_error := os.read(state.file, chunk[:])
+		if count > 0 {
+			if !append_input(b, chunk[:count]) do return "input allocation failure", .Error
+			state.eof = read_error == io.Error.EOF
+			return cli_next_input(data)
+		}
+		if read_error == io.Error.EOF { state.eof = true; return cli_next_input(data) }
+		if read_error != nil do return "input read failure", .Error
+		state.eof = true
+		return cli_next_input(data)
+	}
+	if status != .Found {
+		// The malformed value belongs to the provider stream, not the outer
+		// framing loop. Mark the source terminal and consume the unread bytes so
+		// a caught input error is not reported a second time as a top-level JSON
+		// framing error.
+		state.eof = true
+		if state.cursor != nil do state.cursor.terminal = true
+		line := state.line_base
+		column := 0
+		for byte_value in b.memory[state.source_mark:b.length] {
+			if byte_value == '\n' {
+				line += 1
+				column = 0
+			} else {
+				column += 1
+			}
+		}
+		error_line := state.source_line_base
+		if b.length > 0 && b.memory[b.length-1] == '\n' {
+			for byte_value in b.memory[state.source_mark:state.start] {
+				if byte_value == '\n' do error_line += 1
+			}
+		}
+		state.error_line = error_line
+		if state.cursor != nil do state.error_path = state.cursor.current_path
+		state.start = b.length
+		if b.length > 0 && b.memory[b.length-1] == '\n' {
+			return fmt.tprintf("Invalid numeric literal at line %d, column 0", line), .Error
+		}
+		return fmt.tprintf("Invalid numeric literal at EOF at line %d, column %d", line, column), .Error
+	}
+	raw := transmute(string)b.memory[state.start:state.start+end]
+	state.start += end
+	return raw, .Value
+}
+
 process_available :: proc(
 	buffer: ^input_buffer,
+	file: ^os.File,
+	cursor: ^cli_source_cursor,
 	filter: string,
 	input_path: string,
 	input_line: ^int,
@@ -1085,16 +1272,23 @@ process_available :: proc(
 		}
 		line := 1
 		if input_line != nil do line = input_line^
-		status = run_input(
-			transmute(string)buffer.memory[:end], input_path, line,
-			compact, raw, prepared, sink,
-		)
-		if status == 0 && input_line != nil {
+		current_input := transmute(string)buffer.memory[:end]
+		// Advance the outer framer before evaluating input/0 so the provider
+		// starts at the next value in this source buffer.
+		if input_line != nil {
 			for byte_value in buffer.memory[:end] {
 				if byte_value == '\n' do input_line^ += 1
 			}
 		}
-		consume_prefix(buffer, end)
+		// The outer framer has already established a complete current value;
+		// treat the currently buffered suffix as a complete provider stream.
+		provider_state := cli_input_provider{buffer=buffer, eof=eof, start=end, line_base=line, source_line_base=line, file=file, cursor=cursor}
+		status = run_input(
+			current_input, input_path, line,
+			compact, raw, prepared, sink,
+			eval.Input_Provider{data=&provider_state, next=cli_next_input},
+		)
+		consume_prefix(buffer, provider_state.start)
 		reset_framer(&buffer.framer)
 		buffer.bom_eligible = false
 		if status != 0 do return status, true
@@ -1107,6 +1301,7 @@ process_available :: proc(
 
 read_source :: proc(
 	file: ^os.File,
+	cursor: ^cli_source_cursor,
 	filter: string,
 	input_path: string,
 	input_line: ^int,
@@ -1121,11 +1316,14 @@ read_source :: proc(
 		count, read_error := os.read(file, chunk[:])
 		if count > 0 {
 			if !append_input(buffer, chunk[:count]) do return 2, true, false
-			status, stop = process_available(
-				buffer, filter, input_path, input_line, compact, raw, false, had_open_error, prepared,
+		status, stop = process_available(
+				buffer, file, cursor, filter, input_path, input_line, compact, raw, false, had_open_error, prepared,
 				values_after_open_error, sink,
 			)
 			if stop do return status, true, true
+			// An input/0 provider may have retired this outer source while
+			// crossing an argv boundary. Do not read the closed descriptor again.
+			if cursor != nil && cursor.advanced do return status, false, true
 		}
 		if read_error == io.Error.EOF do return 0, false, true
 		if read_error != nil do return 2, true, false
@@ -1167,19 +1365,28 @@ run_main :: proc() -> (result: int) {
 		}
 	}
 	if parsed.null_input {
-		return run_input("null", "", 1, parsed.compact, parsed.raw, &prepared, &sink)
+		// -n suppresses the outer input stream but does not disable input/0.
+		// Give the evaluator a live provider over stdin for this invocation.
+		buffer := input_buffer{bom_eligible = true}
+		provider_state := cli_input_provider{buffer=&buffer, eof=false, start=0, line_base=1, source_line_base=1, file=os.stdin}
+		status := run_input(
+			"null", "", 1, parsed.compact, parsed.raw, &prepared, &sink,
+			eval.Input_Provider{data=&provider_state, next=cli_next_input},
+		)
+		if !destroy_input_buffer(&buffer) do status = 2
+		return status
 	}
 
 	if len(parsed.input_paths) == 0 {
 		buffer := input_buffer{bom_eligible = true}
 		input_line := 1
 		status, _, read_ok := read_source(
-			os.stdin, parsed.filter, "", &input_line, parsed.compact, parsed.raw, false, &prepared,
+			os.stdin, nil, parsed.filter, "", &input_line, parsed.compact, parsed.raw, false, &prepared,
 			nil, &buffer, &sink,
 		)
 		if status == 0 && read_ok {
 			status, _ = process_available(
-				&buffer, parsed.filter, "", &input_line, parsed.compact, parsed.raw, true, false,
+				&buffer, os.stdin, nil, parsed.filter, "", &input_line, parsed.compact, parsed.raw, true, false,
 				&prepared, nil, &sink,
 			)
 		}
@@ -1199,35 +1406,36 @@ run_main :: proc() -> (result: int) {
 	values_after_open_error := 0
 	input_line := 1
 	buffer := input_buffer{bom_eligible = true}
-	for arg in parsed.input_paths {
+	cursor := cli_source_cursor{paths=parsed.input_paths[:], next_index=0}
+	for arg_index := 0; arg_index < len(parsed.input_paths); arg_index += 1 {
+		if cursor.terminal do break
+		// A provider invoked from the previous top-level value may already have
+		// crossed one or more argv boundaries. Those sources have been consumed
+		// and must not be reopened by the outer framing loop.
+		if arg_index+1 < cursor.next_index do continue
+		if !cursor.file_open {
+			open_message, opened := open_next_source(&cursor)
+			if !opened {
+				had_open_error = !cursor.terminal
+				if had_open_error {
+					status = 2
+					_ = write_all(os.stderr, "jq: error: ")
+					_ = write_all(os.stderr, open_message)
+					_ = write_all(os.stderr, "\n")
+				}
+				continue
+			}
+		}
 		input_line = 1
-		file := os.stdin
-		opened := true
-		if arg != "-" {
-			open_error: os.Error
-			file, open_error = os.open(arg)
-			if open_error != nil {
-				opened = false
-				_ = write_all(os.stderr, "jq: error: Could not open file ")
-				_ = write_all(os.stderr, arg)
-				_ = write_all(os.stderr, ": ")
-				_ = write_all(os.stderr, input_error_string(open_error))
-				_ = write_all(os.stderr, "\n")
-			}
-		}
-		if !opened {
-			had_open_error = true
-			status = 2
-			continue
-		}
+		outer_file := cursor.file
+		outer_path := cursor.current_path
+		cursor.advanced = false
 		file_status, stop, read_ok := read_source(
-			file, parsed.filter, arg, &input_line, parsed.compact, parsed.raw, had_open_error,
-			&prepared, &values_after_open_error, &buffer, &sink,
+			outer_file, &cursor, parsed.filter, outer_path, &input_line, parsed.compact, parsed.raw,
+			had_open_error, &prepared, &values_after_open_error, &buffer, &sink,
 		)
-		if arg != "-" {
-			if close_error := os.close(file); close_error != nil {
-				read_ok = false
-			}
+		if !cursor.advanced && cursor.file_open {
+			if !close_source(&cursor) do read_ok = false
 		}
 		if !read_ok {
 			status = 2
@@ -1235,18 +1443,17 @@ run_main :: proc() -> (result: int) {
 		}
 		if file_status != 0 do status = file_status
 		if stop || !read_ok do break
-		if had_open_error && values_after_open_error >= 1 {
-			break
-		}
+		if had_open_error && values_after_open_error >= 1 do break
 	}
 	if status == 0 || status == 2 && had_open_error && values_after_open_error == 0 {
 		final_status, _ := process_available(
-			&buffer, parsed.filter, "", &input_line, parsed.compact, parsed.raw, true, had_open_error,
+			&buffer, cursor.file, &cursor, parsed.filter, cursor.current_path, &input_line, parsed.compact, parsed.raw, true, had_open_error,
 			&prepared, &values_after_open_error, &sink,
 		)
 		if final_status != 0 do status = final_status
 	}
 	if had_open_error do status = 2
+	if !close_source(&cursor) do status = 2
 	if !destroy_input_buffer(&buffer) {
 		status = 2
 		_ = write_all(os.stderr, "jq-odin: input cleanup error\n")
