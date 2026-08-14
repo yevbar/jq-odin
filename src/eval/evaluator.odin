@@ -2501,6 +2501,43 @@ delete_literal_path_argument :: proc(storage: ^evaluator_storage, index: program
 	updated, updated_ok := delete_path_value(current, &path, 0, storage.allocator); _ = value.destroy_value(current); _ = value.destroy_value(&path); if !updated_ok do return false; current^ = updated; return true
 }
 
+mask_match :: proc(storage: ^evaluator_storage, idx: program.Instruction_Index, input: ^value.Value, at: int) -> bool {
+	i,ok:=program.program_instruction(storage.compiled,idx);if !ok{return false}
+	if i.opcode==.Fork||i.opcode==.Sequence {a,_:=child_instruction(storage,i,0);b,_:=child_instruction(storage,i,1);return mask_match(storage,a,input,at)||mask_match(storage,b,input,at)}
+	if i.opcode==.Index {op,_:=program.program_operand(storage.compiled,program.Operand_Index(u32(i.operands_start)+1));txt,tok:=program.operand_text(storage.compiled,op);n,nok:=value.array_length(input);if !tok||!nok{return false};v,e:=value.literal_number_value(txt,storage.allocator);if value.constructor_error_kind(&e)!=.None{_=value.destroy_constructor_error(&e);return false};x,xok:=value.number_value_get(&v);_=value.destroy_value(&v);if !xok{return false};p:=int(x);if p<0{p+=n};return p==at}
+	if i.has_literal && i.literal_kind == .Number {op,opok:=program.program_operand(storage.compiled,i.operands_start);txt,tok:=program.operand_text(storage.compiled,op);n,nok:=value.array_length(input);if !opok||!tok||!nok{return false};v,e:=value.literal_number_value(txt,storage.allocator);if value.constructor_error_kind(&e)!=.None{_=value.destroy_constructor_error(&e);return false};x,xok:=value.number_value_get(&v);_=value.destroy_value(&v);if !xok{return false};p:=int(x);if p<0{p+=n};return p==at}
+	if i.opcode==.Slice {so,_:=program.program_operand(storage.compiled,program.Operand_Index(u32(i.operands_start)+1));eo,_:=program.program_operand(storage.compiled,program.Operand_Index(u32(i.operands_start)+2));st,_:=program.operand_text(storage.compiled,so);et,_:=program.operand_text(storage.compiled,eo);n,_:=value.array_length(input);s,e:=0,n;if len(st)>0&&st!="nan"{v,ce:=value.literal_number_value(st,storage.allocator);if value.constructor_error_kind(&ce)!=.None{_=value.destroy_constructor_error(&ce);return false};x,xok:=value.number_value_get(&v);_=value.destroy_value(&v);if !xok{return false};s=int(math.floor(x));if s<0{s+=n}};if len(et)>0&&et!="nan"{v,ce:=value.literal_number_value(et,storage.allocator);if value.constructor_error_kind(&ce)!=.None{_=value.destroy_constructor_error(&ce);return false};x,xok:=value.number_value_get(&v);_=value.destroy_value(&v);if !xok{return false};e=int(math.ceil(x));if e<0{e+=n}};if s<0{s=0};if e>n{e=n};return at>=s&&at<e}
+	for p in 0..<i.operands_count {op,o:=program.program_operand(storage.compiled,program.Operand_Index(u32(i.operands_start)+u32(p)));if o&&op.kind==.Instruction&&mask_match(storage,op.instruction,input,at){return true}}
+	return false
+}
+
+mask_tree_has_slice :: proc(storage: ^evaluator_storage, idx: program.Instruction_Index) -> bool {
+	i, ok := program.program_instruction(storage.compiled, idx); if !ok do return false
+	if i.opcode == .Slice do return true
+	for p in 0..<i.operands_count {
+		op, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(i.operands_start)+u32(p)))
+		if operand_ok && op.kind == .Instruction && mask_tree_has_slice(storage, op.instruction) do return true
+	}
+	return false
+}
+
+delete_mask :: proc(storage: ^evaluator_storage, selector: program.Instruction_Index, current: ^value.Value) -> (bool, runtime.Allocator_Error) {
+	n, ok := value.array_length(current); if !ok do return false, nil
+	r, e := value.array_value(storage.allocator)
+	if value.array_error_kind(&e) != .None { _ = value.destroy_array_error(&e); return false, .Out_Of_Memory }
+	for x in 0..<n {
+		if mask_match(storage, selector, current, x) do continue
+		v, vok := value.array_element_copy(current, x)
+		if !vok { _ = value.destroy_value(&r); return false, .Out_Of_Memory }
+		_, ae := value.array_append_take(&r, &v)
+		if value.array_error_kind(&ae) != .None {
+			_ = value.destroy_array_error(&ae); _ = value.destroy_value(&v); _ = value.destroy_value(&r)
+			return false, .Out_Of_Memory
+		}
+	}
+	_ = value.destroy_value(current); current^ = r; return true, nil
+}
+
 @(private)
 paths_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, bool) {
 	output, ok := path_array(allocator); if !ok do return {}, false
@@ -6632,6 +6669,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if ready do return result
 					continue
 				}
+				if argument_instruction.operands_count == 1 { op,ok:=program.program_operand(storage.compiled,program.Operand_Index(u32(argument_instruction.operands_start)));if ok&&op.kind==.Instruction&&mask_tree_has_slice(storage,op.instruction) { mask_ok,mask_error:=delete_mask(storage,op.instruction,&frame.input);if mask_error != nil{return resource_step(mask_error)};if !mask_ok{return begin_terminal_misuse(storage,.Unsupported_Opcode)};out:=value.clone_value(&frame.input);frame.phase=.Leaf_Yielded;result,ready:=propagate_output(storage,index,&out);if ready{return result};continue } }
 				current := value.clone_value(&frame.input); if value.kind_of(&current) == .Invalid { return resource_step(.Out_Of_Memory) }
 				for offset in 0..<argument_instruction.operands_count {
 					operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(argument_instruction.operands_start)+u32(offset)))

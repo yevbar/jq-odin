@@ -25,3 +25,10 @@ nodes of Delpaths) while introducing an evaluator-local selector/mask owner.
 
 The exact expected outputs are recorded in `compat/del-slice-mask.jq.test` for
 the upstream cases at `jq.test:474` and `jq.test:1175`.
+
+NaN bounds are intentionally outside this evaluator-only contract. The parser
+accepts unary `-nan` as the existing NaN literal, but currently rejects a
+positive `nan` token in static slice bounds; jq accepts both spellings (for
+example, `del(.[nan:2], .[0])` yields `[2,3]` for `[0,1,2,3]`). This is a
+parser/lowering compatibility gap, not a reason to reinterpret grouped masks;
+it remains deferred to a dedicated slice-bound parser lane.
