@@ -2412,6 +2412,20 @@ parse_pipe :: proc(
 						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
 						update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Set_Number, span=span, right=right, binary_operator=operator, iterator_compound=true})
 						if !update_ok do return {}, false
+						// A compound update may be one arm of a comma stream.  The
+						// ordinary assignment fast path returns immediately, so consume
+						// the comma here and recursively parse the remaining arms while
+						// retaining the existing Comma/Sequence ABI.
+						if token_is(parser, .Comma) {
+							advance(parser)
+							rest, rest_ok := parse_pipe(parser, closing, false, false, false, true)
+							if !rest_ok do return {}, false
+							combined_span, combined_span_ok := spanning(parser, parser.nodes.storage[int(update)].span, parser.nodes.storage[int(rest)].span)
+							assert(combined_span_ok)
+							combined, combined_ok := append_node(parser, Node{kind=.Comma, span=combined_span, left=update, right=rest})
+							if !combined_ok do return {}, false
+							return combined, true
+						}
 						if int(pipe_root) < 0 do return update, true
 						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
 						return pipe_root, true
