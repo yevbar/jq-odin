@@ -4170,8 +4170,9 @@ literal_numeric_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id,
 // lower_static_del_paths converts the bounded static path grammar accepted by
 // `del(...)` into the existing Delpaths literal-array ABI.  Each inner Array
 // is one path; a top-level comma becomes the outer array's stream of paths.
-// Dynamic filters, slices, and computed indexes deliberately remain rejected
-// until the general path continuation contract exists.
+// Dynamic filters and computed indexes deliberately remain rejected until the
+// general path continuation contract exists; literal root slices are grouped
+// here for the evaluator's coordinate-mask continuation.
 @(private="package")
 lower_static_del_filter :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
 	invalid := Node_Id(-1)
@@ -4179,6 +4180,16 @@ lower_static_del_filter :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, 
 	node := parser.nodes.storage[int(node_id)]
 	if node.kind == .Parenthesized && node.has_child do return lower_static_del_filter(parser, node.child)
 	if node.kind == .Comma {
+		// Keep scalar-only comma selectors on their legacy sequential lowering.
+		// Once a literal slice is present, retain all selectors in one Delpaths
+		// operand so the evaluator can resolve them against one immutable input.
+		if static_del_selector_has_slice(parser, node_id) {
+			paths, paths_ok := lower_static_del_group_paths(parser, node_id)
+			if !paths_ok do return invalid, false
+			grouped, grouped_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=paths, has_value=true})
+			if !grouped_ok do return invalid, false
+			return append_node(parser, Node{kind=.Delpaths, span=node.span, child=grouped, has_child=true})
+		}
 		left, left_ok := lower_static_del_filter(parser, node.left)
 		right, right_ok := lower_static_del_filter(parser, node.right)
 		if !left_ok || !right_ok do return invalid, false
@@ -4191,6 +4202,38 @@ lower_static_del_filter :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, 
 	return append_node(parser, Node{kind=.Delpaths, span=node.span, child=paths, has_child=true})
 }
 
+// static_del_selector_has_slice identifies the bounded grammar that must stay
+// grouped. It deliberately does not inspect arbitrary filter expressions.
+static_del_selector_has_slice :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return false
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Parenthesized && node.has_child do return static_del_selector_has_slice(parser, node.child)
+	if node.kind == .Comma do return static_del_selector_has_slice(parser, node.left) || static_del_selector_has_slice(parser, node.right)
+	return node.kind == .Slice
+}
+
+// lower_static_del_group_paths flattens selector commas into the existing
+// outer-array stream of path arrays, without introducing a new AST or opcode.
+lower_static_del_group_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
+	invalid := Node_Id(-1)
+	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return invalid, false
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Parenthesized && node.has_child do return lower_static_del_group_paths(parser, node.child)
+	if node.kind == .Comma {
+		left, left_ok := lower_static_del_group_paths(parser, node.left)
+		right, right_ok := lower_static_del_group_paths(parser, node.right)
+		if !left_ok || !right_ok do return invalid, false
+		span, span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(right)].span)
+		assert(span_ok)
+		return append_node(parser, Node{kind=.Comma, span=span, left=left, right=right})
+	}
+	wrapped, wrapped_ok := lower_static_del_paths(parser, node_id)
+	if !wrapped_ok do return invalid, false
+	wrapped_node := parser.nodes.storage[int(wrapped)]
+	if !wrapped_node.has_value do return invalid, false
+	return wrapped_node.value, true
+}
+
 lower_static_del_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
 	invalid := Node_Id(-1)
 	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return invalid, false
@@ -4200,7 +4243,13 @@ lower_static_del_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, b
 		return invalid, false
 	}
 	components := node_id
-	if node.kind == .Index {
+	if node.kind == .Slice {
+		// Only root array slices are in this bounded parser contract. Bounds
+		// may be omitted, but present bounds must be numeric literals.
+		if !node.has_child || !static_del_slice_bound(parser, node.left) || !static_del_slice_bound(parser, node.right) do return invalid, false
+		base_node := parser.nodes.storage[int(node.child)]
+		if base_node.kind != .Identity || base_node.has_child || base_node.has_value do return invalid, false
+	} else if node.kind == .Index {
 		if !node.has_child || !node.has_number_text do return invalid, false
 		component, component_ok := append_node(parser, Node{kind=.Number, span=node.span, number_text=node.number_text, has_number_text=true})
 		if !component_ok do return invalid, false
@@ -4221,6 +4270,18 @@ lower_static_del_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, b
 	inner, inner_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=components, has_value=true})
 	if !inner_ok do return invalid, false
 	return append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=inner, has_value=true})
+}
+
+static_del_slice_bound :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+	if int(node_id) < 0 do return true
+	if int(node_id) >= parser.nodes.count do return false
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Number && !node.has_child && !node.has_value && node.has_number_text do return node.number_text != "nan"
+	if node.kind == .Negate && node.has_child && !node.has_value {
+		child := parser.nodes.storage[int(node.child)]
+		return child.kind == .Number && !child.has_child && !child.has_value && child.has_number_text && child.number_text != "nan"
+	}
+	return false
 }
 
 lower_static_del_path_components :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {

@@ -22,6 +22,31 @@ test_select_lowers_to_existing_if_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_del_slice_comma_lowers_to_one_grouped_delpaths :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, `del(.[2:4], .[0], .[-2:])`)
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Delpaths)
+	group := parser.nodes.storage[int(root.child)]
+	testing.expect_value(t, group.container_kind, Container_Kind.Array)
+	testing.expect(t, group.has_value)
+	selectors := parser.nodes.storage[int(group.value)]
+	testing.expect_value(t, selectors.kind, Node_Kind.Comma)
+	testing.expect(t, test_del_tree_contains_slice(&parser, group.value))
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+test_del_tree_contains_slice :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return false
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Slice do return true
+	if node.kind == .Comma do return test_del_tree_contains_slice(parser, node.left) || test_del_tree_contains_slice(parser, node.right)
+	if node.has_value do return test_del_tree_contains_slice(parser, node.value)
+	return false
+}
+
+@(test)
 test_repeated_elif_lowers_to_nested_if_chain :: proc(t: ^testing.T) {
 	parser: Parser
 	_, outcome := parse_test_filter(
