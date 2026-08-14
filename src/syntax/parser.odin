@@ -281,6 +281,8 @@ Node_Kind :: enum {
 	Static_Iterator_Delete,
 	// Static_Field_Add_Field is a bounded `.name += .other` update.
 	Static_Field_Add_Field,
+	// Static_Field_Optional_Identity is a bounded `.name |= .?` update.
+	Static_Field_Optional_Identity,
 }
 
 Node_Id :: distinct int
@@ -2331,6 +2333,27 @@ parse_pipe :: proc(
 		}
 
 		if token_is(parser, .Assign_Pipe) {
+			optional_left := current if pipe_root != invalid_id else result
+			if pipe_root == invalid_id && optional_left >= 0 {
+				left_node := parser.nodes.storage[int(optional_left)]
+				if left_node.form == .Kinded && left_node.kind == .Field && !left_node.has_child && left_node.has_name_span {
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !right_ok do return {}, false
+					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child { right = parser.nodes.storage[int(right)].child }
+					rhs := parser.nodes.storage[int(right)]
+					if rhs.form == .Kinded && rhs.kind == .Optional && rhs.has_child {
+						child := parser.nodes.storage[int(rhs.child)]
+						if child.form == .Kinded && child.kind == .Identity && !child.has_child && !child.has_value {
+							span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+							update, update_ok := append_node(parser, Node{kind=.Static_Field_Optional_Identity, span=span, name_span=left_node.name_span, has_name_span=true})
+							if !update_ok do return {}, false
+							return update, true
+						}
+					}
+					fail_from_lookahead(parser, .Expression); return {}, false
+				}
+			}
 			// Root `.[] |= empty` has jq's deletion semantics: every array
 			// element/object value is removed. Keep this as a dedicated AST
 			// contract rather than lowering it through a textual rewrite.

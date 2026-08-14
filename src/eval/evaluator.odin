@@ -1187,6 +1187,14 @@ static_field_add_field_operands :: proc(storage: ^evaluator_storage, instruction
 	left, left_ok = program.operand_text(storage.compiled, left_operand)
 	right, right_ok = program.operand_text(storage.compiled, right_operand)
 	ok = left_ok && right_ok
+}
+
+@(private)
+static_optional_field_operand :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (key: string, ok: bool) {
+	if instruction.opcode != .Static_Field_Optional_Identity || instruction.operands_count != 1 do return
+	operand, operand_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	if !operand_ok || operand.kind != .Text do return
+	key, ok = program.operand_text(storage.compiled, operand)
 	return
 }
 
@@ -8043,6 +8051,37 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				output := value.take_value(&frame.input)
 				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Static_Field_Optional_Identity:
+				key_text, operands_ok := static_optional_field_operand(storage, instruction)
+				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Object && input_kind != .Null {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=key_text})
+					if ready do return result
+					continue
+				}
+				if input_kind == .Null {
+					empty_object, object_error := value.object_value(storage.allocator)
+					if value.object_error_kind(&object_error) != .None { _ = value.destroy_object_error(&object_error); return resource_step(.Out_Of_Memory) }
+					_ = value.destroy_value(&frame.input); frame.input = empty_object
+				}
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				replacement, found := value.object_get_copy(&frame.input, key_text)
+				if !found { replacement = value.null_value() }
+				key, key_ok := existing_object_key_copy(&frame.input, key_text)
+				if !key_ok {
+					key_error: value.Constructor_Error
+					key, key_error = value.string_value(key_text, storage.allocator)
+					if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_value(&replacement); _ = value.destroy_constructor_error(&key_error); return resource_step(.Out_Of_Memory) }
+				}
+				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &replacement)
+				if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&replacement); _ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced); _ = value.destroy_object_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
+				_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+				output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
 			case .Static_Field_Set_Number:

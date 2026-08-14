@@ -1,0 +1,18 @@
+# Optional identity preserves existing selected fields.
+try (.foo |= .?) catch .
+{"foo":"bar"}
+{"foo":"bar"}
+
+# Missing and null inputs materialize an object field with null.
+try (.foo |= .?) catch .
+{}
+{"foo":null}
+
+try (.foo |= .?) catch .
+null
+{"foo":null}
+
+# Non-object inputs retain the typed jq diagnostic.
+try (.foo |= .?) catch .
+[1]
+"Cannot index array with string \"foo\""
