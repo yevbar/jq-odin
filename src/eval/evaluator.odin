@@ -7865,6 +7865,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				count := 0
 				if input_kind == .Array { count, _ = value.array_length(&frame.input) } else { count, _ = value.object_length(&frame.input) }
+				suppression_requested := false
 				for offset in 0..<count {
 					if instruction.iterator_compound_operator != 0 {
 						rhs, rhs_error := value.literal_number_value(rhs_text, storage.allocator)
@@ -7904,12 +7905,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 								if message_error != nil do return resource_step(message_error)
 								if len(message) == 0 do message = "numeric iterator update requires numeric operands"
 								_ = value.destroy_value(&current)
+								frame.phase = .Complete
 								result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
 								_ = value.destroy_value(&rhs)
 								if input_kind == .Object { _ = value.destroy_value(&key) }
 								if len(message) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
 								if ready do return result
-								continue
+								suppression_requested = true
+								break
 							}
 							message := "numeric iterator update arithmetic error"
 							if arithmetic_kind == .Zero_Divisor {
@@ -7918,12 +7921,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 								if len(zero_message) > 0 do message = zero_message
 							}
 							_ = value.destroy_value(&current)
+							frame.phase = .Complete
 							result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
 							_ = value.destroy_value(&rhs)
 							if input_kind == .Object { _ = value.destroy_value(&key) }
+							// retain_runtime_error copies message before suppression; ownership is released with that copy.
 							if len(message) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
 							if ready do return result
-							continue
+							suppression_requested = true
+							break
 						}
 						_ = value.destroy_value(&current)
 						_ = value.destroy_value(&rhs)
@@ -7982,6 +7988,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
 					}
 				}
+				if suppression_requested do continue
 				output := value.take_value(&frame.input)
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)

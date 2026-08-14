@@ -20,3 +20,16 @@
 
 ([2,4,6] | .[] |= empty)
 []
+
+# Numeric failures remain catchable and retain jq's diagnostic text.
+try ([1,0] | .[] /= 0) catch .
+"number (1) and number (0) cannot be divided because the divisor is zero"
+
+try ([1,0] | .[] %= 0) catch .
+"number (1) and number (0) cannot be divided (remainder) because the divisor is zero"
+
+try ({a:1,b:2} | .[] /= 0) catch .
+"number (1) and number (0) cannot be divided because the divisor is zero"
+
+try ({a:1,b:2} | .[] %= 0) catch .
+"number (1) and number (0) cannot be divided (remainder) because the divisor is zero"
