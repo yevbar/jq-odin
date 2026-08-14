@@ -6,9 +6,12 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `e6cdfe08`, the authoritative selected catalog measurement
-is **458/522 passed, 64 failed, 0 harness errors**
-(`/tmp/coverage-e6cdfe08.json`). Static field compound addition is now covered by `compat/field-compound-add.jq.test`. Root iterator
+At integration head `00ac7359`, the authoritative selected catalog measurement
+is **459/522 passed, 63 failed, 0 harness errors**
+(`/tmp/coverage-00ac7359.json`). Static field compound addition is covered by
+`compat/field-compound-add.jq.test`, and comma composition of root iterator
+compound updates is covered by `compat/iterator-compound-sequence.jq.test`.
+Root iterator
 compound updates (`+=`, `-=`, `*=`, `/=`, `%=` with numeric literal RHS) are
 covered by `compat/iterator-compound-updates.jq.test` (11/11 focused cases;
 decision `docs/decisions/0318-root-iterator-compound-updates.md`). Stable keyed
