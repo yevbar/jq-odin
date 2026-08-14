@@ -1,0 +1,11 @@
+# Static group_by(.field) uses the same stable key materialization as sort_by.
+group_by(.b)
+[{"a":1,"b":4},{"a":4,"b":1},{"a":1,"b":4},{"a":0,"b":2}]
+[[{"a":4,"b":1}],[{"a":0,"b":2}],[{"a":1,"b":4},{"a":1,"b":4}]]
+
+# Group output remains composable as a normal stream.
+group_by(.b) | .[]
+[{"a":1,"b":4},{"a":4,"b":1},{"a":1,"b":4},{"a":0,"b":2}]
+[{"a":4,"b":1}]
+[{"a":0,"b":2}]
+[{"a":1,"b":4},{"a":1,"b":4}]

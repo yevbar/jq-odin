@@ -96,6 +96,9 @@ Node_Kind :: enum {
 	// lowering for static sort_by(.field). It compares only pair keys and keeps
 	// input order for equal keys; general sort_by key streams remain separate.
 	Sort_By_Key,
+	// Group_By_Key is an internal stable-key grouping helper used by the
+	// bounded parser lowering for static group_by(.field).
+	Group_By_Key,
 	// Ceil is appended to preserve existing AST discriminants.
 	Ceil,
 	// Flatten is appended to preserve existing AST discriminants.
@@ -1368,6 +1371,18 @@ parse_pipe :: proc(
 					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true})
 					if !call_ok { return {}, false }
 					term = new_term
+					term_ready = true
+					continue
+				}
+				if spelling == "sort_by" || spelling == "group_by" {
+					advance(parser)
+				}
+				if (spelling == "sort_by" || spelling == "group_by") && token_is(parser, .Open_Paren) {
+					keyed_term: Node_Id
+					keyed_ok: bool
+					keyed_term, keyed_ok = lower_static_keyed_call(parser, token, spelling)
+					if !keyed_ok { return {}, false }
+					term = keyed_term
 					term_ready = true
 					continue
 				}
@@ -3633,7 +3648,7 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 		return true
 	case .Identifier:
 		spelling := token_spelling(parser, token)
-		return spelling == "false" || spelling == "true" || spelling == "null" || spelling == "nan" || spelling == "infinite"
+		return spelling == "false" || spelling == "true" || spelling == "null" || spelling == "nan" || spelling == "infinite" || spelling == "sort_by" || spelling == "group_by"
 	case:
 		return false
 	}
@@ -4811,6 +4826,77 @@ append_node :: proc(parser: ^Parser, node: Node) -> (Node_Id, bool) {
 		return {}, false
 	}
 	return Node_Id(parser.nodes.count-1), true
+}
+
+@(private="package")
+static_key_filter :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+	node := parser.nodes.storage[int(node_id)]
+	if node.kind == .Field && node.has_name_span && !node.has_child && !node.has_value do return true
+	if node.kind == .Comma && !node.has_child && !node.has_value {
+		return static_key_filter(parser, node.left) && static_key_filter(parser, node.right)
+	}
+	return false
+}
+
+// lower_static_keyed_call materializes the bounded static forms
+// sort_by(.field[, .field]) and group_by(.field) using the stable keyed sort
+// and grouping opcodes. Dynamic key filters remain parser-owned and are not
+// admitted by this narrow lowering.
+lower_static_keyed_call :: proc(parser: ^Parser, token: Token, spelling: string) -> (Node_Id, bool) {
+	if !token_is(parser, .Open_Paren) do return {}, false
+	advance(parser)
+	argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
+	if !argument_ok || !token_is(parser, .Close_Paren) {
+		fail_from_lookahead(parser, .Close_Paren)
+		return {}, false
+	}
+	close := parser.lookahead.token
+	advance(parser)
+	if !static_key_filter(parser, argument) || parser.nodes.storage[int(argument)].kind == .Comma {
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	key := argument
+	argument_node := parser.nodes.storage[int(argument)]
+	if argument_node.kind == .Comma {
+		key_span := parser.nodes.storage[int(argument)].span
+		key_ok: bool
+		key, key_ok = append_node(parser, Node{kind=.Identity, container_kind=.Array, span=key_span, value=argument, has_value=true})
+		if !key_ok do return {}, false
+	}
+	identity, identity_ok := append_node(parser, Node{kind=.Identity, span=token.span})
+	if !identity_ok do return {}, false
+	pair_span := token.span
+	pair_value, pair_ok := append_node(parser, Node{kind=.Comma, span=pair_span, left=key, right=identity})
+	if !pair_ok do return {}, false
+	array_span := token.span
+	pair_array, pair_array_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=array_span, value=pair_value, has_value=true})
+	if !pair_array_ok do return {}, false
+	map_span, map_span_ok := spanning(parser, token.span, close.span)
+	assert(map_span_ok)
+	mapped, mapped_ok := append_node(parser, Node{kind=.Map, span=map_span, child=pair_array, has_child=true})
+	if !mapped_ok do return {}, false
+	sorted, sorted_ok := append_node(parser, Node{kind=.Sort_By_Key, span=map_span})
+	if !sorted_ok do return {}, false
+	pipe_span, pipe_span_ok := spanning(parser, parser.nodes.storage[int(mapped)].span, parser.nodes.storage[int(sorted)].span)
+	assert(pipe_span_ok)
+	ordered, ordered_ok := append_node(parser, Node{kind=.Pipe, span=pipe_span, left=mapped, right=sorted})
+	if !ordered_ok do return {}, false
+	if spelling == "sort_by" {
+		one := parser.nodes.storage[int(identity)].span
+		extract, extract_ok := append_node(parser, Node{kind=.Index, span=one, child=identity, has_child=true, number_text="1", has_number_text=true})
+		if !extract_ok do return {}, false
+		unmap, unmap_ok := append_node(parser, Node{kind=.Map, span=map_span, child=extract, has_child=true})
+		if !unmap_ok do return {}, false
+		final_span, final_span_ok := spanning(parser, parser.nodes.storage[int(ordered)].span, parser.nodes.storage[int(unmap)].span)
+		assert(final_span_ok)
+		return append_node(parser, Node{kind=.Pipe, span=final_span, left=ordered, right=unmap})
+	}
+	grouped, grouped_ok := append_node(parser, Node{kind=.Group_By_Key, span=map_span})
+	if !grouped_ok do return {}, false
+	final_span, final_span_ok := spanning(parser, parser.nodes.storage[int(ordered)].span, parser.nodes.storage[int(grouped)].span)
+	assert(final_span_ok)
+	return append_node(parser, Node{kind=.Pipe, span=final_span, left=ordered, right=grouped})
 }
 
 // literal_call_sequence lowers comma-separated literal arguments into a

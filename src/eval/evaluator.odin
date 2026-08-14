@@ -4623,6 +4623,82 @@ sort_by_key_result :: proc(input: ^value.Value, allocator: runtime.Allocator) ->
 	return result, .None, nil
 }
 
+// group_by_key_result groups a materialized stream of [key, value] pairs.
+// The stream must already be sorted by key; adjacent equal keys form one
+// output group, preserving the original value order within each group.
+group_by_key_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+	length, ok := value.array_length(input)
+	if !ok do return {}, .Cannot_Iterate, nil
+	result, result_error := value.array_value(allocator)
+	if value.array_error_kind(&result_error) != .None do return {}, .None, .Out_Of_Memory
+	current_group: value.Value
+	current_key: value.Value
+	have_group := false
+	for i in 0..<length {
+		pair, pair_ok := value.array_element_copy(input, i)
+		if !pair_ok || value.kind_of(&pair) != .Array {
+			_ = value.destroy_value(&pair); _ = value.destroy_value(&current_group); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+			return {}, .Cannot_Iterate, nil
+		}
+		pair_length, pair_length_ok := value.array_length(&pair)
+		if !pair_length_ok || pair_length < 2 {
+			_ = value.destroy_value(&pair); _ = value.destroy_value(&current_group); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+			return {}, .Cannot_Iterate, nil
+		}
+		key, key_ok := value.array_element_copy(&pair, 0)
+		item, item_ok := value.array_element_copy(&pair, 1)
+		_ = value.destroy_value(&pair)
+		if !key_ok || !item_ok {
+			_ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&current_group); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+			return {}, .Cannot_Iterate, nil
+		}
+		new_group := !have_group
+		if have_group {
+			cmp, cmp_ok := compare_values(&key, &current_key)
+			if !cmp_ok {
+				_ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&current_group); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+				return {}, .Cannot_Iterate, nil
+			}
+			new_group = cmp != 0
+		}
+		if new_group {
+			if have_group {
+				_, append_error := value.array_append_take(&result, &current_group)
+				if value.array_error_kind(&append_error) != .None {
+					_ = value.destroy_value(&current_group); _ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+					return {}, .None, .Out_Of_Memory
+				}
+			}
+			group_error: value.Array_Operation_Error
+			current_group, group_error = value.array_value(allocator)
+			if value.array_error_kind(&group_error) != .None {
+				_ = value.destroy_value(&key); _ = value.destroy_value(&item); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+				return {}, .None, .Out_Of_Memory
+			}
+			_ = value.destroy_value(&current_key)
+			current_key = key
+			have_group = true
+		} else {
+			_ = value.destroy_value(&key)
+		}
+		_, item_error := value.array_append_take(&current_group, &item)
+		if value.array_error_kind(&item_error) != .None {
+			_ = value.destroy_value(&item); _ = value.destroy_value(&current_group); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+			return {}, .None, .Out_Of_Memory
+		}
+	}
+	if have_group {
+		_, append_error := value.array_append_take(&result, &current_group)
+		if value.array_error_kind(&append_error) != .None {
+			_ = value.destroy_value(&current_group); _ = value.destroy_value(&current_key); _ = value.destroy_value(&result)
+			return {}, .None, .Out_Of_Memory
+		}
+	}
+	_ = value.destroy_value(&current_key)
+	return result, .None, nil
+}
+
 @(private)
 flatten_append :: proc(input: ^value.Value, output: ^value.Value) -> (Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) == .Array {
@@ -6606,6 +6682,9 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	}
 	if opcode == .Sort_By_Key {
 		return sort_by_key_result(input, allocator)
+	}
+	if opcode == .Group_By_Key {
+		return group_by_key_result(input, allocator)
 	}
 	if opcode == .Ceil {
 		if kind != .Number do return {}, .Cannot_Number, nil
@@ -9646,7 +9725,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 			frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Sort_By_Key, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Sort_By_Key, .Group_By_Key, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				if (instruction.opcode == .Any || instruction.opcode == .All) && instruction.operands_count == 2 {
 					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 					if storage.frame_count == len(storage.frames) {
