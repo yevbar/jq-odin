@@ -77,7 +77,7 @@ string_header_absent :: proc(text: string) -> bool {
 node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	switch node.form {
 	case .Kinded:
-		if node.binary_operator != {} ||
+		if (!node.iterator_compound && node.binary_operator != {}) ||
 		   node.operator_span != (diagnostic.Span{}) ||
 		   node.has_operator_span {
 			return false
@@ -1261,6 +1261,9 @@ lower_filter :: proc(
 			instruction.operands_count = 2
 		case .Static_Iterator_Set_Number:
 			instruction.opcode = .Static_Iterator_Set_Number
+			if node.iterator_compound {
+				instruction.iterator_compound_operator = u8(node.binary_operator) + 1
+			}
 			rhs := nodes[int(node.right)]
 			rhs_text := rhs.number_text
 			if rhs.kind == .Null do rhs_text = "null"

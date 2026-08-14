@@ -7866,6 +7866,83 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				count := 0
 				if input_kind == .Array { count, _ = value.array_length(&frame.input) } else { count, _ = value.object_length(&frame.input) }
 				for offset in 0..<count {
+					if instruction.iterator_compound_operator != 0 {
+						rhs, rhs_error := value.literal_number_value(rhs_text, storage.allocator)
+						if value.constructor_error_kind(&rhs_error) != .None {
+							_ = value.destroy_constructor_error(&rhs_error)
+							return resource_step(.Out_Of_Memory)
+						}
+						current: value.Value
+						key: value.Value
+						if input_kind == .Array {
+							current, _ = value.array_element_copy(&frame.input, offset)
+						} else {
+							key, current, _ = value.object_entry_copy(&frame.input, offset)
+						}
+						updated: value.Value
+						compound_ok := false
+						arithmetic_kind := value.Number_Arithmetic_Result_Kind.Success
+						switch instruction.iterator_compound_operator {
+						case 1:
+							updated, compound_ok = value.number_add(&current, &rhs)
+							if !compound_ok { arithmetic_kind = .Invalid_Operands }
+						case 2: updated, arithmetic_kind = value.number_subtract(&current, &rhs); compound_ok = arithmetic_kind == .Success
+						case 3: updated, arithmetic_kind = value.number_multiply(&current, &rhs); compound_ok = arithmetic_kind == .Success
+						case 4: updated, arithmetic_kind = value.number_divide(&current, &rhs); compound_ok = arithmetic_kind == .Success
+						case 5: updated, arithmetic_kind = value.number_modulo(&current, &rhs); compound_ok = arithmetic_kind == .Success
+						}
+						if !compound_ok {
+							if arithmetic_kind == .Invalid_Operands {
+								op_word := "added"
+								switch instruction.iterator_compound_operator {
+								case 2: op_word = "subtracted"
+								case 3: op_word = "multiplied"
+								case 4: op_word = "divided"
+								case 5: op_word = "divided (remainder)"
+								}
+								message, message_error := binary_type_error_runtime_key(&current, &rhs, op_word, storage.allocator)
+								if message_error != nil do return resource_step(message_error)
+								if len(message) == 0 do message = "numeric iterator update requires numeric operands"
+								_ = value.destroy_value(&current)
+								result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
+								_ = value.destroy_value(&rhs)
+								if input_kind == .Object { _ = value.destroy_value(&key) }
+								if len(message) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
+								if ready do return result
+								continue
+							}
+							message := "numeric iterator update arithmetic error"
+							if arithmetic_kind == .Zero_Divisor {
+								zero_message, zero_error := binary_zero_divisor_runtime_key(&current, &rhs, instruction.iterator_compound_operator == 5, storage.allocator)
+								if zero_error != nil do return resource_step(zero_error)
+								if len(zero_message) > 0 do message = zero_message
+							}
+							_ = value.destroy_value(&current)
+							result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
+							_ = value.destroy_value(&rhs)
+							if input_kind == .Object { _ = value.destroy_value(&key) }
+							if len(message) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
+							if ready do return result
+							continue
+						}
+						_ = value.destroy_value(&current)
+						_ = value.destroy_value(&rhs)
+						if !compound_ok {
+							if input_kind == .Object { _ = value.destroy_value(&key) }
+							_ = value.destroy_value(&updated)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						if input_kind == .Array {
+							displaced, set_error := value.array_set_take(&frame.input, offset, &updated)
+							_ = value.destroy_value(&displaced)
+							if value.array_error_kind(&set_error) != .None { _ = value.destroy_array_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
+						} else {
+							duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &updated)
+							_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+							if value.object_error_kind(&set_error) != .None { _ = value.destroy_object_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
+						}
+						continue
+					}
 					updated: value.Value
 					constructor_error: value.Constructor_Error
 					if strings.has_prefix(rhs_text, "@str:") {

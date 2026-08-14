@@ -341,6 +341,8 @@ Instruction :: struct {
 	operands_count: Count,
 	span:           Source_Span,
 	index_key_kind: Index_Key_Kind,
+	// Non-zero for a root `.[]` compound update; values mirror syntax.Binary_Operator.
+	iterator_compound_operator: u8,
 	operator_span:  Source_Span,
 	has_operator_span: bool,
 }

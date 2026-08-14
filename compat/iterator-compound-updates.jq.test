@@ -1,0 +1,22 @@
+# Root iterator compound assignments update each array element independently.
+([2,4,6] | .[] += 2)
+[4,6,8]
+
+([2,4,6] | .[] -= 2)
+[0,2,4]
+
+([2,4,6] | .[] *= 2)
+[4,8,12]
+
+([2,4,6] | .[] /= 2)
+[1,2,3]
+
+([2,4,6] | .[] %= 2)
+[0,0,0]
+
+# Existing iterator assignment and deletion remain unchanged.
+([2,4,6] | .[] = 9)
+[9,9,9]
+
+([2,4,6] | .[] |= empty)
+[]

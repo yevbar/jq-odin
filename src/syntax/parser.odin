@@ -377,6 +377,7 @@ Node :: struct {
 	binary_operator:   Binary_Operator,
 	operator_span:     diagnostic.Span,
 	has_operator_span: bool,
+	iterator_compound: bool,
 	call_name_span: diagnostic.Span,
 	has_call_name: bool,
 	// Parameterized any/all retain generator and predicate filters as separate
@@ -2332,7 +2333,7 @@ parse_pipe :: proc(
 			// element/object value is removed. Keep this as a dedicated AST
 			// contract rather than lowering it through a textual rewrite.
 			left := current if pipe_root != invalid_id else result
-			if pipe_root == invalid_id && left >= 0 {
+			if left >= 0 {
 				left_node := parser.nodes.storage[int(left)]
 				if left_node.form == .Kinded && left_node.kind == .Field && left_node.has_child && left_node.has_name_span {
 					name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, left_node.name_span)
@@ -2351,7 +2352,9 @@ parse_pipe :: proc(
 						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
 						update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Delete, span=span})
 						if !update_ok do return {}, false
-						return update, true
+						if int(pipe_root) < 0 do return update, true
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+						return pipe_root, true
 					}
 				}
 			}
@@ -2362,6 +2365,45 @@ parse_pipe :: proc(
 				pipe_tail,
 				closing,
 			)
+		}
+		if token_is(parser, .Assign_Plus) || token_is(parser, .Assign_Minus) ||
+			token_is(parser, .Assign_Multiply) || token_is(parser, .Assign_Divide) ||
+			token_is(parser, .Assign_Modulo) {
+			left := current
+			if left >= 0 {
+				left_node := parser.nodes.storage[int(left)]
+				if left_node.form == .Kinded && left_node.kind == .Field && left_node.has_child && left_node.has_name_span {
+					name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, left_node.name_span)
+					child := parser.nodes.storage[int(left_node.child)]
+					if name_ok && name_start == name_end && child.kind == .Identity && !child.has_child && !child.has_value {
+						op := parser.lookahead.token.kind
+						operator := Binary_Operator.Add
+						#partial switch op {
+						case .Assign_Minus: operator = .Subtract
+						case .Assign_Multiply: operator = .Multiply
+						case .Assign_Divide: operator = .Divide
+						case .Assign_Modulo: operator = .Modulo
+						}
+						advance(parser)
+						right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+						if !right_ok do return {}, false
+						for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+							right = parser.nodes.storage[int(right)].child
+						}
+						rhs := parser.nodes.storage[int(right)]
+						if rhs.form != .Kinded || rhs.kind != .Number || rhs.has_child || rhs.has_value {
+							fail_from_lookahead(parser, .Expression); return {}, false
+						}
+						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+						update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Set_Number, span=span, right=right, binary_operator=operator, iterator_compound=true})
+						if !update_ok do return {}, false
+						if int(pipe_root) < 0 do return update, true
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+						return pipe_root, true
+					}
+				}
+			}
+			return parse_static_field_set_number(parser, left, pipe_root, pipe_tail, closing)
 		}
 		if token_is(parser, .Assign) {
 			if current >= 0 && parser.nodes.storage[int(current)].kind == .Slice {
@@ -2400,7 +2442,7 @@ parse_pipe :: proc(
 			// field name denotes an array/object value iterator, not an object key.
 			// Restrict this vertical slice to a root iterator and scalar RHS so the
 			// existing resumable path ABI is not widened accidentally.
-			if pipe_root == invalid_id && left_node.form == .Kinded &&
+			if left_node.form == .Kinded &&
 				left_node.kind == .Field && left_node.has_child && left_node.has_name_span {
 				name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, left_node.name_span)
 				child := parser.nodes.storage[int(left_node.child)]
@@ -2418,7 +2460,9 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
 					update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Set_Number, span=span, right=right})
 					if !update_ok do return {}, false
-					return update, true
+					if int(pipe_root) < 0 do return update, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+					return pipe_root, true
 				}
 			}
 			if left_node.form == .Kinded && (left_node.kind == .Field || left_node.kind == .Index) && left_node.has_child {
