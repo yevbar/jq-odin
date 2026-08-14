@@ -288,6 +288,15 @@ Node_Kind :: enum {
 
 Node_Id :: distinct int
 
+// Definition records one top-level zero-argument declaration in source order.
+// name_span borrows the Parser's Source; body points into the same parser-owned
+// node arena. ordinal is stable for the lifetime of this parse and starts at 0.
+Definition :: struct {
+	name_span: diagnostic.Span,
+	body:      Node_Id,
+	ordinal:   u32,
+}
+
 Node_Form :: enum u8 {
 	Kinded,
 	Binary,
@@ -491,11 +500,11 @@ String_Allocation :: struct {
 	memory: []byte,
 }
 
-// Parser owns its scanner, flat AST arena, parse frames, and every Number node's
+// Parser owns its scanner, flat AST arena, parse frames, definition table, and every Number node's
 // exact source text. source is otherwise borrowed; frames, nodes, numeric text,
 // and scanner state use allocator. A live Parser must remain at its initialized
 // address and must not be copied. After parse_filter, only parser_nodes,
-// parser_source, and destroy_parser are valid.
+// parser_source, parser_definitions, and destroy_parser are valid.
 Parser :: struct {
 	source:              diagnostic.Source,
 	scanner:             Scanner,
@@ -503,6 +512,7 @@ Parser :: struct {
 	frames:              Fallible_Buffer(Parse_Frame),
 	number_allocations:  Fallible_Buffer(Number_Allocation),
 	string_allocations:  Fallible_Buffer(String_Allocation),
+	definitions:         Fallible_Buffer(Definition),
 	container_depth:     int,
 	allocator:           runtime.Allocator,
 	state:               Parser_State,
@@ -693,6 +703,7 @@ init_parser :: proc(
 	init_fallible_buffer(&parser.frames, allocator)
 	init_fallible_buffer(&parser.number_allocations, allocator)
 	init_fallible_buffer(&parser.string_allocations, allocator)
+	init_fallible_buffer(&parser.definitions, allocator)
 	parser.state = .Ready
 	parser.self = parser
 	return true
@@ -712,7 +723,7 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 	assert(parser.state == .Ready, "syntax.Parser can parse only once")
 
 	advance(parser)
-	if token_is(parser, .Def) {
+	for token_is(parser, .Def) {
 		advance(parser)
 		if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Identifier {
 			fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure
@@ -731,14 +742,22 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 		parser.definition_body = Node_Id(-1)
 		body, body_ok := parse_pipe(parser, .Semicolon, false)
 		if !body_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure }
-		parser.definition_name = name.span
-		parser.has_definition = true
 		parser.definition_body = body
 		for i in 0..<parser.nodes.count {
 			if parser.nodes.storage[i].kind == .Call && parser.nodes.storage[i].child < 0 {
 				parser.nodes.storage[i].child = body
 				parser.nodes.storage[i].has_child = true
 			}
+		}
+		definition_error := append_fallible_buffer(&parser.definitions, Definition{
+			name_span = name.span,
+			body = body,
+			ordinal = u32(parser.definitions.count),
+		})
+		if definition_error != nil {
+			fail_resource(parser, definition_error)
+			parser.state = .Finished
+			return parser.failure
 		}
 		advance(parser)
 	}
@@ -779,6 +798,18 @@ parser_source :: proc(parser: ^Parser) -> diagnostic.Source {
 	assert(parser.self == parser)
 	assert(parser.state == .Ready || parser.state == .Finished)
 	return parser.source
+}
+
+// parser_definitions returns ordered top-level zero-argument declarations.
+// Names borrow parser_source and bodies index parser_nodes; both expire when
+// destruction begins.
+parser_definitions :: proc(parser: ^Parser) -> []Definition {
+	if !parser_has_live_identity(parser) || parser.state != .Finished {
+		return nil
+	}
+	assert(parser.self == parser)
+	assert(parser.state == .Finished)
+	return fallible_buffer_view(&parser.definitions)
 }
 
 // destroy_parser releases or retires all owned storage. Mode_Not_Implemented
@@ -881,6 +912,13 @@ destroy_parser :: proc(parser: ^Parser) -> runtime.Allocator_Error {
 			return frames_error
 		}
 	}
+	if parser.definitions.state != .Empty {
+		definitions_error := destroy_fallible_buffer(&parser.definitions)
+		if definitions_error != nil {
+			parser.state = .Cleanup_Failed
+			return definitions_error
+		}
+	}
 
 	parser.source = {}
 	parser.allocator = {}
@@ -956,6 +994,33 @@ parse_if_chain :: proc(parser: ^Parser, if_token: Token) -> (Node_Id, bool) {
 		if_else = else_branch,
 		has_if_else = true,
 	})
+}
+
+@(private="package")
+definition_name_matches :: proc(parser: ^Parser, span: diagnostic.Span, spelling: string) -> bool {
+	start, end, ok := diagnostic.span_offsets(parser.source, span)
+	if !ok || end < start do return false
+	bytes := diagnostic.source_bytes(parser.source)
+	return bytes[start:end] == spelling
+}
+
+// visible_definition returns the latest declaration already visible at the
+// current source position. A declaration being parsed is represented by an
+// unresolved body edge so recursive calls can be patched after its body root
+// is known; forward references therefore remain ordinary unknown identifiers.
+visible_definition :: proc(parser: ^Parser, spelling: string) -> (Node_Id, bool) {
+	if parser.has_definition && parser.definition_body < 0 &&
+	   definition_name_matches(parser, parser.definition_name, spelling) {
+		return Node_Id(-1), true
+	}
+	for count := parser.definitions.count; count > 0; {
+		count -= 1
+		definition := parser.definitions.storage[count]
+		if definition_name_matches(parser, definition.name_span, spelling) {
+			return definition.body, true
+		}
+	}
+	return {}, false
 }
 
 // parse_pipe is an explicit-state precedence parser. Parenthesized state lives
@@ -1295,9 +1360,10 @@ parse_pipe :: proc(
 				// jq exposes uppercase IN as the generator-membership builtin;
 				// normalize its spelling before the regular call dispatch.
 				if spelling == "IN" do spelling = "in"
-				if parser.has_definition && spelling == token_spelling(parser, Token{span=parser.definition_name}) && !token_is(parser, .Open_Paren) {
+				call_body, is_definition_call := visible_definition(parser, spelling)
+				if is_definition_call && !token_is(parser, .Open_Paren) {
 					advance(parser)
-					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=parser.definition_body, has_child=true, call_name_span=token.value_span, has_call_name=true})
+					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true})
 					if !call_ok { return {}, false }
 					term = new_term
 					term_ready = true

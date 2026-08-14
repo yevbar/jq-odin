@@ -230,6 +230,25 @@ every_supported_form_lowers_without_execution :: proc(t: ^testing.T) {
 }
 
 @(test)
+multiple_top_level_definitions_lower_to_direct_call_edges :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, _, lowered := parse_and_lower(t, `def one: 1; def two: one; two`, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	definitions := syntax.parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 2)
+	root_index, root_ok := program.program_root(&compiled)
+	testing.expect(t, root_ok)
+	root := instruction_at(&compiled, root_index)
+	testing.expect_value(t, root.opcode, program.Opcode.Call)
+	testing.expect_value(t, instruction_child(&compiled, root, 0).opcode, program.Opcode.Call)
+	second_body := instruction_child(&compiled, root, 0)
+	testing.expect_value(t, second_body.opcode, program.Opcode.Call)
+	testing.expect_value(t, instruction_child(&compiled, second_body, 0).opcode, program.Opcode.Identity)
+	expect_cleanup(t, &parser, &compiled)
+}
+
+@(test)
 mktime_lowers_to_append_only_builtin_opcode :: proc(t: ^testing.T) {
 	parser: syntax.Parser
 	compiled: program.Program

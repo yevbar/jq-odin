@@ -4108,3 +4108,58 @@ foreach_parses_with_reduce_shape :: proc(t: ^testing.T) {
 	testing.expect(t, root.has_reduce_update && root.has_name_span)
 	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 }
+
+@(test)
+top_level_definition_table_preserves_order_and_resolves_calls :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<multiple-defs>", `def one: 1; def two: one; two`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	definitions := parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 2)
+	testing.expect_value(t, definitions[0].ordinal, u32(0))
+	testing.expect_value(t, definitions[1].ordinal, u32(1))
+	second_body := parser.nodes.storage[int(definitions[1].body)]
+	testing.expect_value(t, second_body.kind, Node_Kind.Call)
+	testing.expect(t, second_body.child == definitions[0].body && second_body.has_child)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Call)
+	testing.expect(t, root.child == definitions[1].body && root.has_child)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+top_level_definition_calls_capture_declaration_snapshot :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<definition-snapshot>", `def f: 1; def g: f; def f: 2; g`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	definitions := parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 3)
+	g_body := parser.nodes.storage[int(definitions[1].body)]
+	testing.expect_value(t, g_body.kind, Node_Kind.Call)
+	testing.expect(t, g_body.child == definitions[0].body)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Call)
+	testing.expect(t, root.child == definitions[1].body)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+top_level_definition_recursive_call_is_patched_to_its_own_body :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<recursive-def>", `def loop: loop; loop`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	definitions := parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 1)
+	body := parser.nodes.storage[int(definitions[0].body)]
+	testing.expect_value(t, body.kind, Node_Kind.Call)
+	testing.expect(t, body.child == definitions[0].body && body.has_child)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect(t, root.kind == Node_Kind.Call && root.child == definitions[0].body)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
