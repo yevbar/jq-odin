@@ -9,6 +9,13 @@ import program "jq:program"
 import syntax "jq:syntax"
 import value "jq:value"
 
+@(test)
+module_metadata_parameter_arity_counts_jq_formals :: proc(t: ^testing.T) {
+	testing.expect_value(t, module_parameter_arity(""), 0)
+	testing.expect_value(t, module_parameter_arity("x"), 1)
+	testing.expect_value(t, module_parameter_arity("$x; y; $z"), 3)
+}
+
 EVALUATOR_GUARD_SIZE :: 64
 EVALUATOR_GUARD_BYTE :: byte(0xa5)
 

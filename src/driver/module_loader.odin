@@ -39,6 +39,41 @@ module_data_import :: struct {
 	data: string,
 }
 
+// module_metadata_dependency is the loader-owned, source-level dependency
+// record required by jq's modulemeta builtin. Strings are owned by the
+// metadata container and are released by destroy_module_metadata.
+module_metadata_dependency :: struct {
+	relpath: string,
+	alias: string,
+	search: string,
+	is_data: bool,
+}
+
+module_metadata :: struct {
+	deps: [dynamic]module_metadata_dependency,
+	defs: [dynamic]string,
+}
+
+destroy_module_metadata :: proc(metadata: ^module_metadata, allocator: runtime.Allocator) {
+	if metadata == nil do return
+	for dependency in metadata.deps {
+		delete(dependency.relpath, allocator)
+		delete(dependency.alias, allocator)
+		delete(dependency.search, allocator)
+	}
+	for definition in metadata.defs do delete(definition, allocator)
+	delete(metadata.deps)
+	delete(metadata.defs)
+}
+
+module_parameter_arity :: proc(parameters: string) -> int {
+	trimmed := module_trim(parameters)
+	if len(trimmed) == 0 do return 0
+	arity := 1
+	for byte in trimmed do if byte == ';' do arity += 1
+	return arity
+}
+
 destroy_module_data_imports :: proc(imports: ^[dynamic]module_data_import, allocator: runtime.Allocator) {
 	for imported in imports^ {
 		delete(imported.alias, allocator)
