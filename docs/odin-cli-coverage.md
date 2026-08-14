@@ -754,3 +754,18 @@ catalog to **366/522 passed and 156 failed**, with zero harness errors. It
 covers `walk(.)`, `walk(1)`, and `[walk(.,1)]`; general post-order walk filters
 remain deferred to a recursive evaluator continuation contract. Full package
 validation and the CLI harness (333 subprocess / 43 differential checks) pass.
+
+## Authoritative restored-CLI measurement (2026-08-14)
+
+The reviewed CLI integration branch was restored at `28cb5463` and replayed
+with the accepted evaluator/language chain through `b544441d` (dynamic slice
+bounds, piped generator destructuring, dynamic trimstr, label/break control
+flow, and the debug diagnostic event). The candidate built with Odin
+`dev-2026-05`; `make check-packages` and `make test` passed all package and
+external-boundary suites. Focused compatibility shards passed 7/7 for dynamic
+slices, 2/2 for piped destructuring, 3/3 for dynamic trimstr, 3/3 for
+label/break, and 1/1 for debug. The pinned jq 1.8.1 catalog selected all 522
+cases and reports **424 passed, 98 failed, 0 harness errors**. The remaining
+failures are primarily richer destructuring/foreach, update-path assignment,
+`?//`, module closures, dynamic builtins, process I/O, and exact diagnostics;
+these remain implementation work rather than skipped coverage.
