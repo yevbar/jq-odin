@@ -1,0 +1,4 @@
+# A try/catch identity update preserves the original input exactly.
+. |= try . catch .
+1
+1

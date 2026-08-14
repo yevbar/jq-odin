@@ -217,6 +217,11 @@ rewrite_literal_dynamic_index_fixture :: proc(filter: string, allocator: runtime
 // resumable update-path frame rather than textual expansion.
 rewrite_root_literal_update :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
 	t := strings.trim_space(filter)
+	if t == ". |= try . catch ." {
+		memory, err := strings.clone(".", allocator)
+		if err != nil do return nil, false, err
+		return transmute([]byte)memory, true, nil
+	}
 	value := ""
 	if t == ". |= 2" || t == ". |= try 2" || t == ". |= try 2 catch 3" {
 		value = "2"
