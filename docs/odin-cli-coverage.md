@@ -6,10 +6,14 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `f8fee371`, the authoritative selected catalog measurement
-is **456/522 passed, 66 failed, 0 harness errors**
-(`/tmp/coverage-f5432fc8.json`). The one-case gain over the prior
-455/522 checkpoint covers multi-output static slice assignment at
+At integration head `568e428f`, the authoritative selected catalog measurement
+is **457/522 passed, 65 failed, 0 harness errors**
+(`/tmp/coverage-568e428f.json`). The one-case gain over the prior
+456/522 checkpoint covers jq-compatible nonfinite JSON input framing at
+`upstream/jq/tests/jq.test:1290`; the focused shard is
+`compat/cli-nonfinite-framing.jq.test` and the implementation decision is
+`docs/decisions/0320-cli-nonfinite-framing.md`. The preceding checkpoint’s
+gain covered multi-output static slice assignment at
 `upstream/jq/tests/jq.test:478`; the focused shard is
 `compat/static-slice-multi-output.jq.test` and the implementation decision is
 `docs/decisions/0317-static-slice-multi-output.md`. Root `.[] = scalar`
