@@ -332,6 +332,10 @@ Node :: struct {
 	has_value:         bool,
 	reduce_update:     Node_Id,
 	has_reduce_update: bool,
+	// Foreach's optional third clause (EXTRACT) is distinct from the
+	// accumulator UPDATE clause. Reduce never sets this field.
+	reduce_extract:    Node_Id,
+	has_reduce_extract: bool,
 	if_condition:      Node_Id,
 	has_if_condition:  bool,
 	if_then:           Node_Id,
@@ -1815,9 +1819,19 @@ parse_pipe :: proc(
 				init, init_ok := parse_pipe(parser, .Close_Paren, false)
 				if !init_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
 				update, update_ok := parse_pipe(parser, .Close_Paren, true)
-				if !update_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; close := parser.lookahead.token; advance(parser)
+				if !update_ok { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+				extract: Node_Id = -1
+				has_extract := false
+				if token_is(parser, .Semicolon) {
+					advance(parser)
+					extract_value, extract_ok := parse_pipe(parser, .Close_Paren, true)
+					if !extract_ok { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					extract = extract_value
+					has_extract = true
+				}
+				if !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; close := parser.lookahead.token; advance(parser)
 				span, _ := spanning(parser, foreach_span, close.span)
-				new_term, ok := append_node(parser, Node{kind=.Foreach, span=span, left=exp, right=init, reduce_update=update, has_reduce_update=true, name_span=name, has_name_span=true})
+				new_term, ok := append_node(parser, Node{kind=.Foreach, span=span, left=exp, right=init, reduce_update=update, has_reduce_update=true, reduce_extract=extract, has_reduce_extract=has_extract, name_span=name, has_name_span=true})
 				if !ok { return {}, false }; term = new_term
 			case:
 				fail_at_current(parser, .Unexpected_Token, .Expression)

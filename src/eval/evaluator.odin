@@ -1294,6 +1294,32 @@ foreach_seed_values :: proc(storage: ^evaluator_storage, index: program.Instruct
 	return result, true
 }
 
+// foreach_extract_value supports the bounded arithmetic extractor used by the
+// three-clause compatibility lane (`.*2`). The accumulator is the input to the
+// EXTRACT filter; broader generator-valued extraction remains evaluator-owned.
+foreach_extract_value :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, input: ^value.Value) -> (value.Value, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok do return {}, false
+	if instruction.opcode == .Identity && !instruction.has_literal do return value.clone_value(input), true
+	if instruction.opcode == .Parenthesized {
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return {}, false
+		return foreach_extract_value(storage, child, input)
+	}
+	if instruction.opcode != .Multiply do return {}, false
+	left_index, left_ok := child_instruction(storage, instruction, 0)
+	right_index, right_ok := child_instruction(storage, instruction, 1)
+	left, left_valid := program.program_instruction(storage.compiled, left_index)
+	right, right_valid := program.program_instruction(storage.compiled, right_index)
+	if !left_ok || !right_ok || !left_valid || !right_valid || left.opcode != .Identity || left.has_literal do return {}, false
+	right_value, right_error, right_cleanup := literal_value(storage, right)
+	if right_cleanup != nil || right_error != .None { _ = value.destroy_value(&right_value); return {}, false }
+	result, multiply_kind := value.number_multiply(input, &right_value)
+	_ = value.destroy_value(&right_value)
+	if multiply_kind != .Success { _ = value.destroy_value(&result); return {}, false }
+	return result, true
+}
+
 @(private)
 dynamic_range_bound :: proc(storage: ^evaluator_storage, instruction: program.Instruction, input: ^value.Value) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
 	if instruction.opcode == .Identity && !instruction.has_literal do return value.clone_value(input), .None, nil
@@ -1406,7 +1432,8 @@ capture_composite_instruction :: proc(
 		)
 		if !left_ok || !right_ok || !name_ok || name_operand.kind != .Text do return false
 	case .Reduce, .Foreach:
-		if instruction.operands_count != 4 do return false
+		if instruction.operands_count != 4 && instruction.opcode == .Reduce do return false
+		if instruction.opcode == .Foreach && instruction.operands_count != 4 && instruction.operands_count != 5 do return false
 		for i in 0..<3 {
 			_, ok := child_instruction(storage, instruction, u32(i)); if !ok do return false
 			operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(i)))
@@ -8298,7 +8325,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				_, init_valid := program.program_instruction(storage.compiled, init_index)
 				update, update_valid := program.program_instruction(storage.compiled, update_index)
-				name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+3))
+				name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(instruction.operands_count)-1))
 				name, name_text_ok := program.operand_text(storage.compiled, name_operand)
 				if !generator_ok || !init_ok || !update_ok || !generator_valid || !init_valid || !update_valid || !name_ok || !name_text_ok || name_operand.kind != .Text do return begin_terminal_misuse(storage, .Malformed_Program)
 				seeds, seeds_ok := foreach_seed_values(storage, init_index)
@@ -8388,6 +8415,31 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					_ = value.destroy_value(&seed)
 				}
 				if has_cartesian do _ = value.destroy_value(&cartesian_values)
+				if instruction.operands_count == 5 {
+					extract_index, extract_ok := child_instruction(storage, instruction, 3)
+					_, extract_valid := program.program_instruction(storage.compiled, extract_index)
+					if !extract_ok || !extract_valid {
+						_ = value.destroy_value(&seeds); _ = value.destroy_value(&items)
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					item_count, item_count_ok := value.array_length(&items)
+					if !item_count_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+					for item_index in 0..<item_count {
+						item, item_ok := value.array_element_copy(&items, item_index)
+						if !item_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+						extracted, extracted_ok := foreach_extract_value(storage, extract_index, &item)
+						_ = value.destroy_value(&item)
+						if !extracted_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						displaced, set_error := value.array_set_take(&items, item_index, &extracted)
+						_ = value.destroy_value(&displaced)
+						if value.array_error_kind(&set_error) != .None {
+							// array_set_take is transactional on failure; the caller still
+							// owns extracted and must release it before retry/termination.
+							_ = value.destroy_value(&extracted)
+							_ = value.destroy_array_error(&set_error); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory)
+						}
+					}
+				}
 				_ = value.destroy_value(&seeds); _ = value.destroy_value(&frame.input); frame.input = items; frame.iterator_cursor = 0; frame.phase = .Iterator_Active
 			case .Reduce:
 				// Evaluate the reduction seed from its compiled INIT expression.  The

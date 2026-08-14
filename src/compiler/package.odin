@@ -258,7 +258,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       node.has_name_span && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Reduce, .Foreach:
-		return node.container_kind == .None && no_child && node.left >= 0 && node.right >= 0 && node.reduce_update >= 0 && node.has_name_span
+		return node.container_kind == .None && no_child && node.left >= 0 && node.right >= 0 && node.reduce_update >= 0 &&
+		       (!node.has_reduce_extract || node.reduce_extract >= 0) && node.has_name_span
 	case .Parenthesized, .Optional, .Negate:
 		return node.has_child && no_edges && no_name && no_container_links && !node.has_value && node.value == 0 && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
@@ -403,7 +404,9 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		if !validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) || !validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget) do return false
 		if depth >= len(scopes) do return false
 		scopes[depth] = node.name_span
-		return validate_binding_scopes(nodes, node.reduce_update, source, scopes, depth+1, next_budget)
+		if !validate_binding_scopes(nodes, node.reduce_update, source, scopes, depth+1, next_budget) do return false
+		if node.kind == .Foreach && node.has_reduce_extract do return validate_binding_scopes(nodes, node.reduce_extract, source, scopes, depth+1, next_budget)
+		return true
 	case .Parenthesized, .Optional, .Negate:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Comma, .Pipe:
@@ -691,8 +694,11 @@ lower_filter :: proc(
 			if !checked_count_add(&operand_count, 3) || !checked_count_add(&text_count, u64(name_end-name_start)) do return Lower_Outcome{kind = .Size_Overflow}
 		case .Reduce, .Foreach:
 			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !node_reference_valid(node.reduce_update, len(nodes)) do return Lower_Outcome{kind=.Invalid_AST}
+			if node.kind == .Foreach && node.has_reduce_extract && !node_reference_valid(node.reduce_extract, len(nodes)) do return Lower_Outcome{kind=.Invalid_AST}
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
-			if !name_ok || !checked_count_add(&operand_count, 4) || !checked_count_add(&text_count, u64(name_end-name_start)) do return Lower_Outcome{kind=.Invalid_AST}
+			operand_total: u64 = 4
+			if node.kind == .Foreach && node.has_reduce_extract do operand_total = 5
+			if !name_ok || !checked_count_add(&operand_count, operand_total) || !checked_count_add(&text_count, u64(name_end-name_start)) do return Lower_Outcome{kind=.Invalid_AST}
 		case .Parenthesized, .Optional:
 			if !node_reference_valid(node.child, len(nodes)) {
 				return Lower_Outcome{kind = .Invalid_AST}
@@ -1187,12 +1193,15 @@ lower_filter :: proc(
 			text_at += u32(len(name)); operand_at += 1; instruction.operands_count = 3
 		case .Reduce, .Foreach:
 			instruction.opcode = .Foreach if node.kind == .Foreach else .Reduce
-			children := [3]syntax.Node_Id{node.left, node.right, node.reduce_update}
-			for child in children {
+			children := [4]syntax.Node_Id{node.left, node.right, node.reduce_update, node.reduce_extract}
+			child_count: u32 = 3
+			if node.kind == .Foreach && node.has_reduce_extract do child_count = 4
+			for child in children[:child_count] {
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(child)})); operand_at += 1
 			}
 			name_start, name_end, _ := diagnostic.span_offsets(source, node.name_span); name := bytes[name_start:name_end]
 			assert(program.set_text(output, program.Byte_Offset(text_at), name)); assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text,text_start=program.Byte_Offset(text_at),text_count=program.Count(len(name))})); text_at += u32(len(name)); operand_at += 1; instruction.operands_count = 4
+			if node.kind == .Foreach && node.has_reduce_extract do instruction.operands_count = 5
 		case .Limit:
 			instruction.opcode = .Limit
 			children := [2]syntax.Node_Id{node.left, node.right}

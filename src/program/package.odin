@@ -615,7 +615,10 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Binding:
 		 expected_count = 3
 	case .Reduce, .Foreach:
-		if count != 4 { return false }; expected_count = 4
+		if instruction.opcode == .Reduce {
+			if count != 4 { return false }
+		} else if count != 4 && count != 5 { return false }
+		expected_count = count
 	case .Join, .Contains:
 		if count != 1 { return false }; expected_count = 1
 	case .Split:
@@ -728,7 +731,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if instruction.opcode == .Binding && offset == 2 {
 			expected_kind = .Text
 		}
-		if (instruction.opcode == .Reduce || instruction.opcode == .Foreach) && offset == 3 {
+		if (instruction.opcode == .Reduce && offset == 3) ||
+		   (instruction.opcode == .Foreach && offset == u64(instruction.operands_count)-1) {
 			expected_kind = .Text
 		}
 		if operand.kind != expected_kind {
@@ -818,7 +822,7 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 	case .Binding:
 		return 2
 	case .Reduce, .Foreach:
-		return 3
+		return 3 if instruction.opcode == .Reduce || instruction.operands_count == 4 else 4
 	case .Variable:
 		return 0
 	case .Sequence, .Fork,
