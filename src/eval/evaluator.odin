@@ -39,6 +39,18 @@ Runtime_Error :: struct {
 	key:        string,
 }
 
+// Input_Provider supplies one already-framed JSON text to the resumable
+// evaluator. The callback borrows its returned text until it returns; the
+// evaluator parses and owns the resulting Value. Provider state belongs to the
+// surrounding CLI invocation and therefore survives individual Run_Result
+// lifetimes.
+Input_Provider_Status :: enum u8 { Value, EOF, Error }
+Input_Provider_Next :: proc(data: rawptr) -> (string, Input_Provider_Status)
+Input_Provider :: struct {
+	data: rawptr,
+	next: Input_Provider_Next,
+}
+
 Misuse_Kind :: enum u8 {
 	None,
 	Invalid_Evaluator,
@@ -188,6 +200,7 @@ frame_phase :: enum u8 {
 	Complete,
 	Debug_Emit,
 	Debug_Output,
+	Input_Active,
 }
 
 @(private)
@@ -390,12 +403,10 @@ evaluator_storage :: struct {
 	pending_terminal: terminal_kind,
 	runtime_error:    Runtime_Error,
 	pending_constructor_error: ^value.Constructor_Error,
-	// Keeps the public fixed-layout handle stable while diagnostic ownership
-	// uses the existing Runtime_Error key view as its allocation anchor.
-	layout_padding: u64,
 	// A generated Value that could not be transferred after live Program
 	// corruption remains reachable here until terminal cleanup retires it.
 	pending_value:    value.Value,
+	input_provider:   ^Input_Provider,
 	misuse:           Misuse_Kind,
 }
 
@@ -542,6 +553,7 @@ init_evaluator :: proc(
 	compiled: ^program.Program,
 	input: ^value.Value,
 	allocator: runtime.Allocator,
+	input_provider: ^Input_Provider = nil,
 ) -> Init_Result {
 	if evaluator == nil || evaluator^ != nil || input == nil ||
 	   value.kind_of(input) == .Invalid {
@@ -596,6 +608,7 @@ init_evaluator :: proc(
 		frame_count = 1,
 		self = evaluator,
 		state = .Active,
+		input_provider = input_provider,
 	})
 	storage := storage_of(evaluator)
 	storage.frames[0] = eval_frame{
@@ -7787,6 +7800,45 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					}
 					output = value.clone_value(&frame.input)
 				}
+				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Input:
+				if instruction.operands_count != 0 || instruction.has_literal {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				// input/0 advances the shared provider cursor and replaces the
+				// frame input with the next framed JSON value.  EOF and provider
+				// failures are ordinary jq runtime errors so try/catch can handle
+				// them (EOF uses jq's historical "break" key).
+				if storage.input_provider == nil || storage.input_provider.next == nil {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key="break"})
+					if ready do return result
+					continue
+				}
+				raw, status := storage.input_provider.next(storage.input_provider.data)
+				if status == .EOF {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key="break"})
+					if ready do return result
+					continue
+				}
+				if status == .Error {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key=raw})
+					if ready do return result
+					continue
+				}
+				parsed, parse_error := json.parse_value(raw, storage.allocator)
+				if parse_error.kind != .None {
+					_ = json.destroy_scalar_parse_error(&parse_error)
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key="Invalid input"})
+					if ready do return result
+					continue
+				}
+				old_error := value.destroy_value(&frame.input)
+				if old_error != nil && old_error != .Mode_Not_Implemented do return resource_step(old_error)
+				frame.input = parsed
+				output := value.clone_value(&frame.input)
 				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)

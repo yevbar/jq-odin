@@ -150,6 +150,7 @@ Node_Kind :: enum {
 	// Builtins is appended to preserve existing AST discriminants.
 	Builtins,
 	Debug,
+	Input,
 	// Base64 and Base64d are appended to preserve existing AST discriminants.
 	Base64,
 	Base64d,
@@ -1463,6 +1464,8 @@ parse_pipe :: proc(
 					kind = .Builtins
 				} else if spelling == "debug" {
 					kind = .Debug
+				} else if spelling == "input" {
+					kind = .Input
 				} else if spelling == "tojson" {
 					kind = .Tojson
 				} else if spelling == "fromjson" {

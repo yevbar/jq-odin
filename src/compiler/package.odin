@@ -125,7 +125,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
-	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Debug, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Isfinite, .Isnormal, .Recurse:
+	case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Debug, .Input, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Type, .Abs, .Sqrt, .Fabs, .Trim, .Ltrim, .Rtrim, .Atan, .Asin, .Acos, .Cos, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Nan, .Infinite, .Isfinite, .Isnormal, .Recurse:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text &&
 			string_header_absent(node.string_text)
@@ -445,7 +445,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return true
 	case .Pow:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
-	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate, .Debug:
+	case .Log10, .Log2, .Exp, .Exp2, .Exp10, .Sin, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Mktime, .Gmtime, .Fromdate, .Todate, .Debug, .Input:
 		return true
 	case .Limit:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
@@ -655,6 +655,8 @@ lower_filter :: proc(
 		}
 
 		switch node.kind {
+		case .Input:
+			// zero-operand stream consumer
 		case .Identity:
 			if node.container_kind == .Array {
 				if node.has_value {
@@ -1026,6 +1028,8 @@ lower_filter :: proc(
 			}
 		} else {
 		switch node.kind {
+		case .Input:
+			instruction.opcode = .Input
 		case .Identity:
 			if node.container_kind == .Array {
 				instruction.opcode = .Array
@@ -1547,6 +1551,7 @@ lower_filter :: proc(
 			case .Toboolean: instruction.opcode = .Toboolean
 		case .Builtins: instruction.opcode = .Builtins
 			case .Debug: instruction.opcode = .Debug
+			case .Input: instruction.opcode = .Input
 			case .Base64: instruction.opcode = .Base64
 			case .Base64d: instruction.opcode = .Base64d
 			case .Uri: instruction.opcode = .Uri

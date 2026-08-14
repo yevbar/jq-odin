@@ -452,6 +452,8 @@ Run_Options :: struct {
 	// it frames argv/stdin streams. Embedders may leave these at defaults.
 	input_path: string,
 	input_line: int,
+	// input_provider borrows a cursor owned by the caller for this run.
+	input_provider: eval.Input_Provider,
 	}
 
 // Run_Error is non-owning. runtime_key borrows Run_Result storage and remains
@@ -510,6 +512,7 @@ Run_Result :: struct {
 	parser:            syntax.Parser,
 	compiled:          program.Program,
 	input:             value.Value,
+	input_provider:    eval.Input_Provider,
 	// evaluator points into evaluator_memory. The exact typed allocation never
 	// moves; it is retired only after destroy_evaluator has succeeded.
 	evaluator:         ^eval.Evaluator,
@@ -1352,7 +1355,8 @@ run_with_options :: proc(
 		}
 		compiled := &result.compiled
 		if result.shared_compiled != nil do compiled = &result.shared_compiled.owner.compiled
-		initialized := eval.init_evaluator(result.evaluator, compiled, &result.input, allocator)
+		result.input_provider = options.input_provider
+		initialized := eval.init_evaluator(result.evaluator, compiled, &result.input, allocator, &result.input_provider)
 		if initialized.kind != .None {
 			if initialized.kind == .Resource_Failure {
 				// A non-nil evaluator after rejected initialization is a cleanup-only
