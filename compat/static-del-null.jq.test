@@ -1,0 +1,12 @@
+# Static deletion from a null input is a no-op for both field and index paths.
+del(.foo)
+null
+null
+
+del(.[0])
+null
+null
+
+del(.foo[0])
+null
+null

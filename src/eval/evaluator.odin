@@ -3025,6 +3025,10 @@ set_path_value :: proc(input, path: ^value.Value, offset: int, replacement: ^val
 @(private)
 delete_path_value :: proc(input, path: ^value.Value, offset: int, allocator: runtime.Allocator) -> (value.Value, bool) {
 	length, length_ok := value.array_length(path); if !length_ok || offset >= length do return value.clone_value(input), true
+	// jq treats deletion through a null path base as a no-op.  Keep this
+	// before component dispatch so both field and numeric static paths preserve
+	// the input null instead of falling into the non-container misuse branch.
+	if value.kind_of(input) == .Null do return value.clone_value(input), true
 	component, component_ok := value.array_element_copy(path, offset); if !component_ok do return {}, false
 	if value.kind_of(&component) == .String {
 		key, key_ok := value.string_borrowed(&component); if !key_ok { _ = value.destroy_value(&component); return {}, false }
