@@ -22,3 +22,11 @@ true
 true
 true
 true
+
+IN((1,2); (2, error("late")))
+null
+true
+
+IN((1,error("late")); (1,2))
+null
+true

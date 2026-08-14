@@ -1044,10 +1044,16 @@ lower_filter :: proc(
 		case .In, .Inside:
 			instruction.opcode = .In if node.kind == .In else .Inside
 			instruction.operands_count = 1
-			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)})); operand_at += 1
 			if node.has_predicate {
-				instruction.operands_count = 2
+				// Keep the second argument as the outer stream.  This preserves
+				// jq's lazy intersection ordering: each value from `s` is tested
+				// against `src`, so a later source value can match before a later
+				// error in `s` is observed.
 				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.predicate)})); operand_at += 1
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)})); operand_at += 1
+				instruction.operands_count = 2
+			} else {
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)})); operand_at += 1
 			}
 		case .IsEmpty:
 			instruction.opcode = .IsEmpty
