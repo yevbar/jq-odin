@@ -517,6 +517,30 @@ every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.
 		seen[node.kind] = true
 	}
 	testing.expect_value(t, syntax.destroy_parser(&until_parser), runtime.Allocator_Error.None)
+	label_parser: syntax.Parser
+	label_source := diagnostic.borrow_source("<label-break-shape>", `label $out | .`)
+	testing.expect(t, syntax.init_parser(&label_parser, label_source, context.allocator))
+	label_parsed := syntax.parse_filter(&label_parser)
+	testing.expect_value(t, label_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&label_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	label_program: program.Program
+	label_lowered := lower_filter(&label_program, syntax.parser_nodes(&label_parser), label_parsed.root, syntax.parser_source(&label_parser), context.allocator)
+	testing.expect_value(t, label_lowered.kind, Lower_Error_Kind.None)
+	testing.expect_value(t, program.destroy_program(&label_program), runtime.Allocator_Error.None)
+	testing.expect_value(t, syntax.destroy_parser(&label_parser), runtime.Allocator_Error.None)
+	break_parser: syntax.Parser
+	break_source := diagnostic.borrow_source("<break-shape>", `break $out`)
+	testing.expect(t, syntax.init_parser(&break_parser, break_source, context.allocator))
+	break_parsed := syntax.parse_filter(&break_parser)
+	testing.expect_value(t, break_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&break_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&break_parser), runtime.Allocator_Error.None)
 	for kind in syntax.Node_Kind {
 		testing.expect(t, seen[kind])
 	}

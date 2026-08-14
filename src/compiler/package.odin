@@ -117,6 +117,10 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.has_if_condition && node.has_if_then && node.has_if_else && no_child && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .While, .Until:
 		return no_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Label:
+		return node.has_child && node.child >= 0 && node.has_name_span && !no_name && no_edges && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Break:
+		return !node.has_child && node.has_name_span && no_edges && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Null:
 		return no_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       node.value == 0 && !node.boolean_value && no_number &&
@@ -351,6 +355,10 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .While, .Until:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Label:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+	case .Break:
+		return true
 	case .Skip:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Nth:
@@ -677,6 +685,12 @@ lower_filter :: proc(
 			if !node_reference_valid(node.if_condition, len(nodes)) || !node_reference_valid(node.if_then, len(nodes)) || !node_reference_valid(node.if_else, len(nodes)) || !checked_count_add(&operand_count, 3) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .While, .Until:
 			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Invalid_AST} }
+		case .Label:
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+			if !node_reference_valid(node.child, len(nodes)) || !name_ok || name_end < name_start || !checked_count_add(&operand_count, 2) || !checked_count_add(&text_count, u64(name_end-name_start)) { return Lower_Outcome{kind=.Invalid_AST} }
+		case .Break:
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+			if !name_ok || name_end < name_start || !checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(name_end-name_start)) { return Lower_Outcome{kind=.Invalid_AST} }
 		case .Strftime, .Strptime:
 			if !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .Try:
@@ -1055,6 +1069,19 @@ lower_filter :: proc(
 				operand_at += 1
 			}
 			instruction.operands_count = 2
+		case .Label:
+			instruction.opcode = .Label
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)})); operand_at += 1
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span); assert(name_ok && name_end >= name_start)
+			name := bytes[name_start:name_end]
+			assert(program.set_text(output, program.Byte_Offset(text_at), name)); assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(name))})); text_at += u32(len(name)); operand_at += 1
+			instruction.operands_count = 2
+		case .Break:
+			instruction.opcode = .Break
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span); assert(name_ok && name_end >= name_start)
+			name := bytes[name_start:name_end]
+			assert(program.set_text(output, program.Byte_Offset(text_at), name)); assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(name))})); text_at += u32(len(name)); operand_at += 1
+			instruction.operands_count = 1
 		case .Static_Field_Add_Number, .Static_Field_Set_Number:
 			instruction.opcode = .Static_Field_Add_Number if node.kind == .Static_Field_Add_Number else .Static_Field_Set_Number
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

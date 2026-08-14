@@ -7092,7 +7092,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				continue
 			}
 
-			switch instruction.opcode {
+				switch instruction.opcode {
+				case .Label, .Break:
+					// The compiler/program contract reserves lexical label operands;
+					// non-local unwind remains a follow-up evaluator lane.
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				case .Path, .Getpath, .Paths, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 			case .Identity:

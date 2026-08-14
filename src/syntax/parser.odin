@@ -267,6 +267,9 @@ Node_Kind :: enum {
 	// While and Until are appended to preserve existing AST discriminants.
 	While,
 	Until,
+	// Label and Break carry lexical label names for non-local control flow.
+	Label,
+	Break,
 }
 
 Node_Id :: distinct int
@@ -1059,6 +1062,39 @@ parse_pipe :: proc(
 				new_term, try_ok := append_node(parser, Node{kind = .Try, span = span, left = expression, right = catch_filter})
 				if !try_ok do return {}, false
 				term = new_term
+			case .Label:
+				label_token := token
+				advance(parser)
+				if !token_is(parser, .Binding) {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				name := parser.lookahead.token
+				advance(parser)
+				if !token_is(parser, .Pipe) {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				advance(parser)
+				body, body_ok := parse_pipe(parser, closing, false)
+				if !body_ok { return {}, false }
+				span, span_ok := spanning(parser, label_token.span, parser.nodes.storage[int(body)].span)
+				assert(span_ok)
+				new_term, label_ok := append_node(parser, Node{kind=.Label, span=span, child=body, has_child=true, name_span=name.value_span, has_name_span=true})
+				if !label_ok { return {}, false }
+				term = new_term
+			case .Break:
+				break_token := token
+				advance(parser)
+				if !token_is(parser, .Binding) {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				name := parser.lookahead.token
+				advance(parser)
+				new_term, break_ok := append_node(parser, Node{kind=.Break, span=break_token.span, name_span=name.value_span, has_name_span=true})
+				if !break_ok { return {}, false }
+				term = new_term
 			case .If:
 				if_token := token
 				advance(parser)
@@ -1363,6 +1399,10 @@ parse_pipe :: proc(
 					kind = .While
 				} else if spelling == "until" {
 					kind = .Until
+				} else if spelling == "label" {
+					kind = .Label
+				} else if spelling == "break" {
+					kind = .Break
 				} else if spelling != "null" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
@@ -1431,6 +1471,44 @@ parse_pipe :: proc(
 					new_term, error_ok := append_node(parser, Node{kind=.Error, span=token.span, child=identity, has_child=true})
 					if !error_ok { return {}, false }
 					term = new_term
+				} else if spelling == "label" {
+					// `label $name | EXP` binds a lexical target to the whole
+					// following filter.  Keep the name as source text; runtime
+					// label identity is resolved by the compiler/evaluator.
+					if !token_is(parser, .Binding) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					name := parser.lookahead.token
+					advance(parser)
+					if !token_is(parser, .Pipe) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					advance(parser)
+					body, body_ok := parse_pipe(parser, closing, false)
+					if !body_ok {
+						return {}, false
+					}
+					span, span_ok := spanning(parser, token.span, parser.nodes.storage[int(body)].span)
+					assert(span_ok)
+					new_term, label_ok := append_node(parser, Node{kind=.Label, span=span, child=body, has_child=true, name_span=name.value_span, has_name_span=true})
+					if !label_ok { return {}, false }
+					term = new_term
+					term_ready = true
+					continue
+				} else if spelling == "break" {
+					if !token_is(parser, .Binding) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					name := parser.lookahead.token
+					advance(parser)
+					new_term, break_ok := append_node(parser, Node{kind=.Break, span=token.span, name_span=name.value_span, has_name_span=true})
+					if !break_ok { return {}, false }
+					term = new_term
+					term_ready = true
+					continue
 				} else if spelling == "range" && token_is(parser, .Open_Paren) {
 					advance(parser)
 					first, first_ok := parse_pipe(parser, .Close_Paren, false)
