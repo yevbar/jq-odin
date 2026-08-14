@@ -1,0 +1,4 @@
+# jq.test:2262 — $__loc__ is a special object-constructor shorthand entry.
+{ a, $__loc__, c }
+{"a":[1,2,3],"b":"foo","c":{"hi":"hey"}}
+{"a":[1,2,3],"__loc__":{"file":"<top-level>","line":1},"c":{"hi":"hey"}}

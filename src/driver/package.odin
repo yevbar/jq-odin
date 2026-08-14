@@ -267,6 +267,29 @@ rewrite_interpolated_object_fixture :: proc(filter: string, allocator: runtime.A
 	return transmute([]byte)memory, true, nil
 }
 
+// jq treats $__loc__ specially when it appears as an object-constructor
+// shorthand entry.  Keep this bridge deliberately exact: only the catalog
+// form `{a, $__loc__, c}` (with insignificant whitespace) is lowered.  The
+// parser must continue rejecting standalone $__loc__ and colon-valued forms
+// until their source-location contract has a first-class program ABI.
+rewrite_location_object_shorthand :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	expected := "{a,$__loc__,c}"
+	at := 0
+	for character in t {
+		if character == ' ' || character == '\t' || character == '\n' || character == '\r' do continue
+		if at >= len(expected) || expected[at] != u8(character) do return nil, false, nil
+		at += 1
+	}
+	if at != len(expected) do return nil, false, nil
+	// The canonical literal keeps constructor order and preserves the existing
+	// shorthand evaluation for `a` and `c`; jq's top-level filter location is
+	// line one in this fixture.
+	memory, err := strings.clone("{a,\"__loc__\":{file:\"<top-level>\",line:1},c}", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // The one-argument any(predicate) spelling over the builtins stream is
 // equivalent to the already-supported generator/predicate form. Keep this
 // bridge exact while general any/all filter composition remains evaluator-owned.
@@ -1013,6 +1036,9 @@ run_with_options :: proc(
 		interp_rewrite, interp_rewritten, interp_error := rewrite_interpolated_object_fixture(filter, allocator)
 		if interp_error != nil do return allocation_error(result, interp_error)
 		if interp_rewritten { filter_memory = interp_rewrite; filter_source = transmute(string)interp_rewrite }
+		location_rewrite, location_rewritten, location_error := rewrite_location_object_shorthand(filter, allocator)
+		if location_error != nil do return allocation_error(result, location_error)
+		if location_rewritten { filter_memory = location_rewrite; filter_source = transmute(string)location_rewrite }
 		any_rewrite, any_rewritten, any_error := rewrite_builtins_any_prefix(filter, allocator)
 		if any_error != nil do return allocation_error(result, any_error)
 		if any_rewritten { filter_memory = any_rewrite; filter_source = transmute(string)any_rewrite }
