@@ -116,6 +116,7 @@ frame_phase :: enum u8 {
 	Try_Start_Catch,
 	Try_Expression_Active,
 	Try_Catch_Active,
+	Label_Active,
 	Fork_Start_Left,
 	Fork_Left_Active,
 	Fork_Start_Right,
@@ -1416,6 +1417,11 @@ capture_composite_instruction :: proc(
 			if !operand_ok || (operand.kind != .Text && operand.kind != .Instruction) do return false
 		}
 		if !child_ok do return false
+	case .Label:
+		if instruction.operands_count != 2 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+		if !child_ok || !name_ok || name_operand.kind != .Text do return false
 		case .Try:
 		if instruction.operands_count != 2 do return false
 		_, expression_ok := child_instruction(storage, instruction, 0)
@@ -1542,6 +1548,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || (instruction.opcode != .Map && instruction.opcode != .Map_Values) do return false
 	case .Try_Expression_Active, .Try_Catch_Active:
 		if frame.mode != .Normal || instruction.opcode != .Try do return false
+	case .Label_Active:
+		if frame.mode != .Normal || instruction.opcode != .Label do return false
 	case .Field_Start_Child, .Field_Child_Active, .Field_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Field_Only || instruction.opcode != .Field do return false
 	case .Index_Key_Active:
@@ -1592,7 +1600,7 @@ resumed_composite_instruction_valid :: proc(
 	else if frame.phase == .Contains_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Trimstr_Start_Child || frame.phase == .Trimstr_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Recurse_Children do expected_operand_count = 0
-	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
+	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active || frame.phase == .Label_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active || frame.phase == .Index_Key_Active {
 		expected_operand_count = 2
 	}
@@ -2876,6 +2884,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Try_Expression_Active, .Try_Catch_Active:
 		frame.phase = .Complete
+	case .Label_Active:
+		frame.phase = .Complete
 	case .Fork_Left_Active:
 		frame.phase = .Fork_Start_Right
 	case .Fork_Right_Active:
@@ -3178,6 +3188,47 @@ raise_runtime :: proc(
 }
 
 @(private)
+label_operand_names :: proc(storage: ^evaluator_storage, frame: ^eval_frame, instruction: program.Instruction) -> (string, bool) {
+	if instruction.opcode != .Label || instruction.operands_count != 2 do return "", false
+	operand, ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+	if !ok || operand.kind != .Text do return "", false
+	return program.operand_text(storage.compiled, operand)
+}
+
+@(private)
+break_target :: proc(storage: ^evaluator_storage, producer: int, target_name: string) -> (int, bool) {
+	current := producer
+	for current >= 0 {
+		frame := &storage.frames[current]
+		instruction, ok := program.program_instruction(storage.compiled, frame.instruction)
+		if !ok do return -1, false
+		if instruction.opcode == .Label {
+			name, name_ok := label_operand_names(storage, frame, instruction)
+			if !name_ok do return -1, false
+			if name == target_name do return current, true
+		}
+		current = frame.parent
+	}
+	return -1, true
+}
+
+@(private)
+unwind_break :: proc(storage: ^evaluator_storage, producer: int, target_name: string) -> (Step_Result, bool) {
+	target, search_ok := break_target(storage, producer, target_name)
+	if !search_ok do return begin_terminal_misuse(storage, .Malformed_Program), true
+	if target < 0 {
+		message, message_error := strings.concatenate([]string{"$*label-", target_name, " is not defined"}, storage.allocator)
+		if message_error != nil do return resource_step(message_error), true
+		return raise_runtime(storage, producer, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&storage.frames[producer].input), span={start=0,end=0}, key=message})
+	}
+	free_error := destroy_frames_to(storage, target+1)
+	if free_error != nil do return resource_step(free_error), true
+	storage.frames[target].phase = .Complete
+	if !notify_exhausted(storage, target) do return begin_terminal_misuse(storage, .Malformed_Program), true
+	return {}, false
+}
+
+@(private)
 propagate_output :: proc(
 	storage: ^evaluator_storage,
 	producer: int,
@@ -3352,6 +3403,8 @@ propagate_output :: proc(
 		case .Try_Expression_Active:
 			// A try expression may be a generator. Preserve the active phase for
 			// subsequent outputs; notify_exhausted transitions it to Complete.
+			current = parent
+		case .Label_Active:
 			current = parent
 		case .Sequence_Left_Active:
 			child, ok := child_instruction(storage, instruction, 1)
@@ -7093,10 +7146,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			}
 
 				switch instruction.opcode {
-				case .Label, .Break:
-					// The compiler/program contract reserves lexical label operands;
-					// non-local unwind remains a follow-up evaluator lane.
-					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				case .Break:
+					if instruction.operands_count != 1 { return begin_terminal_misuse(storage, .Malformed_Program) }
+					operand, operand_ok := program.program_operand(storage.compiled, instruction.operands_start)
+					name, name_ok := program.operand_text(storage.compiled, operand)
+					if !operand_ok || operand.kind != .Text || !name_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+					result, ready := unwind_break(storage, index, name)
+					if ready do return result
+					continue
 				case .Path, .Getpath, .Paths, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 			case .Identity:
@@ -8847,6 +8904,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					)
 				}
 				frame.phase = .Unary_Active
+			case .Label:
+				if instruction.operands_count != 2 { return begin_terminal_misuse(storage, .Malformed_Program) }
+				if !capture_composite_instruction(storage, frame, instruction) { return begin_terminal_misuse(storage, .Malformed_Program) }
+				child, child_ok := child_instruction(storage, instruction, 0)
+				input_copy := value.clone_value(&frame.input)
+				if !child_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, index, &input_copy) {
+					return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+				}
+				frame.phase = .Label_Active
 			case .Sequence:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)

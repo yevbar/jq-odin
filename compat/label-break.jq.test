@@ -1,0 +1,7 @@
+[ label $if | range(10) | ., (select(. == 5) | break $if) ]
+null
+[0,1,2,3,4,5]
+
+label $here | .[] | if . > 1 then break $here else . end
+[1,2,3]
+1

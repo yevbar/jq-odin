@@ -1,6 +1,6 @@
 # Label/break staged contract
 
-Status: staged parser/program contract; evaluator unwind remains unimplemented.
+Status: bounded semantic slice; nested label unwind through ordinary generators and try is implemented. Foreach/constructor unwind remains deferred.
 
 ## Evidence
 
@@ -10,6 +10,10 @@ The jq oracle exercises lexical non-local control flow in `upstream/jq/tests/jq.
 
 `syntax.Node_Kind.Label` owns a body edge and a copied lexical `name_span`; `Break` owns only its lexical name. The compiler lowers these to appended `program.Opcode.Label`/`Break` instructions. Label operands are `[Instruction body, Text name]`; break operands are `[Text name]`. Program structure validation and compiler graph/scope validation enforce those widths and edges. The compiler shape test parses and lowers `label $out | .` and `break $out`, including keyword-safe names because names are copied as source text rather than treated as identifiers.
 
+## Semantic slice
+
+The evaluator now activates a label frame, forwards ordinary body outputs, and resolves `break` by nearest lexical label name. It destroys all frames above the target before completing that label, so comma/fork/select pipelines and `try` frames are unwound without leaking child values. `compat/label-break.jq.test` covers jq.test 315, 319, and 2243-shaped behavior.
+
 ## Explicit gap
 
-The evaluator currently returns `Unsupported_Opcode` for both opcodes. No compatibility case is counted as passing by this decision. A follow-up evaluator lane must add an active-label stack and non-local unwind that crosses fork, constructor, foreach, and try frames, and must preserve jq's unresolved-label diagnostic. This staged contract is intentionally not a claim of jq label/break parity.
+The label frame currently unwinds ordinary generator/fork/try paths. A follow-up evaluator lane must exercise and repair constructor and foreach frame cleanup (jq.test 333), verify nested label shadowing, and move unresolved-label resolution to compile time so jq's exact non-catchable diagnostic is reproduced. This decision is not a claim of complete label/break parity.
