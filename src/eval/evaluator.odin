@@ -109,6 +109,7 @@ frame_phase :: enum u8 {
 	Nth_Active,
 	Map_Start,
 	Map_Child_Active,
+	Contains_Child_Active,
 	Try_Start_Expression,
 	Try_Start_Catch,
 	Try_Expression_Active,
@@ -1354,6 +1355,10 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
+	case .Contains:
+		if instruction.operands_count != 1 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
 	case .Field:
 		if instruction.operands_count != 2 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1505,6 +1510,8 @@ resumed_composite_instruction_valid :: proc(
 		if (frame.mode != .Normal && frame.mode != .Field_Only) || (instruction.opcode != .Field && instruction.opcode != .Range && instruction.opcode != .Foreach) {
 			return false
 		}
+	case .Contains_Child_Active:
+		if frame.mode != .Normal || instruction.opcode != .Contains do return false
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
 	case .Slice_Start_Child, .Slice_Child_Active, .Slice_Result_Active:
@@ -1540,6 +1547,7 @@ resumed_composite_instruction_valid :: proc(
 	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty || frame.phase == .Add_Active || frame.phase == .Add_Result || frame.phase == .Add_Empty do expected_operand_count = 1
 	else if frame.phase == .Limit_Active || frame.phase == .Skip_Active || frame.phase == .Nth_Active do expected_operand_count = 2
 	else if frame.phase == .Map_Start || frame.phase == .Map_Child_Active do expected_operand_count = 1
+	else if frame.phase == .Contains_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Recurse_Children do expected_operand_count = 0
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active || frame.phase == .Index_Key_Active {
@@ -2728,6 +2736,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Map_Child_Active:
 		frame.phase = .Map_Start
+	case .Contains_Child_Active:
+		frame.phase = .Complete
 	case .Try_Expression_Active, .Try_Catch_Active:
 		frame.phase = .Complete
 	case .Fork_Left_Active:
@@ -3202,6 +3212,23 @@ propagate_output :: proc(
 			return {}, false
 		case .Sequence_Right_Active:
 			current = parent
+		case .Contains_Child_Active:
+			output, runtime_kind := contains_result(&frame.input, owned)
+			if runtime_kind != .None {
+				key, key_error := contains_type_error_runtime_key(&frame.input, owned, storage.allocator)
+				_ = value.destroy_value(owned)
+				if key_error != nil do return resource_step(key_error), true
+				err := Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key=key}
+				result, ready := raise_runtime(storage, current, err)
+				if len(key) > 0 {
+					free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator)
+					if free_error != nil do return resource_step(free_error), true
+				}
+				if ready do return result, true
+				return {}, false
+			}
+			_ = value.destroy_value(owned)
+			return propagate_output(storage, parent, &output)
 		case .Loop_Condition_Active, .Loop_Update_Active:
 			if value.kind_of(&frame.loop_value) != .Invalid do return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
 			frame.loop_value = value.take_value(owned)
@@ -4734,6 +4761,28 @@ binary_type_error_runtime_key :: proc(
 	   strings.write_string(&builder, op) != len(op) {
 		strings.builder_destroy(&builder)
 		return "", nil
+	}
+	return strings.to_string(builder), nil
+}
+
+@(private)
+contains_type_error_runtime_key :: proc(left, right: ^value.Value, allocator: runtime.Allocator) -> (string, runtime.Allocator_Error) {
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil do return "", init_error
+	left_kind := runtime_value_kind_name(value.kind_of(left))
+	right_kind := runtime_value_kind_name(value.kind_of(right))
+	left_ok := strings.write_string(&builder, left_kind) == len(left_kind)
+	left_error: runtime.Allocator_Error
+	if left_ok { left_ok, left_error = strings.write_string(&builder, " (") == 2, nil }
+	if left_error != nil || !left_ok { strings.builder_destroy(&builder); return "", left_error }
+	left_ok, left_error = binary_append_error_operand(&builder, left, allocator)
+	if left_error != nil || !left_ok || strings.write_string(&builder, ") and ") != 6 || strings.write_string(&builder, right_kind) != len(right_kind) || strings.write_string(&builder, " (") != 2 {
+		strings.builder_destroy(&builder); return "", left_error
+	}
+	right_ok, right_error := binary_append_error_operand(&builder, right, allocator)
+	if right_error != nil || !right_ok || strings.write_string(&builder, ") cannot have their containment checked") != len(") cannot have their containment checked") {
+		strings.builder_destroy(&builder); return "", right_error
 	}
 	return strings.to_string(builder), nil
 }
@@ -7447,6 +7496,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
 				child, child_ok := child_instruction(storage, instruction, 0)
+				child_program_instruction, child_program_ok := program.program_instruction(storage.compiled, child)
+				if !child_ok || !child_program_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				if !child_program_instruction.has_literal {
+					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+					input_copy := value.clone_value(&frame.input)
+					if value.kind_of(&input_copy) == .Invalid do return resource_step(.Out_Of_Memory)
+					if storage.frame_count == len(storage.frames) {
+						grow_error := grow_frames(storage)
+						if grow_error != nil { _ = value.destroy_value(&input_copy); return resource_step(grow_error) }
+						frame = &storage.frames[index]
+					}
+					if !push_frame(storage, child, index, &input_copy) { _ = value.destroy_value(&input_copy); return begin_terminal_misuse(storage, .Malformed_Program) }
+					frame = &storage.frames[index]
+					frame.phase = .Contains_Child_Active
+					continue
+				}
 				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
 				needle: value.Value
 				needle_error: value.Error

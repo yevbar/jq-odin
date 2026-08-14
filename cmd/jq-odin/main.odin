@@ -237,6 +237,23 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "\"\n") && ok
 		return ok
 	}
+	if err.kind == .Runtime && err.runtime_kind == .Cannot_Iterate && len(err.runtime_key) > 0 {
+		// Iterator diagnostics carry their complete jq message in runtime_key.
+		// They are not typed string-index failures; keep the message intact for
+		// uncaught errors while try/catch continues to consume the same key.
+		path := err.runtime_input_path
+		if len(path) == 0 || path == "-" do path = "<stdin>"
+		line := err.runtime_input_line
+		if line <= 0 do line = 1
+		ok := write_all(os.stderr, "jq: error (at ")
+		ok = write_all(os.stderr, path) && ok
+		ok = write_all(os.stderr, ":") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, "): ") && ok
+		ok = write_all(os.stderr, err.runtime_key) && ok
+		ok = write_all(os.stderr, "\n") && ok
+		return ok
+	}
 	if err.kind == .Runtime && err.runtime_kind == .User_Error {
 		path := err.runtime_input_path
 		if len(path) == 0 || path == "-" do path = "<stdin>"

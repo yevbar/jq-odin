@@ -1639,7 +1639,8 @@ parse_pipe :: proc(
 					close := parser.lookahead.token
 					advance(parser)
 					argument_node := parser.nodes.storage[int(argument)]
-					stream_selector := spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values"
+					contains_dynamic := spelling == "contains" && argument_node.kind != .Number && argument_node.kind != .String && argument_node.kind != .Boolean && argument_node.kind != .Null && argument_node.kind != .Nan && !(argument_node.kind == .Identity && argument_node.has_value)
+					stream_selector := spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values" || contains_dynamic
 					bsearch_comma := spelling == "bsearch" && argument_node.kind == .Comma
 					join_comma := spelling == "join" && argument_node.kind == .Comma
 					flatten_comma := spelling == "flatten" && argument_node.kind == .Comma
