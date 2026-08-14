@@ -6,12 +6,12 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `03e8b694`, the authoritative selected catalog measurement
-is **445/522 passed, 77 failed, 0 harness errors** (`/tmp/coverage-reduce-pattern.json`).
-The two-case gain over the prior 443/522 checkpoint covers bounded reduce
-destructuring in `upstream/jq/tests/jq.test:894,898`; the focused shard is
-`compat/reduce-pattern.jq.test` and the implementation decision is
-`docs/decisions/0316-reduce-pattern-binding.md`.
+At integration head `65ae1f2f`, the authoritative selected catalog measurement
+is **449/522 passed, 73 failed, 0 harness errors** (`/tmp/coverage-nested-binding.json`).
+The four-case gain over the prior 445/522 checkpoint covers bounded ordinary
+nested binding destructuring in `upstream/jq/tests/jq.test:524,530,920,924`;
+the focused shard is `compat/nested-binding-pattern.jq.test` and the
+implementation decision is `docs/decisions/0318-nested-binding-pattern.md`.
 
 ## Current evidence
 
