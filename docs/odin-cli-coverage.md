@@ -6,12 +6,12 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `66ae55e9`, the authoritative selected catalog measurement
-is **443/522 passed, 79 failed, 0 harness errors** (`/tmp/coverage-foreach-pattern-final.json`).
-The two-case gain over the prior 441/522 checkpoint covers bounded generator
-destructuring in `upstream/jq/tests/jq.test:341,345`; the focused shard is
-`compat/foreach-pattern.jq.test` and the implementation decision is
-`docs/decisions/0315-foreach-pattern-binding.md`.
+At integration head `03e8b694`, the authoritative selected catalog measurement
+is **445/522 passed, 77 failed, 0 harness errors** (`/tmp/coverage-reduce-pattern.json`).
+The two-case gain over the prior 443/522 checkpoint covers bounded reduce
+destructuring in `upstream/jq/tests/jq.test:894,898`; the focused shard is
+`compat/reduce-pattern.jq.test` and the implementation decision is
+`docs/decisions/0316-reduce-pattern-binding.md`.
 
 ## Current evidence
 
