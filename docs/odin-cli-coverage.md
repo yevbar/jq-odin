@@ -6,12 +6,16 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `e3230508`, the authoritative selected catalog measurement
-is **452/522 passed, 70 failed, 0 harness errors** (`/tmp/coverage-dynamic-index-dot.json`).
-The one-case gain over the prior 451/522 checkpoint covers immediate identity
-dynamic indexing in `upstream/jq/tests/jq.test:1703`; the focused shard is
-`compat/dynamic-index-dot.jq.test` and the implementation decision is
-`docs/decisions/0321-dynamic-index-dot-parser.md`.
+At integration head `52c58724`, the authoritative selected catalog measurement
+is **455/522 passed, 67 failed, 0 harness errors**
+(`/tmp/coverage-integration-52c58724.json`). The three-case gain over the prior
+452/522 checkpoint covers nested parenthesized `try`/`catch` stream handling in
+`upstream/jq/tests/jq.test:2308,2312,2317`; the focused shard is
+`compat/nested-try-streams.jq.test` and the implementation decision is
+`docs/decisions/0323-nested-try-pipe-state.md`. Immediate binary dynamic index
+keys remain covered by `compat/dynamic-index-arithmetic.jq.test` and decision
+`docs/decisions/0322-dynamic-index-arithmetic.md`. Parenthesized/filter-valued
+index arithmetic remains explicitly deferred.
 
 ## Current evidence
 
