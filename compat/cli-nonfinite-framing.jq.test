@@ -1,0 +1,4 @@
+# jq's CLI JSON framer accepts payload-free nonfinite spellings.
+.[] = 1
+[1,null,Infinity,-Infinity,NaN,-NaN]
+[1,1,1,1,1,1]

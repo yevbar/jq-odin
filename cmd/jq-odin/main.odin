@@ -542,7 +542,7 @@ json_framer :: struct {
 	escaped: bool,
 	unicode_remaining: u8,
 	scalar_state: scalar_state,
-	literal: [5]byte,
+	literal: [8]byte,
 	literal_length: u8,
 	literal_index: u8,
 }
@@ -682,12 +682,12 @@ start_scalar :: proc(framer: ^json_framer, value: byte) -> bool {
 	case '1'..='9': framer.scalar_state = .Integer
 	case 't':
 		framer.scalar_state = .Literal
-		framer.literal = {'t', 'r', 'u', 'e', 0}
+		framer.literal = {'t', 'r', 'u', 'e', 0, 0, 0, 0}
 		framer.literal_length = 4
 		framer.literal_index = 1
 	case 'f':
 		framer.scalar_state = .Literal
-		framer.literal = {'f', 'a', 'l', 's', 'e'}
+		framer.literal = {'f', 'a', 'l', 's', 'e', 0, 0, 0}
 		framer.literal_length = 5
 		framer.literal_index = 1
 	case 'n':
@@ -695,6 +695,16 @@ start_scalar :: proc(framer: ^json_framer, value: byte) -> bool {
 		// its numeric parser. Keep the bounded CLI framer exact for the
 		// payload-free lowercase NaN spelling supported by this slice.
 		framer.scalar_state = .N_Prefix
+	case 'N':
+		framer.scalar_state = .Literal
+		framer.literal = {'N', 'a', 'N', 0, 0, 0, 0, 0}
+		framer.literal_length = 3
+		framer.literal_index = 1
+	case 'I':
+		framer.scalar_state = .Literal
+		framer.literal = {'I', 'n', 'f', 'i', 'n', 'i', 't', 'y'}
+		framer.literal_length = 8
+		framer.literal_index = 1
 	case: return false
 	}
 	return true
@@ -811,11 +821,11 @@ next_value_end :: proc(
 			if framer.scalar_state == .N_Prefix {
 				switch byte_value {
 				case 'u':
-					framer.literal = {'n', 'u', 'l', 'l', 0}
+					framer.literal = {'n', 'u', 'l', 'l', 0, 0, 0, 0}
 					framer.literal_length = 4
 					framer.literal_index = 2
 				case 'a':
-					framer.literal = {'n', 'a', 'n', 0, 0}
+					framer.literal = {'n', 'a', 'n', 0, 0, 0, 0, 0}
 					framer.literal_length = 3
 					framer.literal_index = 2
 				case:
@@ -830,6 +840,16 @@ next_value_end :: proc(
 					framer.scalar_state = .Zero
 				} else if byte_value >= '1' && byte_value <= '9' {
 					framer.scalar_state = .Integer
+				} else if byte_value == 'N' {
+					framer.literal = {'N', 'a', 'N', 0, 0, 0, 0, 0}
+					framer.literal_length = 3
+					framer.literal_index = 1
+					framer.scalar_state = .Literal
+				} else if byte_value == 'I' {
+					framer.literal = {'I', 'n', 'f', 'i', 'n', 'i', 't', 'y'}
+					framer.literal_length = 8
+					framer.literal_index = 1
+					framer.scalar_state = .Literal
 				} else do return index+1, .Malformed
 			case .Zero:
 				if byte_value == '.' {
