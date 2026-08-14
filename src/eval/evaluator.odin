@@ -1388,6 +1388,111 @@ foreach_seed_values :: proc(storage: ^evaluator_storage, index: program.Instruct
 	return result, true
 }
 
+// foreach_pattern_value reads one variable declared by a synthetic Binding
+// generator.  The metadata is intentionally limited to one/two array slots or
+// simple object entries; ordinary Binding frames remain unchanged.
+foreach_pattern_array_value :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, item: ^value.Value, wanted: string, slot: ^int) -> (value.Value, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok do return {}, false
+	if instruction.opcode == .Parenthesized {
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return {}, false
+		return foreach_pattern_array_value(storage, child, item, wanted, slot)
+	}
+	if instruction.opcode == .Fork || instruction.opcode == .Sequence {
+		left, left_ok := child_instruction(storage, instruction, 0)
+		right, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok do return {}, false
+		found, found_ok := foreach_pattern_array_value(storage, left, item, wanted, slot)
+		if found_ok do return found, true
+		return foreach_pattern_array_value(storage, right, item, wanted, slot)
+	}
+	if instruction.opcode != .Variable do return {}, false
+	operand, operand_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	name, name_ok := program.operand_text(storage.compiled, operand)
+	if !operand_ok || !name_ok || operand.kind != .Text do return {}, false
+	if name == wanted {
+		if value.kind_of(item) == .Array {
+			length, length_ok := value.array_length(item)
+			if !length_ok do return {}, false
+		if slot^ < length {
+				result, result_ok := value.array_element_copy(item, slot^)
+				if !result_ok do return {}, false
+				return result, true
+			}
+		}
+		return value.null_value(), true
+	}
+	slot^ += 1
+	return {}, false
+}
+
+foreach_pattern_value :: proc(storage: ^evaluator_storage, pattern_index: program.Instruction_Index, item: ^value.Value, wanted: string) -> (value.Value, bool) {
+	pattern, pattern_ok := program.program_instruction(storage.compiled, pattern_index)
+	if !pattern_ok do return {}, false
+	if pattern.opcode == .Array && pattern.operands_count == 1 {
+		child, child_ok := child_instruction(storage, pattern, 0)
+		if !child_ok do return {}, false
+		slot := 0
+		return foreach_pattern_array_value(storage, child, item, wanted, &slot)
+	}
+	if pattern.opcode != .Object || pattern.operands_count == 0 || pattern.operands_count % 2 != 0 do return {}, false
+	for offset := u32(0); offset < u32(pattern.operands_count); offset += 2 {
+		key_operand, key_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(pattern.operands_start)+u32(offset)))
+		value_operand, value_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(pattern.operands_start)+u32(offset+1)))
+		if !key_ok || !value_ok || key_operand.kind != .Text || value_operand.kind != .Instruction do return {}, false
+		key, key_text_ok := program.operand_text(storage.compiled, key_operand)
+		variable, variable_ok := program.program_instruction(storage.compiled, value_operand.instruction)
+		if !key_text_ok || !variable_ok || variable.opcode != .Variable do return {}, false
+		name_operand, name_ok := program.program_operand(storage.compiled, variable.operands_start)
+		name, name_text_ok := program.operand_text(storage.compiled, name_operand)
+		if !name_ok || !name_text_ok || name_operand.kind != .Text do return {}, false
+		if name == wanted {
+			if value.kind_of(item) == .Object {
+				result, found := value.object_get_copy(item, key)
+				if found do return result, true
+			}
+			return value.null_value(), true
+		}
+	}
+	return {}, false
+}
+
+foreach_pattern_update_value :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, seed, item: ^value.Value, pattern_index: program.Instruction_Index) -> (value.Value, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok do return {}, false
+	if instruction.opcode == .Identity && !instruction.has_literal do return value.clone_value(seed), true
+	if instruction.opcode == .Parenthesized {
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return {}, false
+		return foreach_pattern_update_value(storage, child, seed, item, pattern_index)
+	}
+	if instruction.opcode == .Variable {
+		operand, operand_ok := program.program_operand(storage.compiled, instruction.operands_start)
+		name, name_ok := program.operand_text(storage.compiled, operand)
+		if !operand_ok || !name_ok || operand.kind != .Text do return {}, false
+		return foreach_pattern_value(storage, pattern_index, item, name)
+	}
+	if instruction.opcode == .Identity && instruction.has_literal {
+		literal, literal_error, cleanup := literal_value(storage, instruction)
+		if literal_error != .None || cleanup != nil do return {}, false
+		return literal, true
+	}
+	if instruction.opcode == .Add || instruction.opcode == .Subtract || instruction.opcode == .Multiply {
+		left_index, left_ok := child_instruction(storage, instruction, 0)
+		right_index, right_ok := child_instruction(storage, instruction, 1)
+		if !left_ok || !right_ok do return {}, false
+		left_value, left_value_ok := foreach_pattern_update_value(storage, left_index, seed, item, pattern_index)
+		right_value, right_value_ok := foreach_pattern_update_value(storage, right_index, seed, item, pattern_index)
+		if !left_value_ok || !right_value_ok { _ = value.destroy_value(&left_value); _ = value.destroy_value(&right_value); return {}, false }
+		result, runtime_kind, allocator_error := apply_binary(instruction.opcode, &left_value, &right_value, instruction.span, storage.allocator)
+		_ = value.destroy_value(&left_value); _ = value.destroy_value(&right_value)
+		if allocator_error != nil || runtime_kind != .None { _ = value.destroy_value(&result); return {}, false }
+		return result, true
+	}
+	return {}, false
+}
+
 // foreach_extract_value supports the bounded arithmetic extractor used by the
 // three-clause compatibility lane (`.*2`). The accumulator is the input to the
 // EXTRACT filter; broader generator-valued extraction remains evaluator-owned.
@@ -1402,6 +1507,17 @@ foreach_extract_value :: proc(storage: ^evaluator_storage, index: program.Instru
 	}
 	if instruction.opcode == .Index {
 		return foreach_static_index_extract(storage, instruction, input)
+	}
+	if instruction.opcode == .Negate {
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return {}, false
+		inner, inner_ok := foreach_extract_value(storage, child, input)
+		if !inner_ok do return {}, false
+		result, negate_error, negate_ok := value.number_negate(&inner, storage.allocator)
+		_ = value.destroy_value(&inner)
+		if negate_error != nil do _ = value.destroy_constructor_error(&negate_error)
+		if !negate_ok { _ = value.destroy_value(&result); return {}, false }
+		return result, true
 	}
 	if instruction.opcode != .Multiply do return {}, false
 	left_index, left_ok := child_instruction(storage, instruction, 0)
@@ -8914,6 +9030,18 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				init_index, init_ok := child_instruction(storage, instruction, 1)
 				update_index, update_ok := child_instruction(storage, instruction, 2)
 				generator, generator_valid := program.program_instruction(storage.compiled, generator_index)
+				pattern_index: program.Instruction_Index
+				has_pattern := false
+				if generator_valid && generator.opcode == .Binding && generator.operands_count == 3 {
+					candidate_pattern, pattern_ok := child_instruction(storage, generator, 1)
+					pattern_instruction, pattern_valid := program.program_instruction(storage.compiled, candidate_pattern)
+					if pattern_ok && pattern_valid && (pattern_instruction.opcode == .Array || pattern_instruction.opcode == .Object) {
+						pattern_index = candidate_pattern
+						has_pattern = true
+						generator_index, generator_ok = child_instruction(storage, generator, 0)
+						generator, generator_valid = program.program_instruction(storage.compiled, generator_index)
+					}
+				}
 				generator_negated := false
 				if generator_valid && generator.opcode == .Negate {
 					generator_child, generator_child_ok := child_instruction(storage, generator, 0)
@@ -9025,6 +9153,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&decremented); _ = value.destroy_value(&next_seed); _ = value.destroy_value(&item); _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
 						_, append_error = value.array_append_take(&next_seed, &item)
 						if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&item); _ = value.destroy_value(&next_seed); _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+						_ = value.destroy_value(&seed)
+						seed = next_seed
+					} else if has_pattern {
+						next_seed, pattern_ok := foreach_pattern_update_value(storage, update_index, &seed, &item, pattern_index)
+						_ = value.destroy_value(&item)
+						if !pattern_ok {
+							_ = value.destroy_value(&seed)
+							if has_cartesian do _ = value.destroy_value(&cartesian_values)
+							_ = value.destroy_value(&items)
+							return begin_terminal_misuse(storage, .Unsupported_Opcode)
+						}
 						_ = value.destroy_value(&seed)
 						seed = next_seed
 					} else if update.opcode == .Variable {

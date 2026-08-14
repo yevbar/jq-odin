@@ -335,6 +335,65 @@ binding_name_equal :: proc(source: diagnostic.Source, left, right: diagnostic.Sp
 	return bytes[ls:le] == bytes[rs:re]
 }
 
+// validate_foreach_pattern accepts the deliberately narrow pattern metadata
+// carried by a synthetic Binding generator.  The variables in this node are
+// declarations, not reads, so they must not be checked against the enclosing
+// lexical scope like an ordinary Binding body.
+validate_foreach_pattern :: proc(nodes: []syntax.Node, id: syntax.Node_Id) -> bool {
+	if !node_reference_valid(id, len(nodes)) do return false
+	node := nodes[int(id)]
+	if node.form != .Kinded || !node.has_value do return false
+	if node.container_kind == .Array {
+		entries := node.value
+		if !node_reference_valid(entries, len(nodes)) do return false
+		entry := nodes[int(entries)]
+		if entry.kind == .Variable do return true
+		if entry.kind != .Comma || !node_reference_valid(entry.left, len(nodes)) || !node_reference_valid(entry.right, len(nodes)) do return false
+		return nodes[int(entry.left)].kind == .Variable && nodes[int(entry.right)].kind == .Variable
+	}
+	if node.container_kind == .Object {
+		entry_id := node.value
+		count := 0
+		for entry_id >= 0 {
+			if count >= 2 || !node_reference_valid(entry_id, len(nodes)) do return false
+			entry := nodes[int(entry_id)]
+			if entry.kind != .Field || entry.container_kind != .Object_Entry || !entry.has_key || !entry.has_value || !node_reference_valid(entry.key, len(nodes)) || !node_reference_valid(entry.value, len(nodes)) do return false
+			key := nodes[int(entry.key)]
+			val := nodes[int(entry.value)]
+			if key.kind != .Field || !key.has_name_span || val.kind != .Variable || !val.has_name_span do return false
+			count += 1
+			entry_id = entry.next if entry.has_next else -1
+		}
+		return count > 0
+	}
+	return false
+}
+
+append_foreach_pattern_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, scopes: []diagnostic.Span, depth: ^int) -> bool {
+	if !validate_foreach_pattern(nodes, id) do return false
+	node := nodes[int(id)]
+	if node.container_kind == .Array {
+		entry := nodes[int(node.value)]
+		if entry.kind == .Variable {
+			if depth^ >= len(scopes) do return false
+			scopes[depth^] = entry.name_span; depth^ += 1
+		} else {
+			if depth^ + 2 > len(scopes) do return false
+			scopes[depth^] = nodes[int(entry.left)].name_span; depth^ += 1
+			scopes[depth^] = nodes[int(entry.right)].name_span; depth^ += 1
+		}
+		return true
+	}
+	entry_id := node.value
+	for entry_id >= 0 {
+		entry := nodes[int(entry_id)]
+		if depth^ >= len(scopes) do return false
+		scopes[depth^] = nodes[int(entry.value)].name_span; depth^ += 1
+		entry_id = entry.next if entry.has_next else -1
+	}
+	return true
+}
+
 @(private="package")
 validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source: diagnostic.Source, scopes: []diagnostic.Span, depth, budget: int) -> bool {
 	// A malformed syntax arena may contain cycles. Bound the non-allocating
@@ -412,11 +471,34 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		scopes[depth] = node.name_span
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth+1, next_budget)
 	case .Reduce, .Foreach:
-		if !validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) || !validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget) do return false
+		generator_pattern := false
+		if node.kind == .Foreach && node_reference_valid(node.left, len(nodes)) {
+			generator := nodes[int(node.left)]
+			if generator.kind == .Binding && node_reference_valid(generator.right, len(nodes)) {
+				pattern := nodes[int(generator.right)]
+				if (pattern.container_kind == .Array || pattern.container_kind == .Object) && pattern.has_value {
+					if !validate_binding_scopes(nodes, generator.left, source, scopes, depth, next_budget) || !validate_foreach_pattern(nodes, generator.right) do return false
+					generator_pattern = true
+				}
+			}
+		}
+		if !generator_pattern && !validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) do return false
+		if !validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget) do return false
 		if depth >= len(scopes) do return false
 		scopes[depth] = node.name_span
-		if !validate_binding_scopes(nodes, node.reduce_update, source, scopes, depth+1, next_budget) do return false
-		if node.kind == .Foreach && node.has_reduce_extract do return validate_binding_scopes(nodes, node.reduce_extract, source, scopes, depth+1, next_budget)
+		next_depth := depth + 1
+		if node.kind == .Foreach && node_reference_valid(node.left, len(nodes)) {
+			generator := nodes[int(node.left)]
+			if generator.kind == .Binding && node_reference_valid(generator.right, len(nodes)) {
+				pattern := nodes[int(generator.right)]
+				if (pattern.container_kind == .Array || pattern.container_kind == .Object) && pattern.has_value {
+					next_depth = depth
+					if !append_foreach_pattern_scopes(nodes, generator.right, scopes, &next_depth) do return false
+				}
+			}
+		}
+		if !validate_binding_scopes(nodes, node.reduce_update, source, scopes, next_depth, next_budget) do return false
+		if node.kind == .Foreach && node.has_reduce_extract do return validate_binding_scopes(nodes, node.reduce_extract, source, scopes, next_depth, next_budget)
 		return true
 	case .Parenthesized, .Optional, .Negate:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)

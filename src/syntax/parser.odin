@@ -2299,6 +2299,25 @@ parse_pipe :: proc(
 						return {}, false
 					}
 				}
+				if token_is(parser, .Open_Paren) {
+					// Foreach keeps the pattern as the right child of a synthetic
+					// Binding generator. The evaluator can then materialize the
+					// original producer while retaining the pattern metadata without
+					// changing the legacy four/five-operand Foreach ABI.
+					first := parser.nodes.storage[int(variables[0])]
+					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, pattern_node.span); assert(bound_span_ok)
+					bound, bound_ok := append_node(parser, Node{kind=.Binding, span=bound_span, left=left, right=pattern, name_span=first.name_span, has_name_span=true})
+					if !bound_ok do return {}, false
+					parser.pending_reduce_name = first.name_span
+					parser.has_pending_reduce = true
+					if pipe_root != invalid_id {
+						tail := &parser.nodes.storage[int(pipe_tail)]
+						tail.right = bound
+						tail.has_child = false
+						return pipe_root, true
+					}
+					return bound, true
+				}
 				if !token_is(parser, .Pipe) {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
@@ -2385,7 +2404,26 @@ parse_pipe :: proc(
 					count += 1
 					entry_id = entry.next if entry.has_next else Node_Id(-1)
 				}
-				if count == 0 || !token_is(parser, .Pipe) {
+				if count == 0 {
+					fail_from_lookahead(parser, .Expression)
+					return {}, false
+				}
+				if token_is(parser, .Open_Paren) {
+					first := parser.nodes.storage[int(variables[0])]
+					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, pattern_node.span); assert(bound_span_ok)
+					bound, bound_ok := append_node(parser, Node{kind=.Binding, span=bound_span, left=left, right=pattern, name_span=first.name_span, has_name_span=true})
+					if !bound_ok do return {}, false
+					parser.pending_reduce_name = first.name_span
+					parser.has_pending_reduce = true
+					if pipe_root != invalid_id {
+						tail := &parser.nodes.storage[int(pipe_tail)]
+						tail.right = bound
+						tail.has_child = false
+						return pipe_root, true
+					}
+					return bound, true
+				}
+				if !token_is(parser, .Pipe) {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
