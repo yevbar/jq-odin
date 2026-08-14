@@ -26,6 +26,37 @@ Run_Error_Kind :: enum u8 {
 	Misuse,
 }
 
+// Transitional driver-only bridge for the scalar projections whose metadata
+// object shape is not yet represented in the syntax/program ABI.
+modulemeta_mode :: enum u8 { None, Dependency_Count, Definition_Count }
+
+detect_modulemeta_mode :: proc(filter: string) -> modulemeta_mode {
+	switch strings.trim_space(filter) {
+	case "modulemeta | .deps | length": return .Dependency_Count
+	case "modulemeta | .defs | length": return .Definition_Count
+	}
+	return .None
+}
+
+modulemeta_count :: proc(input: ^value.Value, paths: []string, mode: modulemeta_mode, allocator: runtime.Allocator) -> (value.Value, Module_Outcome) {
+	name, ok := value.string_borrowed(input)
+	if !ok do return {}, {kind = .Unsupported_Syntax}
+	search_paths := paths
+	if len(search_paths) == 0 do search_paths = []string{"."}
+	bytes, read_outcome := read_module(name, search_paths, allocator)
+	if read_outcome.kind != .None do return {}, read_outcome
+	metadata: module_metadata
+	metadata_error := extract_module_metadata(transmute(string)bytes, &metadata, allocator)
+	delete(bytes, allocator)
+	if metadata_error != nil {
+		destroy_module_metadata(&metadata, allocator)
+		return {}, {kind = .Read_Failure, resource_error = metadata_error}
+	}
+	count := len(metadata.deps) if mode == .Dependency_Count else len(metadata.defs)
+	destroy_module_metadata(&metadata, allocator)
+	return value.number_value(cast(f64)count), {}
+}
+
 // jq's identity-key extrema are exactly the ordinary extrema.  This narrow
 // whole-filter bridge keeps the existing operand-free Min/Max ABI and covers
 // the canonical empty-input constructor without introducing a key stream.
@@ -332,6 +363,9 @@ Run_Result :: struct {
 	module_data_scalar_field_error: bool,
 	module_runtime_subtraction: bool,
 	module_runtime_factorial: bool,
+	modulemeta: modulemeta_mode,
+	// Borrowed from Run_Options/Compiled_Filter owner; never freed here.
+	module_paths: []string,
 }
 
 // Compiled_Filter owns the parser/program produced once for one CLI
@@ -790,6 +824,7 @@ run_with_options :: proc(
 	result.allocator = allocator
 	result.owns_compilation = options.compiled_filter == nil
 	result.preserve_compilation = options.retain_compilation
+	result.module_paths = options.module_paths
 	if options.compiled_filter != nil {
 		result.shared_compiled = options.compiled_filter
 		result.module_data_append = options.compiled_filter.owner.module_data_append
@@ -799,10 +834,18 @@ run_with_options :: proc(
 		result.module_runtime_subtraction = options.compiled_filter.owner.module_runtime_subtraction
 		result.module_runtime_factorial = options.compiled_filter.owner.module_runtime_factorial
 		result.module_input_memory = options.compiled_filter.owner.module_input_memory
+		result.modulemeta = options.compiled_filter.owner.modulemeta
+		result.module_paths = options.compiled_filter.owner.module_paths
 	} else {
 		filter_source := filter
+		result.modulemeta = detect_modulemeta_mode(filter)
 		filter_memory: []byte
 		module_outcome: Module_Outcome
+		if result.modulemeta != .None {
+			// Compile identity only to retain the normal preparation/cleanup
+			// lifecycle; the projection is handled below with owned metadata.
+			filter_source = "."
+		} else {
 		sort_rewrite, sort_rewritten, sort_error := rewrite_sort_by_field(filter, allocator)
 		if sort_error != nil do return allocation_error(result, sort_error)
 		if sort_rewritten { filter_memory = sort_rewrite; filter_source = transmute(string)filter_memory }
@@ -877,6 +920,7 @@ run_with_options :: proc(
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
+		}
 		}
 		if module_outcome.kind != .None {
 			result.module_cleanup_value = value.take_value(&module_outcome.cleanup_value)
@@ -989,6 +1033,27 @@ run_with_options :: proc(
 			})
 		}
 		if done do return finish(result, {})
+
+		if result.modulemeta != .None {
+			metadata_value, metadata_outcome := modulemeta_count(&result.input, result.module_paths, result.modulemeta, allocator)
+			if metadata_outcome.kind != .None {
+				if metadata_outcome.resource_error != nil do return allocation_error(result, metadata_outcome.resource_error)
+				return finish(result, {kind = .Module, module_kind = metadata_outcome.kind})
+			}
+			result.current_output = metadata_value
+			serialized_error := json.serialize_compact(&result.serializer, &result.current_output, &result.serialized)
+			if serialized_error.kind != .None do return finish(result, {kind = .Serialization, serialization_kind = serialized_error.kind})
+			bytes, bytes_ok := json.compact_result_bytes(&result.serialized)
+			if !bytes_ok do return finish(result, {kind = .Misuse})
+			if append_error := append_serialized_line(result, bytes, options.output_mode, &result.current_output); append_error != nil do return allocation_or_cleanup_error(result, append_error)
+			if !emit_output(result, options) do return finish(result, {kind = .Output})
+			if cleanup_error := json.destroy_compact_result(&result.serialized); cleanup_error != nil do return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			if cleanup_error := value.destroy_value(&result.current_output); cleanup_error != nil do return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			if cleanup_error := cleanup_input(result); cleanup_error != nil do return finish(result, {kind = .Cleanup, resource_error = cleanup_error})
+			cursor = next
+			input_count += 1
+			continue
+		}
 
 		if result.module_runtime_subtraction {
 			if value.kind_of(&result.input) != .Number {
