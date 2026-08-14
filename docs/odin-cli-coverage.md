@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `3b36ef88`, the authoritative selected catalog measurement
+At integration head `0287b61d`, the authoritative selected catalog measurement
 is **463/522 passed, 59 failed, 0 harness errors**
 (`/tmp/coverage-group.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
@@ -21,6 +21,11 @@ Static `group_by(.field)` keyed materialization is covered by
 `docs/decisions/0333-group-by-keyed-materialization.md`; the selected catalog
 total is unchanged because jq.test:1639 also contains deferred dynamic and
 multi-key grouping forms.
+Static deletion from a `null` base now preserves jq's no-op semantics for
+`.foo`, `.[0]`, and `.foo[0]`; the focused shard is
+`compat/static-del-null.jq.test` and the contract is recorded in
+`docs/decisions/0334-static-del-null-base.md`. Typed diagnostics for invalid
+non-null deletion targets remain a separate deferred path-update contract.
 Static field compound addition is covered by
 `compat/field-compound-add.jq.test`, and comma composition of root iterator
 compound updates is covered by `compat/iterator-compound-sequence.jq.test`.
