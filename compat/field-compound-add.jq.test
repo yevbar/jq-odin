@@ -1,0 +1,27 @@
+# Compound field update reads the original selected and RHS fields.
+.foo += .foo
+{"foo":2,"bar":3}
+{"foo":4,"bar":3}
+
+.foo += .bar
+{"foo":2,"bar":3}
+{"foo":5,"bar":3}
+
+# Missing fields use jq's null arithmetic and create the target key.
+try (.foo += .foo) catch .
+{}
+{"foo":null}
+
+try (.foo += .foo) catch .
+null
+{"foo":null}
+
+# String addition remains jq-compatible.
+.foo += .foo
+{"foo":"x"}
+{"foo":"xx"}
+
+# Non-object inputs retain the catchable string-index diagnostic.
+try (.foo += .foo) catch .
+[1]
+"Cannot index array with string \"foo\""

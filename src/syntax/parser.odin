@@ -279,6 +279,8 @@ Node_Kind :: enum {
 	Break,
 	// Static_Iterator_Delete is a bounded root `.[] |= empty` update.
 	Static_Iterator_Delete,
+	// Static_Field_Add_Field is a bounded `.name += .other` update.
+	Static_Field_Add_Field,
 }
 
 Node_Id :: distinct int
@@ -2372,11 +2374,24 @@ parse_pipe :: proc(
 			left := current
 			if left >= 0 {
 				left_node := parser.nodes.storage[int(left)]
+				op := parser.lookahead.token.kind
+				if op == .Assign_Plus && left_node.form == .Kinded && left_node.kind == .Field && !left_node.has_child && left_node.has_name_span {
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !right_ok do return {}, false
+					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child { right = parser.nodes.storage[int(right)].child }
+					rhs := parser.nodes.storage[int(right)]
+					if rhs.form != .Kinded || rhs.kind != .Field || rhs.has_child || !rhs.has_name_span { fail_from_lookahead(parser, .Expression); return {}, false }
+					span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+					update, update_ok := append_node(parser, Node{kind=.Static_Field_Add_Field, span=span, right=right, name_span=left_node.name_span, has_name_span=true})
+					if !update_ok do return {}, false
+					if int(pipe_root) < 0 do return update, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false; return pipe_root, true
+				}
 				if left_node.form == .Kinded && left_node.kind == .Field && left_node.has_child && left_node.has_name_span {
 					name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, left_node.name_span)
 					child := parser.nodes.storage[int(left_node.child)]
 					if name_ok && name_start == name_end && child.kind == .Identity && !child.has_child && !child.has_value {
-						op := parser.lookahead.token.kind
 						operator := Binary_Operator.Add
 						#partial switch op {
 						case .Assign_Minus: operator = .Subtract
@@ -2402,8 +2417,8 @@ parse_pipe :: proc(
 						return pipe_root, true
 					}
 				}
-			}
-			return parse_static_field_set_number(parser, left, pipe_root, pipe_tail, closing)
+				}
+				return parse_static_field_set_number(parser, left, pipe_root, pipe_tail, closing)
 		}
 		if token_is(parser, .Assign) {
 			if current >= 0 && parser.nodes.storage[int(current)].kind == .Slice {

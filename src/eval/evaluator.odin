@@ -1179,6 +1179,18 @@ static_field_add_operands :: proc(
 }
 
 @(private)
+static_field_add_field_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (left, right: string, ok: bool) {
+	if instruction.opcode != .Static_Field_Add_Field || instruction.operands_count != 2 do return
+	left_operand, left_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	right_operand, right_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+	if !left_ok || !right_ok || left_operand.kind != .Text || right_operand.kind != .Text do return
+	left, left_ok = program.operand_text(storage.compiled, left_operand)
+	right, right_ok = program.operand_text(storage.compiled, right_operand)
+	ok = left_ok && right_ok
+	return
+}
+
+@(private)
 static_iterator_set_operand :: proc(
 	storage: ^evaluator_storage,
 	instruction: program.Instruction,
@@ -8098,6 +8110,48 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
 				output := value.take_value(&frame.input)
 				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Static_Field_Add_Field:
+				left_key, right_key, operands_ok := static_field_add_field_operands(storage, instruction)
+				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Object && input_kind != .Null {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=left_key})
+					if ready do return result
+					continue
+				}
+				if input_kind == .Null {
+					empty_object, object_error := value.object_value(storage.allocator)
+					if value.object_error_kind(&object_error) != .None { _ = value.destroy_object_error(&object_error); return resource_step(.Out_Of_Memory) }
+					_ = value.destroy_value(&frame.input); frame.input = empty_object
+				}
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				left, left_found := value.object_get_copy(&frame.input, left_key)
+				if !left_found do left = value.null_value()
+				right, right_found := value.object_get_copy(&frame.input, right_key)
+				if !right_found do right = value.null_value()
+				updated, runtime_kind, allocation_error := apply_binary(.Add, &left, &right, instruction.span, storage.allocator)
+				_ = value.destroy_value(&left); _ = value.destroy_value(&right)
+				if allocation_error != nil do return resource_step(allocation_error)
+				if runtime_kind != .None {
+					_ = value.destroy_value(&updated)
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=.Object, span=instruction.span})
+					if ready do return result
+					continue
+				}
+				key, key_ok := existing_object_key_copy(&frame.input, left_key)
+				if !key_ok {
+					key_error: value.Constructor_Error
+					key, key_error = value.string_value(left_key, storage.allocator)
+					if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_value(&updated); _ = value.destroy_constructor_error(&key_error); return resource_step(.Out_Of_Memory) }
+				}
+				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &updated)
+				if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&updated); _ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced); _ = value.destroy_object_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
+				_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+				output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
 			case .Dynamic_Field_Set:
