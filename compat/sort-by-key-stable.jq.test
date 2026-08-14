@@ -1,0 +1,11 @@
+# Stable static sort_by(.field) uses key-only comparison and preserves input ties.
+sort_by(.a)
+[{"a":1,"z":9},{"a":1,"z":1},{"a":1,"z":5},{"a":0,"z":7}]
+[{"a":0,"z":7},{"a":1,"z":9},{"a":1,"z":1},{"a":1,"z":5}]
+
+# Composition remains a stream of sorted records.
+sort_by(.a) | .[]
+[{"a":1,"z":9},{"a":0,"z":7},{"a":1,"z":1}]
+{"a":0,"z":7}
+{"a":1,"z":9}
+{"a":1,"z":1}

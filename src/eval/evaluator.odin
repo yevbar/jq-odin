@@ -4408,6 +4408,78 @@ sort_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value
 	return result, .None, nil
 }
 
+// sort_by_key_result sorts a materialized stream of [key, value] pairs by the
+// first element only. Insertion is strictly before keys that compare less;
+// equal keys therefore retain their original input order, matching jq's
+// stable sort_by tie rule without changing ordinary array sort semantics.
+sort_by_key_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, Runtime_Error_Kind, runtime.Allocator_Error) {
+	if value.kind_of(input) != .Array do return {}, .Cannot_Iterate, nil
+	length, ok := value.array_length(input)
+	if !ok do return {}, .Cannot_Iterate, nil
+	result, array_error := value.array_value(allocator)
+	if value.array_error_kind(&array_error) != .None do return {}, .None, .Out_Of_Memory
+	for i in 0..<length {
+		item, item_ok := value.array_element_copy(input, i)
+		if !item_ok { _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+		if value.kind_of(&item) != .Array {
+			_ = value.destroy_value(&item); _ = value.destroy_value(&result)
+			return {}, .Cannot_Iterate, nil
+		}
+		item_length, item_length_ok := value.array_length(&item)
+		if !item_length_ok || item_length < 1 {
+			_ = value.destroy_value(&item); _ = value.destroy_value(&result)
+			return {}, .Cannot_Iterate, nil
+		}
+		item_key, item_key_ok := value.array_element_copy(&item, 0)
+		if !item_key_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+		next, next_error := value.array_value(allocator)
+		if value.array_error_kind(&next_error) != .None { _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+		inserted := false
+		current_length, current_ok := value.array_length(&result)
+		if !current_ok { _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+		for j in 0..<current_length {
+			existing, existing_ok := value.array_element_copy(&result, j)
+			if !existing_ok { _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result); return {}, .Cannot_Iterate, nil }
+			if value.kind_of(&existing) != .Array {
+				_ = value.destroy_value(&existing); _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result)
+				return {}, .Cannot_Iterate, nil
+			}
+			existing_length, existing_length_ok := value.array_length(&existing)
+			existing_key: value.Value
+			existing_key_ok := existing_length_ok && existing_length >= 1
+			if existing_key_ok { existing_key, existing_key_ok = value.array_element_copy(&existing, 0) }
+			if !existing_key_ok {
+				_ = value.destroy_value(&existing); _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result)
+				return {}, .Cannot_Iterate, nil
+			}
+			if !inserted {
+				cmp, cmp_ok := compare_values(&item_key, &existing_key)
+				if !cmp_ok {
+					_ = value.destroy_value(&existing_key); _ = value.destroy_value(&existing); _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result)
+					return {}, .Cannot_Iterate, nil
+				}
+				if cmp < 0 {
+					copy_item := value.clone_value(&item)
+					_, append_error := value.array_append_take(&next, &copy_item)
+					if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&copy_item); _ = value.destroy_value(&existing_key); _ = value.destroy_value(&existing); _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+					inserted = true
+				}
+			}
+			_ = value.destroy_value(&existing_key)
+			_, append_error := value.array_append_take(&next, &existing)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item_key); _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+		}
+		_ = value.destroy_value(&item_key)
+		if !inserted {
+			_, append_error := value.array_append_take(&next, &item)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_value(&next); _ = value.destroy_value(&result); return {}, .None, .Out_Of_Memory }
+		} else { _ = value.destroy_value(&item) }
+		_ = value.destroy_value(&result)
+		result = next
+	}
+	return result, .None, nil
+}
+
 @(private)
 flatten_append :: proc(input: ^value.Value, output: ^value.Value) -> (Runtime_Error_Kind, runtime.Allocator_Error) {
 	if value.kind_of(input) == .Array {
@@ -6388,6 +6460,9 @@ builtin_result :: proc(opcode: program.Opcode, input: ^value.Value, allocator: r
 	}
 	if opcode == .Sort {
 		return sort_result(input, allocator)
+	}
+	if opcode == .Sort_By_Key {
+		return sort_by_key_result(input, allocator)
 	}
 	if opcode == .Ceil {
 		if kind != .Number do return {}, .Cannot_Number, nil
@@ -9211,7 +9286,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 			frame.phase = .Try_Start_Expression
-			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
+			case .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Last, .First, .Log, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Mktime, .Gmtime, .Fromdate, .Todate, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Sort_By_Key, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Any_Not, .All_Not, .Isfinite, .Isinfinite, .Isnormal, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode:
 				if (instruction.opcode == .Any || instruction.opcode == .All) && instruction.operands_count == 2 {
 					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 					if storage.frame_count == len(storage.frames) {

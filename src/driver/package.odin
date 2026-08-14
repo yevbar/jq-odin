@@ -405,7 +405,7 @@ rewrite_sort_by_field :: proc(filter: string, allocator: runtime.Allocator) -> (
 	for c in field {
 		if !is_module_identifier_byte(byte(c)) do return nil, false, nil
 	}
-	rewritten := fmt.tprintf("map([.%s,.]) | sort | map(.[1])", field)
+		 rewritten := fmt.tprintf("map([.%s,.]) | sort_by_key | map(.[1])", field)
 	if tail == "| .[]" { rewritten = fmt.tprintf("%s | .[]", rewritten) }
 	memory, err := strings.clone(rewritten, allocator)
 	if err != nil do return nil, false, err

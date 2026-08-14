@@ -92,6 +92,10 @@ Node_Kind :: enum {
 	Unique,
 	// Sort is appended to preserve existing AST discriminants.
 	Sort,
+	// Sort_By_Key is an internal stable-key helper used by the bounded driver
+	// lowering for static sort_by(.field). It compares only pair keys and keeps
+	// input order for equal keys; general sort_by key streams remain separate.
+	Sort_By_Key,
 	// Ceil is appended to preserve existing AST discriminants.
 	Ceil,
 	// Flatten is appended to preserve existing AST discriminants.
@@ -1396,8 +1400,10 @@ parse_pipe :: proc(
 					kind = .Transpose
 				} else if spelling == "unique" {
 					kind = .Unique
-				} else if spelling == "sort" {
-					kind = .Sort
+					} else if spelling == "sort" {
+						kind = .Sort
+					} else if spelling == "sort_by_key" {
+						kind = .Sort_By_Key
 				} else if spelling == "ceil" {
 					kind = .Ceil
 				} else if spelling == "flatten" {
