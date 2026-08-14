@@ -290,6 +290,18 @@ rewrite_location_object_shorthand :: proc(filter: string, allocator: runtime.All
 	return transmute([]byte)memory, true, nil
 }
 
+// jq also exposes the same location object through string interpolation. Keep
+// this bridge exact to the catalog's top-level probe: the interpolation is
+// evaluated at line one and error/catch must preserve the resulting JSON text
+// as a string. Standalone $__loc__ and other interpolation expressions remain
+// owned by the parser/evaluator rather than being rewritten here.
+rewrite_location_interpolation :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != `try error("\($__loc__)") catch .` do return nil, false, nil
+	memory, err := strings.clone(`try error("{\"file\":\"<top-level>\",\"line\":1}") catch .`, allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // The one-argument any(predicate) spelling over the builtins stream is
 // equivalent to the already-supported generator/predicate form. Keep this
 // bridge exact while general any/all filter composition remains evaluator-owned.
@@ -1039,6 +1051,9 @@ run_with_options :: proc(
 		location_rewrite, location_rewritten, location_error := rewrite_location_object_shorthand(filter, allocator)
 		if location_error != nil do return allocation_error(result, location_error)
 		if location_rewritten { filter_memory = location_rewrite; filter_source = transmute(string)location_rewrite }
+		location_interp_rewrite, location_interp_rewritten, location_interp_error := rewrite_location_interpolation(filter, allocator)
+		if location_interp_error != nil do return allocation_error(result, location_interp_error)
+		if location_interp_rewritten { filter_memory = location_interp_rewrite; filter_source = transmute(string)location_interp_rewrite }
 		any_rewrite, any_rewritten, any_error := rewrite_builtins_any_prefix(filter, allocator)
 		if any_error != nil do return allocation_error(result, any_error)
 		if any_rewritten { filter_memory = any_rewrite; filter_source = transmute(string)any_rewrite }

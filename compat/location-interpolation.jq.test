@@ -1,0 +1,4 @@
+# jq.test:1482 — $__loc__ interpolates to a JSON location object in a string.
+try error("\($__loc__)") catch .
+null
+"{\"file\":\"<top-level>\",\"line\":1}"
