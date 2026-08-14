@@ -2,11 +2,14 @@
 
 Status: investigation recorded (2026-08-13)
 
-The latest authoritative catalog is **417/522 passed, 105 failed, 0 errors**
-(`/tmp/coverage-meta-object.json`, rebuilt after a green `make validate`). The
+The latest authoritative catalog is **419/522 passed, 103 failed, 0 errors**
+(`/tmp/coverage-slice.json`, rebuilt after a green `make validate`). The
 modulemeta bridge now covers the scalar projections and the canonical full
 objects for modules `a` and `c`; the object bridge is deliberately bounded to
 the two source-level constant forms present in the jq module fixtures.
+The static numeric slice-assignment lane adds the two cases at
+`upstream/jq/tests/jq.test:2437` and `2441`, including jq's null/scalar error
+boundaries and extreme-bound handling.
 The remaining sort/group case at
 `upstream/jq/tests/jq.test:1639` combines stable multi-key `sort_by` with
 `group_by`; the current driver has narrow rewrites for standalone
