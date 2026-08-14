@@ -1,0 +1,4 @@
+# debug emits a DEBUG record on stderr while passing the input on stdout.
+debug
+1
+

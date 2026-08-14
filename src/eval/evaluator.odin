@@ -50,6 +50,7 @@ Misuse_Kind :: enum u8 {
 
 Step_Kind :: enum u8 {
 	Output,
+	Debug_Event,
 	Done,
 	Runtime_Error,
 	Resource_Error,
@@ -61,6 +62,8 @@ Step_Kind :: enum u8 {
 Step_Result :: struct {
 	kind:           Step_Kind,
 	output:         value.Value,
+	debug_output:    value.Value,
+	debug:           bool,
 	runtime_error:  Runtime_Error,
 	resource_error: runtime.Allocator_Error,
 	misuse:         Misuse_Kind,
@@ -70,6 +73,12 @@ take_step_output :: proc(result: ^Step_Result) -> value.Value {
 	if result == nil || result.kind != .Output do return {}
 	result.kind = .Done
 	return value.take_value(&result.output)
+}
+
+take_debug_output :: proc(result: ^Step_Result) -> value.Value {
+	if result == nil || result.kind != .Debug_Event do return {}
+	result.kind = .Done
+	return value.take_value(&result.debug_output)
 }
 
 Init_Error_Kind :: enum u8 {
@@ -3291,7 +3300,14 @@ propagate_output :: proc(
 	for {
 		parent := storage.frames[current].parent
 		if parent < 0 {
-			return Step_Result{kind = .Output, output = value.take_value(owned)}, true
+			debug := false
+			debug_frame := producer
+			for debug_frame >= 0 {
+				producer_instruction, producer_ok := program.program_instruction(storage.compiled, storage.frames[debug_frame].instruction)
+				if producer_ok && producer_instruction.opcode == .Debug { debug = true; break }
+				debug_frame = storage.frames[debug_frame].parent
+			}
+			return Step_Result{kind = .Output, output = value.take_value(owned), debug = debug}, true
 		}
 		frame := &storage.frames[parent]
 		instruction, instruction_ok := program.program_instruction(
@@ -6886,6 +6902,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		return resource_step(pending_error)
 	}
 	if storage.pending == .Terminal_Cleanup do return complete_terminal_cleanup(storage)
+	if value.kind_of(&storage.pending_value) != .Invalid && storage.pending == .None {
+		return Step_Result{kind = .Debug_Event, debug_output = value.take_value(&storage.pending_value)}
+	}
 	if storage.pending == .Suppress_Runtime {
 		result, ready := continue_suppression(storage)
 		if ready do return result
@@ -7234,6 +7253,18 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					output = value.clone_value(&frame.input)
 				}
 				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Debug:
+				if instruction.operands_count != 0 || instruction.has_literal do return begin_terminal_misuse(storage, .Malformed_Program)
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				output := value.clone_value(&frame.input)
+				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				storage.pending_value = value.clone_value(&frame.input)
+				if value.kind_of(&storage.pending_value) == .Invalid { _ = value.destroy_value(&output); return begin_terminal_misuse(storage, .Malformed_Program) }
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result

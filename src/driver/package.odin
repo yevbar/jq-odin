@@ -163,6 +163,10 @@ Output_Mode :: enum u8 {
 // stops evaluation with Output while retaining the current bytes for cleanup.
 Output_Emitter :: proc(data: rawptr, bytes: string) -> bool
 
+// Diagnostic_Emitter receives jq debug() records, already serialized and
+// LF-terminated, on stderr.
+Diagnostic_Emitter :: proc(data: rawptr, bytes: string) -> bool
+
 rewrite_minmax_by_index :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
 	t := strings.trim_space(filter)
 	is_min := strings.has_prefix(t, "min_by(.[")
@@ -358,6 +362,8 @@ Run_Options :: struct {
 	max_inputs: int,
 	emitter: Output_Emitter,
 	emitter_data: rawptr,
+	diagnostic_emitter: Diagnostic_Emitter,
+	diagnostic_emitter_data: rawptr,
 	compiled_filter: ^Compiled_Filter,
 	retain_compilation: bool,
 	// Source location of the current input value, supplied by the CLI while
@@ -1272,8 +1278,41 @@ run_with_options :: proc(
 		evaluation_loop: for {
 			step := eval.step_evaluator(result.evaluator)
 			switch step.kind {
+			case .Debug_Event:
+				debug_input := eval.take_debug_output(&step)
+				debug_value, debug_error := value.array_value(allocator)
+				if value.array_error_kind(&debug_error) != .None { _ = value.destroy_value(&debug_input); return allocation_error(result, .Out_Of_Memory) }
+				prefix, prefix_error := value.string_value("DEBUG:", allocator)
+				if prefix_error != nil { _ = value.destroy_value(&debug_input); _ = value.destroy_value(&debug_value); return allocation_error(result, .Out_Of_Memory) }
+				_, append_error := value.array_append_take(&debug_value, &prefix)
+				if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&prefix); _ = value.destroy_value(&debug_input); _ = value.destroy_value(&debug_value); return allocation_error(result, .Out_Of_Memory) }
+				_, append_error = value.array_append_take(&debug_value, &debug_input)
+				if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&debug_input); _ = value.destroy_value(&debug_value); return allocation_error(result, .Out_Of_Memory) }
+				debug_serialized_error := json.serialize_compact(&result.serializer, &debug_value, &result.serialized)
+				_ = value.destroy_value(&debug_value)
+				if debug_serialized_error.kind != .None { return finish(result, {kind = .Serialization, serialization_kind = debug_serialized_error.kind}) }
+				debug_bytes, debug_ok := json.compact_result_bytes(&result.serialized)
+				if !debug_ok || (options.diagnostic_emitter != nil && !options.diagnostic_emitter(options.diagnostic_emitter_data, fmt.tprintf("%s\n", debug_bytes))) { return finish(result, {kind = .Output}) }
+				if cleanup_error := json.destroy_compact_result(&result.serialized); cleanup_error != nil { return finish(result, {kind = .Cleanup, resource_error = cleanup_error}) }
 			case .Output:
 				result.current_output = eval.take_step_output(&step)
+				if step.debug && options.diagnostic_emitter != nil {
+					debug_value, debug_error := value.array_value(allocator)
+					if value.array_error_kind(&debug_error) != .None { return allocation_error(result, .Out_Of_Memory) }
+					prefix, prefix_error := value.string_value("DEBUG:", allocator)
+					if prefix_error != nil { _ = value.destroy_value(&debug_value); return allocation_error(result, .Out_Of_Memory) }
+					_, append_error := value.array_append_take(&debug_value, &prefix)
+					if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&prefix); _ = value.destroy_value(&debug_value); return allocation_error(result, .Out_Of_Memory) }
+					copy_output := value.clone_value(&result.current_output)
+					_, append_error = value.array_append_take(&debug_value, &copy_output)
+					if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&copy_output); _ = value.destroy_value(&debug_value); return allocation_error(result, .Out_Of_Memory) }
+					debug_serialized_error := json.serialize_compact(&result.serializer, &debug_value, &result.serialized)
+					_ = value.destroy_value(&debug_value)
+					if debug_serialized_error.kind != .None { return finish(result, {kind = .Serialization, serialization_kind = debug_serialized_error.kind}) }
+					debug_bytes, debug_ok := json.compact_result_bytes(&result.serialized)
+					if !debug_ok || !options.diagnostic_emitter(options.diagnostic_emitter_data, fmt.tprintf("%s\n", debug_bytes)) { return finish(result, {kind = .Output}) }
+					if cleanup_error := json.destroy_compact_result(&result.serialized); cleanup_error != nil { return finish(result, {kind = .Cleanup, resource_error = cleanup_error}) }
+				}
 				serialized_error := json.serialize_compact(
 					&result.serializer, &result.current_output, &result.serialized,
 				)

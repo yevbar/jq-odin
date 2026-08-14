@@ -426,6 +426,13 @@ emit_stdout :: proc(data: rawptr, bytes: string) -> bool {
 	return !sink.failed
 }
 
+emit_stderr :: proc(data: rawptr, bytes: string) -> bool {
+	sink := cast(^output_sink)data
+	if sink == nil || sink.failed do return false
+	sink.failed = !write_all(os.stderr, bytes)
+	return !sink.failed
+}
+
 run_input :: proc(
 	input: string,
 	input_path: string,
@@ -449,6 +456,8 @@ run_input :: proc(
 			compiled_filter = prepared,
 			emitter = emit_stdout,
 			emitter_data = sink,
+			diagnostic_emitter = emit_stderr,
+			diagnostic_emitter_data = sink,
 		},
 	)
 
