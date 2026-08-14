@@ -179,6 +179,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && no_child && no_edges && !node.has_name_span &&
 		       !node.has_value && !node.boolean_value && no_number && !node.has_string_text &&
 		       string_header_absent(node.string_text)
+	case .Static_Iterator_Update:
+		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 && !node.has_name_span &&
+		       !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Static_Field_Add_Field:
 		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 &&
 		       node.has_name_span && no_container_links && !node.has_value && !node.boolean_value &&
@@ -471,6 +474,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Static_Iterator_Delete:
 		return true
+	case .Static_Iterator_Update:
+		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Static_Field_Add_Field:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Static_Field_Optional_Identity:
@@ -754,6 +759,9 @@ lower_filter :: proc(
 			}
 		case .Static_Iterator_Delete:
 			// Operand-free opcode: the exact source syntax fixes the RHS to empty.
+		case .Static_Iterator_Update:
+			if !node_reference_valid(node.right, len(nodes)) do return Lower_Outcome{kind = .Invalid_AST}
+			if !checked_count_add(&operand_count, 1) do return Lower_Outcome{kind = .Size_Overflow}
 		case .Static_Field_Add_Field:
 			if !node_reference_valid(node.right, len(nodes)) || nodes[int(node.right)].kind != .Field || !nodes[int(node.right)].has_name_span {
 				return Lower_Outcome{kind = .Invalid_AST}
@@ -1311,6 +1319,11 @@ lower_filter :: proc(
 		case .Static_Iterator_Delete:
 			instruction.opcode = .Static_Iterator_Delete
 			instruction.operands_count = 0
+		case .Static_Iterator_Update:
+			instruction.opcode = .Static_Iterator_Update
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)}))
+			operand_at += 1
+			instruction.operands_count = 1
 		case .Static_Field_Add_Field:
 			instruction.opcode = .Static_Field_Add_Field
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

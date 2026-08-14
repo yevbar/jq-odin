@@ -169,6 +169,9 @@ frame_phase :: enum u8 {
 	// they are emitted one step at a time.
 	Static_Slice_Active,
 	Iterator_Active,
+	Iterator_Update_Active,
+	Iterator_Update_Child_Active,
+	Iterator_Update_Delete_Active,
 	Binding_Start_Left,
 	Binding_Left_Active,
 	Binding_Body_Active,
@@ -245,6 +248,7 @@ eval_frame :: struct {
 	any_seen: bool,
 	if_branch_active: bool,
 	iterator_cursor: int,
+	iterator_update_seen: bool,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
 	in_source_value: value.Value,
@@ -1224,6 +1228,58 @@ static_iterator_set_operand :: proc(
 }
 
 @(private)
+iterator_update_delete_at :: proc(storage: ^evaluator_storage, frame: ^eval_frame, index: int) -> (runtime.Allocator_Error, bool) {
+	kind := value.kind_of(&frame.input)
+	if kind == .Array {
+		length, ok := value.array_length(&frame.input)
+		if !ok || index < 0 || index >= length do return nil, false
+		replacement, array_error := value.array_value(storage.allocator)
+		if value.array_error_kind(&array_error) != .None {
+			error_kind := value.array_error_kind(&array_error)
+			cleanup := value.destroy_array_error(&array_error)
+			if cleanup != nil do return cleanup, false
+			return .Out_Of_Memory if error_kind == .Out_Of_Memory else nil, false
+		}
+		for cursor in 0..<length {
+			if cursor == index do continue
+			item, item_ok := value.array_element_copy(&frame.input, cursor)
+			if !item_ok { _ = value.destroy_value(&replacement); return nil, false }
+			_, append_error := value.array_append_take(&replacement, &item)
+			if value.array_error_kind(&append_error) != .None {
+				_ = value.destroy_value(&item)
+				_ = value.destroy_value(&replacement)
+				error_kind := value.array_error_kind(&append_error)
+				cleanup := value.destroy_array_error(&append_error)
+				if cleanup != nil do return cleanup, false
+				return .Out_Of_Memory if error_kind == .Out_Of_Memory else nil, false
+			}
+		}
+		_ = value.destroy_value(&frame.input)
+		frame.input = replacement
+		return nil, true
+	}
+	if kind == .Object {
+		key, entry, key_ok := value.object_entry_copy(&frame.input, index)
+		if !key_ok do return nil, false
+		_ = value.destroy_value(&entry)
+		key_text, text_ok := value.string_borrowed(&key)
+		if !text_ok { _ = value.destroy_value(&key); return nil, false }
+		removed_key, removed, found, delete_error := value.object_delete_take(&frame.input, key_text)
+		_ = value.destroy_value(&key)
+		_ = value.destroy_value(&removed_key)
+		_ = value.destroy_value(&removed)
+		if value.object_error_kind(&delete_error) != .None {
+			error_kind := value.object_error_kind(&delete_error)
+			cleanup := value.destroy_object_error(&delete_error)
+			if cleanup != nil do return cleanup, false
+			return .Out_Of_Memory if error_kind == .Out_Of_Memory else nil, false
+		}
+		return nil, found
+	}
+	return nil, false
+}
+
+@(private)
 static_slice_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (start, end, rhs: string, ok: bool) {
 	if instruction.opcode != .Static_Slice_Set_Number || instruction.operands_count != 3 do return
 	for offset in 0..<3 {
@@ -1929,6 +1985,10 @@ capture_composite_instruction :: proc(
 		frame.saved_operand_count = 0
 		frame.has_saved_instruction = true
 		return true
+	case .Static_Iterator_Update:
+		if instruction.operands_count != 1 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
 	case .Path, .Getpath, .Delpaths:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1995,6 +2055,8 @@ resumed_composite_instruction_valid :: proc(
 		if (frame.mode != .Normal && frame.mode != .Field_Only) || (instruction.opcode != .Field && instruction.opcode != .Range && instruction.opcode != .Foreach) {
 			return false
 		}
+	case .Iterator_Update_Active, .Iterator_Update_Child_Active, .Iterator_Update_Delete_Active:
+		if frame.mode != .Normal || instruction.opcode != .Static_Iterator_Update do return false
 	case .Contains_Child_Active:
 		if frame.mode != .Normal || instruction.opcode != .Contains do return false
 	case .In_Child_Active, .In_First_Child_Active, .In_Second_Start, .In_Second_Child_Active, .In_Result:
@@ -2056,6 +2118,9 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = u8(instruction.operands_count)
 	} else if frame.phase == .Iterator_Active {
 		expected_operand_count = 3 if instruction.opcode == .Foreach else u8(instruction.operands_count)
+	}
+	else if frame.phase == .Iterator_Update_Active || frame.phase == .Iterator_Update_Child_Active || frame.phase == .Iterator_Update_Delete_Active {
+		expected_operand_count = 1
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
 		expected_operand_count = 3
@@ -3388,6 +3453,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Slice_Child_Active
 	case .Iterator_Active:
 		frame.phase = .Complete
+	case .Iterator_Update_Child_Active:
+		frame.phase = .Iterator_Update_Delete_Active if !frame.iterator_update_seen else .Iterator_Update_Active
+	case .Iterator_Update_Active, .Iterator_Update_Delete_Active:
+		return false
 	case .Binary_Left_Active:
 		// Defined-or treats an empty left stream like a null/false result and
 		// must start its right-hand generator when the producer exhausts without
@@ -4104,6 +4173,42 @@ propagate_output :: proc(
 		current = parent
 		case .Iterator_Active:
 			current = parent
+		case .Iterator_Update_Child_Active:
+			if frame.iterator_update_seen {
+				_ = value.destroy_value(owned)
+				return {}, false
+			}
+			frame.iterator_update_seen = true
+			update_index := frame.iterator_cursor - 1
+			if value.kind_of(&frame.input) == .Array {
+				displaced, set_error := value.array_set_take(&frame.input, update_index, owned)
+				_ = value.destroy_value(&displaced)
+				if value.array_error_kind(&set_error) != .None {
+					_ = value.destroy_value(owned)
+					_ = value.destroy_array_error(&set_error)
+					return begin_terminal_misuse(storage, .Malformed_Program), true
+				}
+			} else if value.kind_of(&frame.input) == .Object {
+				key, entry, key_ok := value.object_entry_copy(&frame.input, update_index)
+				if !key_ok { _ = value.destroy_value(owned); return begin_terminal_misuse(storage, .Malformed_Program), true }
+				_ = value.destroy_value(&entry)
+				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, owned)
+				_ = value.destroy_value(&duplicate)
+				_ = value.destroy_value(&displaced)
+				if value.object_error_kind(&set_error) != .None {
+					_ = value.destroy_value(owned)
+					_ = value.destroy_value(&key)
+					_ = value.destroy_object_error(&set_error)
+					return begin_terminal_misuse(storage, .Malformed_Program), true
+				}
+			}
+			// jq path assignment keeps only the first RHS result. Cancel the
+			// child generator immediately so later outputs/errors cannot escape
+			// after the selected element has been replaced.
+			free_error := destroy_frames_to(storage, parent+1)
+			if free_error != nil do return resource_step(free_error), true
+			frame.phase = .Iterator_Update_Active
+			return {}, false
 		case .Binary_Left_Active:
 			if value.kind_of(&frame.binary_left) != .Invalid {
 				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
@@ -8106,6 +8211,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Static_Iterator_Update:
+				if instruction.operands_count != 1 do return begin_terminal_misuse(storage, .Malformed_Program)
+				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Array && input_kind != .Object {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=input_kind, span=instruction.span})
+					if ready do return result
+					continue
+				}
+				frame.iterator_cursor = 0
+				frame.iterator_update_seen = false
+				frame.phase = .Iterator_Update_Active
+				continue
 			case .Static_Field_Optional_Identity:
 				key_text, operands_ok := static_optional_field_operand(storage, instruction)
 				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
@@ -10301,6 +10419,52 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			frame.phase = .Loop_Start_Condition
 		case .Slice_Child_Active, .Slice_Result_Active:
 			return begin_terminal_misuse(storage, .Malformed_Program)
+
+		case .Iterator_Update_Active:
+			length, length_ok := value.array_length(&frame.input)
+			if !length_ok { length, length_ok = value.object_length(&frame.input) }
+			if !length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			if frame.iterator_cursor >= length {
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+				continue
+			}
+			child, child_ok := child_instruction(storage, instruction, 0)
+			item: value.Value
+			if value.kind_of(&frame.input) == .Array {
+				item, child_ok = value.array_element_copy(&frame.input, frame.iterator_cursor)
+			} else {
+				key: value.Value
+				key, item, child_ok = value.object_entry_copy(&frame.input, frame.iterator_cursor)
+				_ = value.destroy_value(&key)
+			}
+			if !child_ok || value.kind_of(&item) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+			frame.iterator_cursor += 1
+			frame.iterator_update_seen = false
+			if storage.frame_count == len(storage.frames) {
+				capacity_error := grow_frames(storage)
+				if capacity_error != nil { _ = value.destroy_value(&item); return resource_step(capacity_error) }
+				frame = &storage.frames[index]
+			}
+			if !push_frame(storage, child, index, &item) {
+				_ = value.destroy_value(&item)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			storage.frames[index].phase = .Iterator_Update_Child_Active
+
+		case .Iterator_Update_Child_Active:
+			return begin_terminal_misuse(storage, .Malformed_Program)
+
+		case .Iterator_Update_Delete_Active:
+			cleanup_error, delete_ok := iterator_update_delete_at(storage, frame, frame.iterator_cursor-1)
+			if cleanup_error != nil do return resource_step(cleanup_error)
+			if !delete_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			frame.iterator_cursor -= 1
+			frame.iterator_update_seen = false
+			frame.phase = .Iterator_Update_Active
+			continue
 
 		case .Map_Start:
 			length, length_ok := value.array_length(&frame.input)

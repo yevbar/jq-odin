@@ -284,6 +284,8 @@ Node_Kind :: enum {
 	Static_Field_Add_Field,
 	// Static_Field_Optional_Identity is a bounded `.name |= .?` update.
 	Static_Field_Optional_Identity,
+	// Static_Iterator_Update preserves a filter-valued root iterator RHS.
+	Static_Iterator_Update,
 }
 
 Node_Id :: distinct int
@@ -2459,11 +2461,14 @@ parse_pipe :: proc(
 							right = parser.nodes.storage[int(right)].child
 						}
 						rhs := parser.nodes.storage[int(right)]
-						if rhs.form != .Kinded || rhs.kind != .Empty || rhs.has_child || rhs.has_value {
-							fail_from_lookahead(parser, .Expression); return {}, false
-						}
 						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
-						update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Delete, span=span})
+						update_kind := Node_Kind.Static_Iterator_Update
+						if rhs.form == .Kinded && rhs.kind == .Empty && !rhs.has_child && !rhs.has_value {
+							update_kind = .Static_Iterator_Delete
+						}
+						update_node := Node{kind=update_kind, span=span}
+						if update_kind == .Static_Iterator_Update { update_node.right = right }
+						update, update_ok := append_node(parser, update_node)
 						if !update_ok do return {}, false
 						if int(pipe_root) < 0 do return update, true
 						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
