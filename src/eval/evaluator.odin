@@ -7346,7 +7346,23 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Slice_Start_Child
 			case .Static_Field_Set_Number:
 				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
-				if !operands_ok || value.kind_of(&frame.input) != .Object do return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Object && input_kind != .Null {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=key_text})
+					if ready do return result
+					continue
+				}
+				if input_kind == .Null {
+					empty_object, object_error := value.object_value(storage.allocator)
+					if value.object_error_kind(&object_error) != .None {
+						cleanup_error := value.destroy_object_error(&object_error)
+						if cleanup_error != nil do return resource_step(cleanup_error)
+						return resource_step(.Out_Of_Memory)
+					}
+					_ = value.destroy_value(&frame.input)
+					frame.input = empty_object
+				}
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
