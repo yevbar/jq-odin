@@ -1716,6 +1716,34 @@ parse_pipe :: proc(
 						term_ready = true
 						continue
 					}
+					if spelling == "in" {
+						first, first_ok := parse_pipe(parser, .Semicolon, false)
+						if !first_ok { fail_from_lookahead(parser, .Expression); return {}, false }
+						if token_is(parser, .Semicolon) {
+							advance(parser)
+							second, second_ok := parse_pipe(parser, .Close_Paren, false)
+							if !second_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+							close := parser.lookahead.token
+							advance(parser)
+							span, span_ok := spanning(parser, token.span, close.span)
+							assert(span_ok)
+							new_term, ok := append_node(parser, Node{kind=.In, span=span, child=first, has_child=true, predicate=second, has_predicate=true})
+							if !ok { return {}, false }
+							term = new_term
+							term_ready = true
+							continue
+						}
+						if !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+						close := parser.lookahead.token
+						advance(parser)
+						span, span_ok := spanning(parser, token.span, close.span)
+						assert(span_ok)
+						new_term, ok := append_node(parser, Node{kind=.In, span=span, child=first, has_child=true})
+						if !ok { return {}, false }
+						term = new_term
+						term_ready = true
+						continue
+					}
 					argument_closing := Token_Kind.Close_Paren
 					if spelling == "map" || spelling == "map_values" do argument_closing = .Invalid
 					stop_argument_at_comma := spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "isempty" && spelling != "map" && spelling != "map_values"

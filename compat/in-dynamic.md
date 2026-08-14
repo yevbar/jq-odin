@@ -1,7 +1,8 @@
 # Dynamic `IN(generator)`
 
-This shard covers the one-argument uppercase `IN` builtin when its argument
-is a resumable generator. The evaluator compares each generated value against
-the original input, short-circuits on a match, and emits `false` only after
-the generator is exhausted. Two-argument `IN(source; s)` and `inside` remain
-separate contracts.
+This shard covers uppercase `IN` with one or two resumable generator
+arguments. The one-argument form compares each generated value against the
+original input. The two-argument form materializes the first generator's
+values, then compares the second generator against that set. Both forms
+short-circuit on a match and emit `false` only after exhaustion. `inside`
+remains a separate containment contract.

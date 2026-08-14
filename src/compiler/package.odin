@@ -220,6 +220,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
 		       !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .In, .Inside:
+		if node.has_predicate {
+			return node.kind == .In && node.container_kind == .None && node.has_child && node.child >= 0 && node.predicate >= 0 && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+		}
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .IsEmpty:
 		return node.container_kind == .None && node.has_child && no_edges && no_name && no_container_links && !node.has_value &&
@@ -435,7 +438,9 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Error:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .In, .Inside:
-		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
+		if !validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) do return false
+		if node.has_predicate do return validate_binding_scopes(nodes, node.predicate, source, scopes, depth, next_budget)
+		return true
 	case .IsEmpty:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
 	case .Range:
@@ -672,7 +677,10 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .In, .Inside:
-			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Invalid_AST} }
+			if !node.has_child || !node_reference_valid(node.child, len(nodes)) { return Lower_Outcome{kind = .Invalid_AST} }
+			if node.has_predicate {
+				if node.kind != .In || !node_reference_valid(node.predicate, len(nodes)) || !checked_count_add(&operand_count, 2) { return Lower_Outcome{kind = .Invalid_AST} }
+			} else if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Invalid_AST} }
 		case .IsEmpty:
 			if !node.has_child || !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
 				return Lower_Outcome{kind = .Invalid_AST}
@@ -1037,6 +1045,10 @@ lower_filter :: proc(
 			instruction.opcode = .In if node.kind == .In else .Inside
 			instruction.operands_count = 1
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)})); operand_at += 1
+			if node.has_predicate {
+				instruction.operands_count = 2
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.predicate)})); operand_at += 1
+			}
 		case .IsEmpty:
 			instruction.opcode = .IsEmpty
 			instruction.operands_count = 1

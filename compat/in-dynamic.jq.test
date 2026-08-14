@@ -3,6 +3,14 @@
 null
 true
 
+IN(range(10); range(10))
+null
+true
+
+IN(range(5); range(5;10))
+null
+false
+
 5 | IN(range(0;10;3))
 null
 false

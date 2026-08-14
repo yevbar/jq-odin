@@ -627,8 +627,10 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if count != 1 { return false }; expected_count = 1
 	case .Split:
 		if count != 1 { return false }; expected_count = 1
-	case .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Error, .In, .Inside:
+	case .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Error, .Inside:
 		if count != 1 { return false }; expected_count = 1
+	case .In:
+		if count != 1 && count != 2 { return false }; expected_count = count
 	case .Try:
 		if count != 2 { return false }; expected_count = 2
 	case .IsEmpty, .Map, .Map_Values:
@@ -785,8 +787,10 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return instruction.operands_count
 	case .Flatten:
 		return instruction.operands_count
-	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Error, .In, .Inside, .IsEmpty, .Map, .Map_Values, .Strftime, .Strptime:
+	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Error, .Inside, .IsEmpty, .Map, .Map_Values, .Strftime, .Strptime:
 		return 1
+	case .In:
+		return instruction.operands_count
 	case .Slice:
 		count: Count = 1
 		for offset in 1..<instruction.operands_count {

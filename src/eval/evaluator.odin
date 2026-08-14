@@ -120,6 +120,9 @@ frame_phase :: enum u8 {
 	Map_Child_Active,
 	Contains_Child_Active,
 	In_Child_Active,
+	In_First_Child_Active,
+	In_Second_Start,
+	In_Second_Child_Active,
 	In_Result,
 	Trimstr_Start_Child,
 	Trimstr_Child_Active,
@@ -228,6 +231,7 @@ eval_frame :: struct {
 	iterator_cursor: int,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
+	in_source_values: value.Value,
 	selected_value: value.Value,
 	selected_seen: bool,
 	add_accumulator: value.Value,
@@ -643,6 +647,8 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	free_error = value.destroy_value(&frame.reduce_accumulator)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.reduce_binding)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.in_source_values)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.selected_value)
 	if free_error != nil do return free_error
@@ -1468,9 +1474,11 @@ capture_composite_instruction :: proc(
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
 	case .In:
-		if instruction.operands_count != 1 do return false
-		_, child_ok := child_instruction(storage, instruction, 0)
-		if !child_ok do return false
+		if instruction.operands_count != 1 && instruction.operands_count != 2 do return false
+		for offset in 0..<int(instruction.operands_count) {
+			_, child_ok := child_instruction(storage, instruction, u32(offset))
+			if !child_ok do return false
+		}
 	case .Ltrimstr, .Rtrimstr, .Trimstr:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1636,7 +1644,7 @@ resumed_composite_instruction_valid :: proc(
 		}
 	case .Contains_Child_Active:
 		if frame.mode != .Normal || instruction.opcode != .Contains do return false
-	case .In_Child_Active, .In_Result:
+	case .In_Child_Active, .In_First_Child_Active, .In_Second_Start, .In_Second_Child_Active, .In_Result:
 		if frame.mode != .Normal || instruction.opcode != .In do return false
 	case .Trimstr_Start_Child, .Trimstr_Child_Active:
 		if frame.mode != .Normal || (instruction.opcode != .Ltrimstr && instruction.opcode != .Rtrimstr && instruction.opcode != .Trimstr) do return false
@@ -1675,7 +1683,9 @@ resumed_composite_instruction_valid :: proc(
 	if frame.phase == .Unary_Active || frame.phase == .First_Empty || frame.phase == .Last_Result || frame.phase == .Last_Empty || frame.phase == .Add_Active || frame.phase == .Add_Result || frame.phase == .Add_Empty do expected_operand_count = 1
 	else if frame.phase == .Limit_Active || frame.phase == .Skip_Active || frame.phase == .Nth_Active do expected_operand_count = 2
 	else if frame.phase == .Map_Start || frame.phase == .Map_Child_Active do expected_operand_count = 1
-	else if frame.phase == .Contains_Child_Active || frame.phase == .In_Child_Active || frame.phase == .In_Result do expected_operand_count = 1
+	else if frame.phase == .Contains_Child_Active || frame.phase == .In_Child_Active do expected_operand_count = 1
+	else if frame.phase == .In_Result do expected_operand_count = u8(instruction.operands_count)
+	else if frame.phase == .In_First_Child_Active || frame.phase == .In_Second_Start || frame.phase == .In_Second_Child_Active do expected_operand_count = 2
 	else if frame.phase == .Trimstr_Start_Child || frame.phase == .Trimstr_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Recurse_Children do expected_operand_count = 0
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active || frame.phase == .Label_Active do expected_operand_count = 2
@@ -2960,6 +2970,12 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .In_Child_Active:
 		frame.phase = .In_Result
+	case .In_First_Child_Active:
+		frame.phase = .In_Second_Start
+	case .In_Second_Child_Active:
+		frame.phase = .In_Result
+	case .In_Second_Start:
+		// Second-generator activation is handled by the consumer loop.
 	case .In_Result:
 		// Final false emission is handled by the consumer loop.
 	case .Trimstr_Child_Active:
@@ -3524,6 +3540,37 @@ propagate_output :: proc(
 			frame.phase = .Complete
 			output := value.boolean_value(true)
 			return propagate_output(storage, parent, &output)
+		case .In_First_Child_Active:
+			_, append_error := value.array_append_take(&frame.in_source_values, owned)
+			if value.array_error_kind(&append_error) != .None {
+				_ = value.destroy_value(owned)
+				return resource_step(.Out_Of_Memory), true
+			}
+			return {}, false
+		case .In_Second_Child_Active:
+			matched := false
+			length, length_ok := value.array_length(&frame.in_source_values)
+			if !length_ok {
+				_ = value.destroy_value(owned)
+				return begin_terminal_misuse(storage, .Malformed_Program), true
+			}
+			for cursor in 0..<length {
+				candidate, candidate_ok := value.array_element_copy(&frame.in_source_values, cursor)
+				if !candidate_ok {
+					_ = value.destroy_value(owned)
+					return begin_terminal_misuse(storage, .Malformed_Program), true
+				}
+				matched = value.values_equal(&candidate, owned)
+				_ = value.destroy_value(&candidate)
+				if matched do break
+			}
+			_ = value.destroy_value(owned)
+			if !matched do return {}, false
+			free_error := destroy_frames_to(storage, parent+1)
+			if free_error != nil do return resource_step(free_error), true
+			frame.phase = .Complete
+			output := value.boolean_value(true)
+			return propagate_output(storage, parent, &output)
 		case .Trimstr_Child_Active:
 			if value.kind_of(owned) != .String {
 				message := "endswith() requires string inputs" if instruction.opcode == .Rtrimstr else "startswith() requires string inputs"
@@ -3869,8 +3916,6 @@ begin_terminal_misuse :: proc(
 	storage: ^evaluator_storage,
 	kind: Misuse_Kind,
 ) -> Step_Result {
-	if kind == .Malformed_Program && storage != nil && storage.frame_count > 0 {
-	}
 	storage.misuse = kind
 	return begin_terminal(storage, .Misuse)
 }
@@ -6963,6 +7008,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		}
 
 		#partial switch frame.phase {
+		case .In_Second_Start:
+			second, second_ok := child_instruction(storage, instruction, 1)
+			input_copy := value.clone_value(&frame.input)
+			if !second_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, second, index, &input_copy) {
+				_ = value.destroy_value(&input_copy)
+				return begin_terminal_misuse(storage, .Malformed_Program)
+			}
+			frame.phase = .In_Second_Child_Active
+			continue
 		case .In_Result:
 			frame.phase = .Leaf_Yielded
 			output := value.boolean_value(false)
@@ -7966,7 +8020,24 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				child, child_ok := child_instruction(storage, instruction, 0)
 				container_instruction, container_ok := program.program_instruction(storage.compiled, child)
-				if instruction.opcode == .In && frame.phase == .Enter && child_ok && container_ok && !container_instruction.has_literal {
+				if instruction.opcode == .In && frame.phase == .Enter && instruction.operands_count == 2 && child_ok && container_ok {
+					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+					in_values, array_error := value.array_value(storage.allocator)
+					if value.array_error_kind(&array_error) != .None do return resource_step(.Out_Of_Memory)
+					frame.in_source_values = in_values
+					input_copy := value.clone_value(&frame.input)
+					if value.kind_of(&input_copy) == .Invalid do return resource_step(.Out_Of_Memory)
+					if storage.frame_count == len(storage.frames) {
+						grow_error := grow_frames(storage)
+						if grow_error != nil { _ = value.destroy_value(&input_copy); return resource_step(grow_error) }
+						frame = &storage.frames[index]
+					}
+					if !push_frame(storage, child, index, &input_copy) { _ = value.destroy_value(&input_copy); return begin_terminal_misuse(storage, .Malformed_Program) }
+					frame = &storage.frames[index]
+					frame.phase = .In_First_Child_Active
+					continue
+				}
+				if instruction.opcode == .In && frame.phase == .Enter && instruction.operands_count == 1 && child_ok && container_ok && !container_instruction.has_literal {
 					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 					input_copy := value.clone_value(&frame.input)
 					if value.kind_of(&input_copy) == .Invalid do return resource_step(.Out_Of_Memory)
