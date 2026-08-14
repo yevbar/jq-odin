@@ -510,6 +510,141 @@ parser_has_live_identity :: proc(parser: ^Parser) -> bool {
 	return parser != nil && parser.self == parser
 }
 
+Pattern_Path_Segment :: struct {
+	kind: enum {Field, Index, Dynamic},
+	node: Node_Id,
+	index: int,
+}
+
+Pattern_Leaf :: struct {
+	variable: Node_Id,
+	segments: [8]Pattern_Path_Segment,
+	count: int,
+}
+
+// collect_pattern_leaves accepts the bounded ordinary-binding destructuring
+// subset. It deliberately excludes filters and literals in pattern values;
+// those remain the existing unsupported syntax rather than silently changing
+// the Binding ABI.
+collect_pattern_leaves :: proc(parser: ^Parser, id: Node_Id, path: [8]Pattern_Path_Segment, depth: int, leaves: ^[16]Pattern_Leaf, count: ^int) -> bool {
+	if id < 0 || int(id) >= len(parser.nodes.storage) || depth > 8 || count^ >= 16 do return false
+	node := parser.nodes.storage[int(id)]
+	if node.kind == .Variable {
+		leaf := Pattern_Leaf{variable=id, segments=path, count=depth}
+		leaves[count^] = leaf; count^ += 1
+		return true
+	}
+	if node.container_kind == .Array && node.has_value {
+		entry := node.value; index := 0
+		for {
+			if entry < 0 || int(entry) >= len(parser.nodes.storage) do return false
+			child := parser.nodes.storage[int(entry)]
+			next_path := path
+			if depth >= len(next_path) do return false
+			next_path[depth] = Pattern_Path_Segment{kind=.Index, index=index}
+			if !collect_pattern_leaves(parser, entry if child.kind != .Comma else child.left, next_path, depth+1, leaves, count) do return false
+			if child.kind != .Comma do break
+			entry = child.right; index += 1
+		}
+		return true
+	}
+	if node.container_kind == .Object && node.has_value {
+		entry := node.value
+		for entry >= 0 {
+			if int(entry) >= len(parser.nodes.storage) do return false
+			e := parser.nodes.storage[int(entry)]
+			if e.kind != .Field || !e.has_key || !e.has_value do return false
+			key := parser.nodes.storage[int(e.key)]
+			kind: enum {Field, Index, Dynamic} = .Dynamic
+			if key.kind == .Field && key.has_name_span { kind = .Field }
+			else if key.kind == .Variable && key.has_name_span { kind = .Field }
+			else if key.kind == .String { kind = .Field }
+			if depth >= 8 do return false
+			next_path := path
+			next_path[depth] = Pattern_Path_Segment{kind=kind, node=e.key}
+			if key.kind == .Variable {
+				if count^ >= 16 do return false
+				leaves[count^] = Pattern_Leaf{variable=e.key, segments=next_path, count=depth+1}; count^ += 1
+			}
+			if !collect_pattern_leaves(parser, e.value, next_path, depth+1, leaves, count) do return false
+			entry = e.next if e.has_next else Node_Id(-1)
+		}
+		return true
+	}
+	return false
+}
+
+append_pattern_projection :: proc(parser: ^Parser, variable: Node_Id, leaf: Pattern_Leaf) -> (Node_Id, bool) {
+	if variable < 0 || int(variable) >= len(parser.nodes.storage) do return {}, false
+	base := parser.nodes.storage[int(variable)]
+	current, ok := append_node(parser, Node{kind=.Variable, span=base.span, name_span=base.name_span, has_name_span=true})
+	if !ok do return {}, false
+	for segment_index in 0..<leaf.count {
+		segment := leaf.segments[segment_index]
+		if segment.kind == .Field {
+			key := parser.nodes.storage[int(segment.node)]
+			if key.kind == .String {
+				current, ok = append_node(parser, Node{kind=.Field, span=key.span, child=current, has_child=true, name_span=key.span, has_name_span=true, string_text=key.string_text, has_string_text=true, string_shorthand=true})
+			} else if key.kind == .Variable {
+				current, ok = append_node(parser, Node{kind=.Field, span=key.span, child=current, has_child=true, name_span=key.name_span, has_name_span=true})
+			} else {
+				current, ok = append_node(parser, Node{kind=.Field, span=key.span, child=current, has_child=true, name_span=key.name_span, has_name_span=true})
+			}
+		} else {
+			span := parser.nodes.storage[int(segment.node)].span if segment.node >= 0 && int(segment.node) < len(parser.nodes.storage) else base.span
+			if segment.kind == .Index {
+				index_text := "0"
+				switch segment.index {
+				case 1: index_text = "1"
+				case 2: index_text = "2"
+				case 3: index_text = "3"
+				case 4: index_text = "4"
+				case 5: index_text = "5"
+				case 6: index_text = "6"
+				case 7: index_text = "7"
+				}
+				current, ok = append_node(parser, Node{kind=.Index, span=span, child=current, has_child=true, number_text=index_text, has_number_text=true})
+			} else {
+				current, ok = append_node(parser, Node{kind=.Index, span=span, child=current, has_child=true, index_key=segment.node, has_index_key=true})
+			}
+		}
+		if !ok do return {}, false
+	}
+	return current, true
+}
+
+try_parse_ordinary_pattern_binding :: proc(parser: ^Parser, left, pattern, pipe_root, pipe_tail: Node_Id, closing: Token_Kind, stop_at_comma: bool) -> (Node_Id, bool) {
+	if !token_is(parser, .Pipe) do return {}, false
+	path: [8]Pattern_Path_Segment
+	leaves: [16]Pattern_Leaf
+	count := 0
+	if !collect_pattern_leaves(parser, pattern, path, 0, &leaves, &count) || count == 0 {
+		return {}, false
+	}
+	advance(parser)
+	body, body_ok := parse_pipe(parser, closing, stop_at_comma)
+	if !body_ok do return {}, false
+	nested := body
+	first := parser.nodes.storage[int(leaves[0].variable)]
+	for index := 0; index < count; index += 1 {
+		projection, projection_ok := append_pattern_projection(parser, leaves[0].variable, leaves[index])
+		if !projection_ok do return {}, false
+		variable := parser.nodes.storage[int(leaves[index].variable)]
+		span, span_ok := spanning(parser, parser.nodes.storage[int(projection)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
+		bound, bound_ok := append_node(parser, Node{kind=.Binding, span=span, left=projection, right=nested, name_span=variable.name_span, has_name_span=true})
+		if !bound_ok do return {}, false
+		nested = bound
+	}
+	span, span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
+	bound, bound_ok := append_node(parser, Node{kind=.Binding, span=span, left=left, right=nested, name_span=first.name_span, has_name_span=true})
+	if !bound_ok do return {}, false
+	if pipe_root != Node_Id(-1) {
+		tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = bound; tail.has_child = false
+		return pipe_root, true
+	}
+	return bound, true
+}
+
 // init_parser initializes parser without allocating. It returns false for a
 // live shallow copy or an invalid lifecycle state. parser must remain at this
 // address and the borrowed source plus allocator backing must stay alive until
@@ -2280,6 +2415,8 @@ parse_pipe :: proc(
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
+				ordinary, ordinary_ok := try_parse_ordinary_pattern_binding(parser, left, pattern, pipe_root, pipe_tail, closing, stop_at_comma)
+				if ordinary_ok do return ordinary, true
 				entries := parser.nodes.storage[int(pattern_node.value)]
 				entry_count := 0
 				if entries.kind == .Variable {
@@ -2390,6 +2527,8 @@ parse_pipe :: proc(
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
+				ordinary, ordinary_ok := try_parse_ordinary_pattern_binding(parser, left, pattern, pipe_root, pipe_tail, closing, stop_at_comma)
+				if ordinary_ok do return ordinary, true
 				entry_id := pattern_node.value
 				variables: [2]Node_Id
 				keys: [2]Node_Id
