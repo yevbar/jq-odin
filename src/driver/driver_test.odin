@@ -22,6 +22,7 @@ module_metadata_extractor_preserves_dependency_and_definition_order :: proc(t: ^
 	metadata: module_metadata
 	err := extract_module_metadata(source, &metadata, context.allocator)
 	testing.expect_value(t, err, runtime.Allocator_Error(nil))
+	testing.expect_value(t, metadata.module_value, "{whatever:null}")
 	testing.expect_value(t, len(metadata.deps), 2)
 	testing.expect_value(t, metadata.deps[0].relpath, "a")
 	testing.expect_value(t, metadata.deps[0].alias, "foo")

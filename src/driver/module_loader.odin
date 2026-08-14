@@ -50,12 +50,16 @@ module_metadata_dependency :: struct {
 }
 
 module_metadata :: struct {
+	// module_value is the source-level constant object, including braces. It
+	// remains text until the driver materializes modulemeta's runtime object.
+	module_value: string,
 	deps: [dynamic]module_metadata_dependency,
 	defs: [dynamic]string,
 }
 
 destroy_module_metadata :: proc(metadata: ^module_metadata, allocator: runtime.Allocator) {
 	if metadata == nil do return
+	delete(metadata.module_value, allocator)
 	for dependency in metadata.deps {
 		delete(dependency.relpath, allocator)
 		delete(dependency.alias, allocator)
@@ -80,7 +84,13 @@ extract_module_metadata :: proc(source: string, metadata: ^module_metadata, allo
 		if module_word(source, i, "module") {
 			i += len("module")
 			module_space(source, &i)
+			object_start := i
 			if !skip_module_object(source, &i) do return .Invalid_Argument
+			if len(metadata.module_value) == 0 {
+				owned_object, object_error := strings.clone(source[object_start:i], allocator)
+				if object_error != nil do return object_error
+				metadata.module_value = owned_object
+			}
 			module_space(source, &i)
 			if i >= len(source) || source[i] != ';' do return .Invalid_Argument
 			i += 1
