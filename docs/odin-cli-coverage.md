@@ -6,12 +6,12 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `65ae1f2f`, the authoritative selected catalog measurement
-is **449/522 passed, 73 failed, 0 harness errors** (`/tmp/coverage-nested-binding.json`).
-The four-case gain over the prior 445/522 checkpoint covers bounded ordinary
-nested binding destructuring in `upstream/jq/tests/jq.test:524,530,920,924`;
-the focused shard is `compat/nested-binding-pattern.jq.test` and the
-implementation decision is `docs/decisions/0318-nested-binding-pattern.md`.
+At integration head `2ed65f43`, the authoritative selected catalog measurement
+is **450/522 passed, 72 failed, 0 harness errors** (`/tmp/coverage-location.json`).
+The one-case gain over the prior 449/522 checkpoint covers bounded object
+location shorthand in `upstream/jq/tests/jq.test:2262`; the focused shard is
+`compat/location-object-shorthand.jq.test` and the implementation decision is
+`docs/decisions/0319-location-object-shorthand.md`.
 
 ## Current evidence
 
