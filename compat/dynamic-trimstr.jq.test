@@ -14,3 +14,18 @@
 "foobar" | ltrimstr(("f", "b"))
 "oobar"
 "foobar"
+
+# Non-string inputs retain the builtin's typed error through a dynamic child.
+.[] as [$x, $y] | try ["ok", ($x | ltrimstr($y))] catch ["ko", .]
+[["hi",1],[1,"hi"],["hi","hi"],[1,1]]
+["ko","startswith() requires string inputs"]
+["ko","startswith() requires string inputs"]
+["ok",""]
+["ko","startswith() requires string inputs"]
+
+.[] as [$x, $y] | try ["ok", ($x | rtrimstr($y))] catch ["ko", .]
+[["hi",1],[1,"hi"],["hi","hi"],[1,1]]
+["ko","endswith() requires string inputs"]
+["ko","endswith() requires string inputs"]
+["ok",""]
+["ko","endswith() requires string inputs"]

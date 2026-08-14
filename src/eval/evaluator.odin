@@ -3517,7 +3517,10 @@ propagate_output :: proc(
 			_ = value.destroy_value(owned)
 			if resource_error != nil do return resource_step(resource_error), true
 			if runtime_kind != .None {
-				result, ready := raise_runtime(storage, current, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+				message := "endswith() requires string inputs" if instruction.opcode == .Rtrimstr else "startswith() requires string inputs"
+				err_kind: Runtime_Error_Kind = runtime_kind
+				if runtime_kind == .Cannot_Iterate do err_kind = .User_Error
+				result, ready := raise_runtime(storage, current, Runtime_Error{kind=err_kind, input_kind=value.kind_of(&frame.input), span=instruction.span, key=message})
 				if ready do return result, true
 				return {}, false
 			}

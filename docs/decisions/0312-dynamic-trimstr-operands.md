@@ -23,3 +23,8 @@ Evidence is in `compat/dynamic-trimstr.jq.test`, targeting jq.test cases
 2474/2481 and direct generator cardinality. Ownership boundaries remain in
 `src/eval/evaluator.odin`; parser/compiler/program graph contracts remain
 unchanged because the argument was already an instruction operand.
+
+The dynamic child path also preserves the typed `startswith()`/`endswith()`
+diagnostic when the original trimstr input is non-string, rather than exposing
+an empty catch value. The four-pair regression cases in the focused fixture
+cover both input and separator type failures.
