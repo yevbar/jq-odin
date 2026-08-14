@@ -2148,10 +2148,6 @@ parse_pipe :: proc(
 				// expression, but do not require that producer to be literal `.`.
 				// The generated index filters then run once for each producer item,
 				// matching jq's destructuring binding semantics.
-				if pipe_root != invalid_id {
-					fail_from_lookahead(parser, .Expression)
-					return {}, false
-				}
 				pattern, pattern_ok := parse_container(parser, .Open_Bracket)
 				if !pattern_ok || pattern < 0 || int(pattern) >= len(parser.nodes.storage) {
 					return {}, false
@@ -2208,6 +2204,12 @@ parse_pipe :: proc(
 				bound_span, span_ok = spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
 				bound, bound_ok = append_node(parser, Node{kind=.Binding, span=bound_span, left=left, right=nested, name_span=first.name_span, has_name_span=true})
 				if !bound_ok do return {}, false
+				if pipe_root != invalid_id {
+					tail := &parser.nodes.storage[int(pipe_tail)]
+					tail.right = bound
+					tail.has_child = false
+					return pipe_root, true
+				}
 				return bound, true
 			}
 			// A bounded object pattern reuses the normal Field and Binding
@@ -2217,10 +2219,6 @@ parse_pipe :: proc(
 			if token_is(parser, .Open_Brace) {
 				// As with array patterns, permit a generator producer such as
 				// `.[] as {a:$a}` while retaining a narrow direct-field pattern.
-				if pipe_root != invalid_id {
-					fail_from_lookahead(parser, .Expression)
-					return {}, false
-				}
 				pattern, pattern_ok := parse_container(parser, .Open_Brace)
 				if !pattern_ok || pattern < 0 || int(pattern) >= len(parser.nodes.storage) {
 					return {}, false
@@ -2280,6 +2278,12 @@ parse_pipe :: proc(
 				bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(nested)].span); assert(bound_span_ok)
 				bound, bound_ok := append_node(parser, Node{kind=.Binding, span=bound_span, left=left, right=nested, name_span=first.name_span, has_name_span=true})
 				if !bound_ok do return {}, false
+				if pipe_root != invalid_id {
+					tail := &parser.nodes.storage[int(pipe_tail)]
+					tail.right = bound
+					tail.has_child = false
+					return pipe_root, true
+				}
 				return bound, true
 			}
 			if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {

@@ -1,0 +1,8 @@
+# Piped generator destructuring must attach its Binding to the existing pipe.
+[{a:1}] | .[] as {a:$a} | $a
+1
+
+.[] as [$a,$b] | [$a,$b]
+[[2,1],[5,3]]
+[2,1]
+[5,3]
