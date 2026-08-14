@@ -183,6 +183,10 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && node.has_child && node.child >= 0 && node.right >= 0 &&
 		       node.has_number_text && len(node.number_text) > 0 && node.has_name_span == false && !node.has_value &&
 		       !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text)
+	case .Static_Slice_Set_Number:
+		return node.container_kind == .None && node.has_child && node.child >= 0 && node.left >= 0 && node.right >= 0 &&
+		       node.has_value && node.value >= 0 && !node.has_number_text && !node.has_name_span &&
+		       !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text)
 	case .Index:
 		if node.has_index_key {
 			return node.container_kind == .None && node.has_child && node.index_key >= 0 && no_edges && no_name &&
@@ -374,6 +378,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return true
 	case .Static_Index_Set_Number:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Static_Slice_Set_Number:
+		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.value, source, scopes, depth, next_budget)
 	case .If:
 		return validate_binding_scopes(nodes, node.if_condition, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.if_then, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.if_else, source, scopes, depth, next_budget)
 	case .Any_Not, .All_Not:
@@ -614,6 +620,16 @@ lower_filter :: proc(
 			   (nodes[int(node.right)].kind != .Number && nodes[int(node.right)].kind != .Boolean && nodes[int(node.right)].kind != .Null && nodes[int(node.right)].kind != .String) ||
 			   !checked_count_add(&operand_count, 2) ||
 			   !checked_count_add(&text_count, u64(len(node.number_text))+u64(rhs_len)) {
+				return Lower_Outcome{kind = .Invalid_AST}
+				}
+		case .Static_Slice_Set_Number:
+			if !node_reference_valid(node.child, len(nodes)) || !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !node_reference_valid(node.value, len(nodes)) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+			start_text := nodes[int(node.left)].number_text
+			end_text := nodes[int(node.right)].number_text
+			rhs_start, rhs_end, rhs_ok := diagnostic.span_offsets(source, nodes[int(node.value)].span)
+			if !rhs_ok || rhs_end < rhs_start || !checked_count_add(&operand_count, 3) || !checked_count_add(&text_count, u64(len(start_text))+u64(len(end_text))+u64(rhs_end-rhs_start)) {
 				return Lower_Outcome{kind = .Invalid_AST}
 			}
 		case .Flatten:
@@ -1093,6 +1109,22 @@ lower_filter :: proc(
 				text_at += u32(len(text)); operand_at += 1
 			}
 			instruction.operands_count = 2
+		case .Static_Slice_Set_Number:
+			instruction.opcode = .Static_Slice_Set_Number
+			bounds := [2]syntax.Node_Id{node.left, node.right}
+			for bound in bounds {
+				text := nodes[int(bound)].number_text
+				assert(program.set_text(output, program.Byte_Offset(text_at), text))
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(text))}))
+				text_at += u32(len(text)); operand_at += 1
+			}
+			rhs_start, rhs_end, rhs_ok := diagnostic.span_offsets(source, nodes[int(node.value)].span)
+			assert(rhs_ok && rhs_end >= rhs_start)
+			rhs_text := bytes[rhs_start:rhs_end]
+			assert(program.set_text(output, program.Byte_Offset(text_at), rhs_text))
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(rhs_text))}))
+			text_at += u32(len(rhs_text)); operand_at += 1
+			instruction.operands_count = 3
 		case .Strftime, .Strptime:
 			instruction.opcode = .Strftime if node.kind == .Strftime else .Strptime
 			instruction.format_local = node.strflocaltime

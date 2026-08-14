@@ -1137,6 +1137,33 @@ static_field_add_operands :: proc(
 }
 
 @(private)
+static_slice_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (start, end, rhs: string, ok: bool) {
+	if instruction.opcode != .Static_Slice_Set_Number || instruction.operands_count != 3 do return
+	for offset in 0..<3 {
+		operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(offset)))
+		if !operand_ok || operand.kind != .Text do return
+		text, text_ok := program.operand_text(storage.compiled, operand)
+		if !text_ok do return
+		if offset == 0 { start = text } else if offset == 1 { end = text } else { rhs = text }
+	}
+	ok = true
+	return
+}
+
+@(private)
+append_array_element_copy :: proc(target, source: ^value.Value, at: int) -> bool {
+	item, item_ok := value.array_element_copy(source, at)
+	if !item_ok do return false
+	_, append_error := value.array_append_take(target, &item)
+	if value.array_error_kind(&append_error) != .None {
+		_ = value.destroy_value(&item)
+		_ = value.destroy_array_error(&append_error)
+		return false
+	}
+	return true
+}
+
+@(private)
 dynamic_field_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (key: string, rhs: program.Instruction, ok: bool) {
 	if instruction.opcode != .Dynamic_Field_Set || instruction.operands_count != 2 do return
 	key_operand, key_ok := program.program_operand(storage.compiled, instruction.operands_start)
@@ -6981,6 +7008,76 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Static_Slice_Set_Number:
+				start_text, end_text, rhs_text, operands_ok := static_slice_operands(storage, instruction)
+				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind == .String {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key="Cannot update string slices"})
+					if ready do return result
+					continue
+				}
+				if input_kind != .Array && input_kind != .Null {
+					message := "Cannot index object with object"
+					switch input_kind {
+					case .Boolean: message = "Cannot index boolean with object"
+					case .Number: message = "Cannot index number with object"
+					case .Object: message = "Cannot index object with object"
+					case .Array, .Null, .String, .Invalid:
+					}
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
+					if ready do return result
+					continue
+				}
+				if input_kind == .Null {
+					empty_array, empty_error := value.array_value(storage.allocator)
+					if value.array_error_kind(&empty_error) != .None {
+						cleanup_error := value.destroy_array_error(&empty_error); if cleanup_error != nil do return resource_step(cleanup_error)
+						return resource_step(.Out_Of_Memory)
+					}
+					_ = value.destroy_value(&frame.input); frame.input = empty_array
+				}
+				start_number, start_ok := strconv.parse_f64(start_text)
+				end_number, end_ok := strconv.parse_f64(end_text)
+				input_length, input_length_ok := value.array_length(&frame.input)
+				if !input_length_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				if start_text == "nan" { start_number, start_ok = 0, true }
+				if end_text == "nan" { end_number, end_ok = f64(input_length), true }
+				if math.is_inf(start_number) { start_number, start_ok = f64(input_length) if start_number > 0 else 0, true }
+				if math.is_inf(end_number) { end_number, end_ok = f64(input_length) if end_number > 0 else 0, true }
+				if !start_ok || !end_ok || math.is_nan(start_number) || math.is_nan(end_number) do return begin_terminal_misuse(storage, .Malformed_Program)
+				// Keep the conversion to Odin's native int defined for adversarial
+				// literals. jq clamps out-of-range bounds to the array edges; the
+				// bounded bridge uses a conservative edge clamp before conversion.
+				int_ceiling := f64(max(int)-2)
+				int_floor := f64(min(int)+2)
+				if start_number > int_ceiling { start_number = int_ceiling }
+				if start_number < int_floor { start_number = int_floor }
+				if end_number > int_ceiling { end_number = int_ceiling }
+				if end_number < int_floor { end_number = int_floor }
+				start_index := int(math.floor(start_number))
+				end_index := int(math.ceil(end_number))
+				if start_index < 0 { start_index = max(0, input_length+start_index) }
+				if end_index < 0 { end_index = max(0, input_length+end_index) }
+				start_index = min(input_length, max(0, start_index)); end_index = min(input_length, max(start_index, end_index))
+				rhs, rhs_next, rhs_done, rhs_error := json.parse_next_value(rhs_text, 0, storage.allocator)
+				if rhs_error.kind != .None || rhs_done || rhs_next != len(rhs_text) || value.kind_of(&rhs) != .Array {
+					_ = value.destroy_value(&rhs)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				updated, array_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&array_error) != .None {
+					_ = value.destroy_value(&rhs)
+					cleanup_error := value.destroy_array_error(&array_error); if cleanup_error != nil do return resource_step(cleanup_error)
+					return resource_step(.Out_Of_Memory)
+				}
+				for item_index in 0..<start_index { if !append_array_element_copy(&updated, &frame.input, item_index) { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return resource_step(.Out_Of_Memory) } }
+				rhs_length, rhs_length_ok := value.array_length(&rhs); if !rhs_length_ok { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return begin_terminal_misuse(storage, .Malformed_Program) }
+				for item_index in 0..<rhs_length { if !append_array_element_copy(&updated, &rhs, item_index) { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return resource_step(.Out_Of_Memory) } }
+				for item_index in end_index..<input_length { if !append_array_element_copy(&updated, &frame.input, item_index) { _ = value.destroy_value(&rhs); _ = value.destroy_value(&updated); return resource_step(.Out_Of_Memory) } }
+			_ = value.destroy_value(&rhs); _ = value.destroy_value(&frame.input); frame.input = updated
+			output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded
+			result, ready := propagate_output(storage, index, &output); if ready do return result
 			case .Static_Index_Set_Number:
 				if instruction.operands_count != 2 do return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				// jq treats null as an empty array for numeric path assignment,

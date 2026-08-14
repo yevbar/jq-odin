@@ -250,6 +250,8 @@ Node_Kind :: enum {
 	Static_Field_Set_Number,
 	// Static_Index_Set_Number is appended to preserve existing AST discriminants.
 	Static_Index_Set_Number,
+	// Static_Slice_Set_Number is a bounded literal-RHS slice assignment.
+	Static_Slice_Set_Number,
 	// Path, Paths, and Getpath are explicit path-expression nodes.
 	Path,
 	Paths,
@@ -2048,6 +2050,29 @@ parse_pipe :: proc(
 			)
 		}
 		if token_is(parser, .Assign) {
+			if current >= 0 && parser.nodes.storage[int(current)].kind == .Slice {
+				slice := parser.nodes.storage[int(current)]
+				start_ok := slice.left >= 0 && parser.nodes.storage[int(slice.left)].kind == .Number
+				end_ok := slice.right >= 0 && parser.nodes.storage[int(slice.right)].kind == .Number
+				if start_ok && end_ok && slice.has_child && slice.child >= 0 {
+					advance(parser)
+					rhs, rhs_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !rhs_ok do return {}, false
+					for rhs >= 0 && parser.nodes.storage[int(rhs)].kind == .Parenthesized && parser.nodes.storage[int(rhs)].has_child {
+						rhs = parser.nodes.storage[int(rhs)].child
+					}
+					rhs_node := parser.nodes.storage[int(rhs)]
+					if rhs_node.form != .Kinded || rhs_node.kind == .Variable || rhs_node.kind == .Call || rhs_node.has_child {
+						fail_from_lookahead(parser, .Expression); return {}, false
+					}
+					span, span_ok := spanning(parser, slice.span, rhs_node.span); assert(span_ok)
+					update, update_ok := append_node(parser, Node{kind=.Static_Slice_Set_Number, span=span, child=slice.child, has_child=true, left=slice.left, right=slice.right, value=rhs, has_value=true})
+					if !update_ok do return {}, false
+					if int(pipe_root) < 0 do return update, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+					return pipe_root, true
+				}
+			}
 			if current >= 0 && parser.nodes.storage[int(current)].kind == .Index {
 				index_base := parser.nodes.storage[int(current)].child
 				if index_base < 0 || parser.nodes.storage[int(index_base)].kind != .Index {

@@ -477,6 +477,16 @@ every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.
 		seen[node.kind] = true
 	}
 	testing.expect_value(t, syntax.destroy_parser(&index_parser), runtime.Allocator_Error.None)
+	slice_parser: syntax.Parser
+	slice_source := diagnostic.borrow_source("<slice-assignment-shape>", `.[1.5:3.5] = ["xyz"]`)
+	testing.expect(t, syntax.init_parser(&slice_parser, slice_source, context.allocator))
+	slice_parsed := syntax.parse_filter(&slice_parser)
+	testing.expect_value(t, slice_parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	for node in syntax.parser_nodes(&slice_parser) {
+		testing.expect(t, node_payload_shape_valid(node))
+		seen[node.kind] = true
+	}
+	testing.expect_value(t, syntax.destroy_parser(&slice_parser), runtime.Allocator_Error.None)
 	call_parser: syntax.Parser
 	call_source := diagnostic.borrow_source("<call-shape>", `def f: .; f`)
 	testing.expect(t, syntax.init_parser(&call_parser, call_source, context.allocator))

@@ -1,0 +1,19 @@
+try ("foobar" | .[1.5:3.5] = "xyz") catch .
+null
+"Cannot update string slices"
+
+try ([range(10)] | .[1.5:3.5] = ["xyz"]) catch .
+null
+[0,"xyz",4,5,6,7,8,9]
+
+try (null | .[1.5:3.5] = ["x"]) catch .
+null
+["x"]
+
+try (1 | .[1.5:3.5] = ["x"]) catch .
+null
+"Cannot index number with object"
+
+try ([1,2,3] | .[nan:2] = [9]) catch .
+null
+[9,3]
