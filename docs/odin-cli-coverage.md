@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `568e428f`, the authoritative selected catalog measurement
+At integration head `a87b8103`, the authoritative selected catalog measurement
 is **457/522 passed, 65 failed, 0 harness errors**
-(`/tmp/coverage-568e428f.json`). The one-case gain over the prior
+(`/tmp/coverage-a87b8103.json`). The one-case gain over the prior
 456/522 checkpoint covers jq-compatible nonfinite JSON input framing at
 `upstream/jq/tests/jq.test:1290`; the focused shard is
 `compat/cli-nonfinite-framing.jq.test` and the implementation decision is
@@ -21,6 +21,10 @@ assignment is also now implemented and focused-tested in
 `compat/iterator-assignment.jq.test` (`docs/decisions/0325-root-iterator-assignment.md`),
 but its selected catalog case still includes unsupported NaN input framing, so
 it does not yet change the 456/522 total. The preceding three-case
+root `.[] |= empty` deletion is now also covered by
+`compat/iterator-delete.jq.test` (`docs/decisions/0326-root-iterator-empty-update.md`);
+its selected upstream cases still combine unsupported update-path forms, so the
+catalog total remains unchanged. The preceding three-case
 gain covered nested parenthesized `try`/`catch` stream handling in
 `upstream/jq/tests/jq.test:2308,2312,2317`; the focused shard is
 `compat/nested-try-streams.jq.test` and the implementation decision is
