@@ -3,7 +3,7 @@
 Status: investigation recorded (2026-08-13)
 
 The latest authoritative catalog remains **416/522 passed, 106 failed, 0
-errors** (`/tmp/coverage-meta-full.json`, rebuilt after a green `make validate`).
+errors** (`/tmp/coverage-meta-fix.json`, rebuilt after a green `make validate`).
 The modulemeta scalar projection bridge adds two passing cases; the other
 three-count modulemeta object case remains intentionally unsupported.
 The remaining sort/group case at
