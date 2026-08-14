@@ -2,8 +2,8 @@
 
 Status: investigation recorded (2026-08-13)
 
-The latest authoritative catalog is **419/522 passed, 103 failed, 0 errors**
-(`/tmp/coverage-slice.json`, rebuilt after a green `make validate`). The
+The latest authoritative catalog is **421/522 passed, 101 failed, 0 errors**
+(`/tmp/coverage-mask.json`, rebuilt after a green `make validate`). The
 modulemeta bridge now covers the scalar projections and the canonical full
 objects for modules `a` and `c`; the object bridge is deliberately bounded to
 the two source-level constant forms present in the jq module fixtures.
@@ -46,3 +46,9 @@ identity and identity-times-literal probes match jq. The catalog remains
 419/522 (`/tmp/coverage-foreach.json`); the selected catalog does not include
 the focused extractor forms, so this is another semantic gain without a
 percentage change. General generator-valued extractors remain deferred.
+
+The grouped static slice deletion mask subsequently adds the selected
+`jq.test:474` and `:1175` cases, raising the catalog to 421/522. It resolves
+comma selectors against the original array coordinate space and preserves
+legacy scalar-only deletion lowering. Positive `nan` bounds remain a
+documented parser gap.
