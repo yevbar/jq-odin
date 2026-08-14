@@ -1,0 +1,16 @@
+# Dynamic trimstr separators come from the binding stream and preserve the
+# surrounding try/catch body for each produced pair.
+.[] as [$x, $y] | try ["ok", ($x | ltrimstr($y))] catch ["err", .]
+[["foobar", "foo"], ["bar", "foo"]]
+["ok", "bar"]
+["ok", "bar"]
+
+.[] as [$x, $y] | try ["ok", ($x | rtrimstr($y))] catch ["err", .]
+[["foobar", "bar"], ["barfoo", "foo"]]
+["ok", "foobar"]
+["ok", "bar"]
+
+# A dynamic separator is a generator; each string result produces one output.
+"foobar" | ltrimstr(("f", "b"))
+"oobar"
+"foobar"

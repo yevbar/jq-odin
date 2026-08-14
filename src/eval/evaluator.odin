@@ -110,6 +110,8 @@ frame_phase :: enum u8 {
 	Map_Start,
 	Map_Child_Active,
 	Contains_Child_Active,
+	Trimstr_Start_Child,
+	Trimstr_Child_Active,
 	Try_Start_Expression,
 	Try_Start_Catch,
 	Try_Expression_Active,
@@ -1392,6 +1394,10 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
+	case .Ltrimstr, .Rtrimstr, .Trimstr:
+		if instruction.operands_count != 1 do return false
+		_, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return false
 	case .Field:
 		if instruction.operands_count != 2 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -1546,6 +1552,8 @@ resumed_composite_instruction_valid :: proc(
 		}
 	case .Contains_Child_Active:
 		if frame.mode != .Normal || instruction.opcode != .Contains do return false
+	case .Trimstr_Start_Child, .Trimstr_Child_Active:
+		if frame.mode != .Normal || (instruction.opcode != .Ltrimstr && instruction.opcode != .Rtrimstr && instruction.opcode != .Trimstr) do return false
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
 	case .Slice_Start_Child, .Slice_Child_Active, .Slice_Start_Bound_Start, .Slice_Start_Bound_Active, .Slice_End_Bound_Start, .Slice_End_Bound_Active, .Slice_Result_Active:
@@ -1582,6 +1590,7 @@ resumed_composite_instruction_valid :: proc(
 	else if frame.phase == .Limit_Active || frame.phase == .Skip_Active || frame.phase == .Nth_Active do expected_operand_count = 2
 	else if frame.phase == .Map_Start || frame.phase == .Map_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Contains_Child_Active do expected_operand_count = 1
+	else if frame.phase == .Trimstr_Start_Child || frame.phase == .Trimstr_Child_Active do expected_operand_count = 1
 	else if frame.phase == .Recurse_Children do expected_operand_count = 0
 	else if frame.phase == .Try_Expression_Active || frame.phase == .Try_Catch_Active do expected_operand_count = 2
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active || frame.phase == .Index_Key_Active {
@@ -2863,6 +2872,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Map_Start
 	case .Contains_Child_Active:
 		frame.phase = .Complete
+	case .Trimstr_Child_Active:
+		frame.phase = .Complete
 	case .Try_Expression_Active, .Try_Catch_Active:
 		frame.phase = .Complete
 	case .Fork_Left_Active:
@@ -3367,6 +3378,25 @@ propagate_output :: proc(
 				return {}, false
 			}
 			_ = value.destroy_value(owned)
+			return propagate_output(storage, parent, &output)
+		case .Trimstr_Child_Active:
+			if value.kind_of(owned) != .String {
+				message := "endswith() requires string inputs" if instruction.opcode == .Rtrimstr else "startswith() requires string inputs"
+				_ = value.destroy_value(owned)
+				result, ready := raise_runtime(storage, current, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span, key=message})
+				if ready do return result, true
+				return {}, false
+			}
+			needle, needle_ok := value.string_borrowed(owned)
+			if !needle_ok { _ = value.destroy_value(owned); return begin_terminal_misuse(storage, .Malformed_Program), true }
+			output, runtime_kind, resource_error := trimstr_result(&frame.input, needle, instruction.opcode, storage.allocator)
+			_ = value.destroy_value(owned)
+			if resource_error != nil do return resource_step(resource_error), true
+			if runtime_kind != .None {
+				result, ready := raise_runtime(storage, current, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span})
+				if ready do return result, true
+				return {}, false
+			}
 			return propagate_output(storage, parent, &output)
 		case .Loop_Condition_Active, .Loop_Update_Active:
 			if value.kind_of(&frame.loop_value) != .Invalid do return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
@@ -7853,6 +7883,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				child, child_ok := child_instruction(storage, instruction, 0)
 				needle_instruction, needle_ok := program.program_instruction(storage.compiled, child)
+				if child_ok && needle_ok && !needle_instruction.has_literal && needle_instruction.opcode != .Nan && needle_instruction.opcode != .Infinite {
+					if !capture_composite_instruction(storage, frame, instruction) {
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					frame.phase = .Trimstr_Start_Child
+					continue
+				}
 				if !child_ok || !needle_ok || (!needle_instruction.has_literal && needle_instruction.opcode != .Nan && needle_instruction.opcode != .Infinite) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
@@ -8874,7 +8911,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Slice_Start_Bound_Start, .Slice_End_Bound_Start, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right, .Call_Start, .Loop_Start_Condition, .Loop_Start_Update:
+		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Slice_Start_Bound_Start, .Slice_End_Bound_Start, .Trimstr_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right, .Call_Start, .Loop_Start_Condition, .Loop_Start_Update:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -8897,6 +8934,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				offset, next_phase = 1, .Slice_Start_Bound_Active
 			case .Slice_End_Bound_Start:
 				offset, next_phase = 2, .Slice_End_Bound_Active
+			case .Trimstr_Start_Child:
+				offset, next_phase = 0, .Trimstr_Child_Active
 			case .Fork_Start_Left:
 				offset, next_phase = 0, .Fork_Left_Active
 			case .Fork_Start_Right:

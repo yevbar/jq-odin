@@ -1686,6 +1686,10 @@ parse_pipe :: proc(
 					trimstr_literal := (spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr") &&
 						(argument_node.kind == .Number || argument_node.kind == .Boolean || argument_node.kind == .Null || argument_node.kind == .Nan || argument_node.kind == .Infinite ||
 						 (argument_node.kind == .Negate && argument_node.has_child && parser.nodes.storage[int(argument_node.child)].kind == .Number))
+					// Dynamic trimstr separators are valid filters; mark them as
+					// trimstr-admissible for the shared scalar-call checks while
+					// retaining the original child node for evaluator lowering.
+					if (spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr") && !trimstr_literal do trimstr_literal = true
 					isempty_literal := spelling == "isempty" && (argument_node.kind == .Empty || argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number || argument_node.kind == .String || argument_node.kind == .Range || argument_node.kind == .Comma || (argument_node.kind == .Identity && argument_node.container_kind == .Array))
 					 isempty_array_literal := spelling == "isempty" && argument_node.kind == .Identity && (argument_node.container_kind == .Array || argument_node.container_kind == .Object)
 					strftime_literal := (spelling == "strftime" || spelling == "strflocaltime") && (argument_node.kind == .Identity || argument_node.kind == .Null || argument_node.kind == .Boolean || argument_node.kind == .Number || argument_node.kind == .String || argument_node.kind == .Nan || argument_node.kind == .Empty || (argument_node.kind == .Identity && argument_node.container_kind == .Object))
