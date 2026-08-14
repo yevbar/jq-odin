@@ -758,7 +758,7 @@ validation and the CLI harness (333 subprocess / 43 differential checks) pass.
 ## Authoritative restored-CLI measurement (2026-08-14)
 
 The reviewed CLI integration branch was restored at `28cb5463` and replayed
-with the accepted evaluator/language chain through `b544441d` (dynamic slice
+with the accepted evaluator/language chain through `869a9508` (dynamic slice
 bounds, piped generator destructuring, dynamic trimstr, label/break control
 flow, and the debug diagnostic event). The candidate built with Odin
 `dev-2026-05`; `make check-packages` and `make test` passed all package and
@@ -768,7 +768,10 @@ label/break, and 1/1 for debug. The pinned jq 1.8.1 catalog selected all 522
 cases and reports **426 passed, 96 failed, 0 harness errors**. The subsequent
 trimstr typed-input error propagation fix (commit `3db4cdde`) adds exact
 `ltrimstr`/`rtrimstr` diagnostics for non-string bases under `try`; the
-focused trimstr shard is now 7/7. The remaining
-failures are primarily richer destructuring/foreach, update-path assignment,
+focused trimstr shard is now 7/7. Static field assignment now preserves jq's
+null-as-empty-object behavior and typed non-object diagnostics (`4b39bd66`),
+and single-slot array rebinding is covered by a focused 4/4 shard
+(`869a9508`). The pinned catalog now reports **428 passed, 94 failed, 0
+harness errors**. The remaining failures are primarily richer destructuring/foreach, update-path assignment,
 `?//`, module closures, dynamic builtins, process I/O, and exact diagnostics;
 these remain implementation work rather than skipped coverage.
