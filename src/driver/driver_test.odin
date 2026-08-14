@@ -16,6 +16,25 @@ module_metadata_parameter_arity_counts_jq_formals :: proc(t: ^testing.T) {
 	testing.expect_value(t, module_parameter_arity("$x; y; $z"), 3)
 }
 
+@(test)
+module_metadata_extractor_preserves_dependency_and_definition_order :: proc(t: ^testing.T) {
+	source := "module {whatever:null}; import \"a\" as foo; import \"data\" as $d; def a: 0; def c: 1;"
+	metadata: module_metadata
+	err := extract_module_metadata(source, &metadata, context.allocator)
+	testing.expect_value(t, err, runtime.Allocator_Error(nil))
+	testing.expect_value(t, len(metadata.deps), 2)
+	testing.expect_value(t, metadata.deps[0].relpath, "a")
+	testing.expect_value(t, metadata.deps[0].alias, "foo")
+	testing.expect_value(t, metadata.deps[0].is_data, false)
+	testing.expect_value(t, metadata.deps[1].relpath, "data")
+	testing.expect_value(t, metadata.deps[1].alias, "d")
+	testing.expect_value(t, metadata.deps[1].is_data, true)
+	testing.expect_value(t, len(metadata.defs), 2)
+	testing.expect_value(t, metadata.defs[0], "a/0")
+	testing.expect_value(t, metadata.defs[1], "c/0")
+	destroy_module_metadata(&metadata, context.allocator)
+}
+
 EVALUATOR_GUARD_SIZE :: 64
 EVALUATOR_GUARD_BYTE :: byte(0xa5)
 

@@ -66,6 +66,101 @@ destroy_module_metadata :: proc(metadata: ^module_metadata, allocator: runtime.A
 	delete(metadata.defs)
 }
 
+// extract_module_metadata reads only the declarations belonging to one
+// module source. It deliberately does not recurse or resolve search paths;
+// collect_module remains the owner of transitive loading. Keeping this direct
+// extraction separate makes dependency order and definition arity testable
+// before the metadata table is threaded through evaluator execution.
+extract_module_metadata :: proc(source: string, metadata: ^module_metadata, allocator: runtime.Allocator) -> runtime.Allocator_Error {
+	if metadata == nil do return .Invalid_Argument
+	i := 0
+	for {
+		module_space(source, &i)
+		if i >= len(source) do break
+		if module_word(source, i, "module") {
+			i += len("module")
+			module_space(source, &i)
+			if !skip_module_object(source, &i) do return .Invalid_Argument
+			module_space(source, &i)
+			if i >= len(source) || source[i] != ';' do return .Invalid_Argument
+			i += 1
+			continue
+		}
+		if module_word(source, i, "include") {
+			name, search, next, ok, unsupported := parse_module_include(source, i)
+			if unsupported || !ok do return .Invalid_Argument
+			owned_name, name_error := strings.clone(name, allocator)
+			owned_search, search_error := strings.clone(search, allocator)
+			if name_error != nil || search_error != nil {
+				delete(owned_name, allocator); delete(owned_search, allocator)
+				return name_error if name_error != nil else search_error
+			}
+			_, append_error := append(&metadata.deps, module_metadata_dependency{
+				relpath = owned_name, alias = "", search = owned_search, is_data = false,
+			})
+			if append_error != nil { delete(owned_name, allocator); delete(owned_search, allocator); return append_error }
+			i = next
+			continue
+		}
+		if module_word(source, i, "import") {
+			name, alias, search, next, ok, unsupported := parse_module_import(source, i)
+			if unsupported || !ok do return .Invalid_Argument
+			owned_name, name_error := strings.clone(name, allocator)
+			owned_alias, alias_error := strings.clone(alias, allocator)
+			owned_search, search_error := strings.clone(search, allocator)
+			if name_error != nil || alias_error != nil || search_error != nil {
+				delete(owned_name, allocator); delete(owned_alias, allocator); delete(owned_search, allocator)
+				if name_error != nil do return name_error
+				if alias_error != nil do return alias_error
+				return search_error
+			}
+			_, append_error := append(&metadata.deps, module_metadata_dependency{
+				relpath = owned_name, alias = owned_alias, search = owned_search,
+				is_data = module_import_uses_data_binding(source, i),
+			})
+			if append_error != nil { delete(owned_name, allocator); delete(owned_alias, allocator); delete(owned_search, allocator); return append_error }
+			i = next
+			continue
+		}
+		if module_word(source, i, "def") {
+			definition_end := module_definition_end(source, i)
+			if definition_end < 0 do return .Invalid_Argument
+			at := i + len("def")
+			module_space(source, &at)
+			name_start := at
+			for at < len(source) && is_module_identifier_byte(source[at]) do at += 1
+			if at == name_start do return .Invalid_Argument
+			name_end := at
+			module_space(source, &at)
+			parameters := ""
+			if at < len(source) && source[at] == '(' {
+				parameters_start := at + 1
+				depth := 1
+				at += 1
+				for at < len(source) && depth > 0 {
+					if source[at] == '(' do depth += 1
+					if source[at] == ')' do depth -= 1
+					at += 1
+				}
+				if depth != 0 do return .Invalid_Argument
+				parameters = source[parameters_start:at-1]
+			}
+			owned_name, name_error := strings.clone(source[name_start:name_end], allocator)
+			if name_error != nil do return name_error
+			arity_text := fmt.tprintf("/%d", module_parameter_arity(parameters))
+			owned_definition, definition_error := strings.concatenate([]string{owned_name, arity_text}, allocator)
+			delete(owned_name, allocator)
+			if definition_error != nil do return definition_error
+			_, append_error := append(&metadata.defs, owned_definition)
+			if append_error != nil { delete(owned_definition, allocator); return append_error }
+			i = definition_end
+			continue
+		}
+		return .Invalid_Argument
+	}
+	return nil
+}
+
 module_parameter_arity :: proc(parameters: string) -> int {
 	trimmed := module_trim(parameters)
 	if len(trimmed) == 0 do return 0
