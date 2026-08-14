@@ -183,6 +183,16 @@ json_kind_name :: proc(kind: value.Kind) -> string {
 }
 
 write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
+	if err.kind == .Runtime && err.modulemeta_failure == .Non_String_Input {
+		return write_all(os.stderr, "jq: error (at <stdin>:1): modulemeta input module name must be a string\n")
+	}
+	if err.kind == .Runtime && err.modulemeta_failure == .Missing_Module {
+		ok := write_all(os.stderr, "jq: error (at <stdin>:1): module not found: ")
+		name := err.modulemeta_name
+		if len(err.runtime_key) > 0 do name = err.runtime_key
+		ok = write_all(os.stderr, name) && ok
+		return write_all(os.stderr, "\n") && ok
+	}
 	if err.kind == .Runtime && len(err.runtime_key) > 0 &&
 	   (err.runtime_kind == .Cannot_Add || err.runtime_kind == .Cannot_Subtract) {
 		path := err.runtime_input_path

@@ -26,6 +26,8 @@ Run_Error_Kind :: enum u8 {
 	Misuse,
 }
 
+modulemeta_failure :: enum u8 { None, Non_String_Input, Missing_Module }
+
 // Transitional driver-only bridge for the scalar projections whose metadata
 // object shape is not yet represented in the syntax/program ABI.
 modulemeta_mode :: enum u8 { None, Dependency_Count, Definition_Count }
@@ -44,7 +46,10 @@ modulemeta_count :: proc(input: ^value.Value, paths: []string, mode: modulemeta_
 	search_paths := paths
 	if len(search_paths) == 0 do search_paths = []string{"."}
 	bytes, read_outcome := read_module(name, search_paths, allocator)
-	if read_outcome.kind != .None do return {}, read_outcome
+	if read_outcome.kind != .None {
+		read_outcome.module_name = name
+		return {}, read_outcome
+	}
 	metadata: module_metadata
 	metadata_error := extract_module_metadata(transmute(string)bytes, &metadata, allocator)
 	delete(bytes, allocator)
@@ -306,6 +311,8 @@ Run_Error :: struct {
 	// to preserve jq's `Cannot index number with string` wording while the
 	// evaluator remains responsible for ordinary runtime diagnostics.
 	runtime_module_scalar_field: bool,
+	modulemeta_failure: modulemeta_failure,
+	modulemeta_name: string,
 	runtime_input_path:   string,
 	runtime_input_line:   int,
 	serialization_kind:  json.Compact_Error_Kind,
@@ -1035,9 +1042,25 @@ run_with_options :: proc(
 		if done do return finish(result, {})
 
 		if result.modulemeta != .None {
+			if value.kind_of(&result.input) != .String {
+				return finish(result, {kind = .Runtime, runtime_kind = .User_Error,
+					runtime_input_path = options.input_path, runtime_input_line = options.input_line,
+					modulemeta_failure = .Non_String_Input})
+			}
 			metadata_value, metadata_outcome := modulemeta_count(&result.input, result.module_paths, result.modulemeta, allocator)
 			if metadata_outcome.kind != .None {
 				if metadata_outcome.resource_error != nil do return allocation_error(result, metadata_outcome.resource_error)
+				if metadata_outcome.kind == .Not_Found {
+					module_name, module_name_ok := value.string_borrowed(&result.input)
+					if !module_name_ok do module_name = ""
+					name_memory, name_error := strings.clone(module_name, result.allocator)
+					if name_error != nil do return allocation_error(result, name_error)
+					result.runtime_key_memory = transmute([]byte)name_memory
+					return finish(result, {kind = .Runtime,
+					runtime_kind = .User_Error, runtime_input_path = options.input_path,
+					runtime_input_line = options.input_line, modulemeta_failure = .Missing_Module,
+					modulemeta_name = transmute(string)result.runtime_key_memory})
+				}
 				return finish(result, {kind = .Module, module_kind = metadata_outcome.kind})
 			}
 			result.current_output = metadata_value
