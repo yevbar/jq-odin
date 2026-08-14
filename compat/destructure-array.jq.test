@@ -3,6 +3,15 @@
 [1, 2]
 [2, 1]
 
+# A single-slot pattern rebinds the same lexical name.
+. as $i | . as [$i] | $i
+[0]
+0
+
+. as [$i] | . as $i | $i
+[0]
+[0]
+
 # Iterator-fed patterns bind once for each produced item.
 .[] as [$a, $b] | [$b, $a]
 [[1], [1, 2, 3]]

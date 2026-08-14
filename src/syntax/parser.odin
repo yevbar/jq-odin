@@ -2243,13 +2243,19 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				entries := parser.nodes.storage[int(pattern_node.value)]
-				if entries.kind != .Comma || entries.left < 0 || int(entries.left) >= len(parser.nodes.storage) ||
-				   entries.right < 0 || int(entries.right) >= len(parser.nodes.storage) {
+				entry_count := 0
+				if entries.kind == .Variable {
+					entry_count = 1
+				} else if entries.kind == .Comma && entries.left >= 0 && int(entries.left) < len(parser.nodes.storage) &&
+				          entries.right >= 0 && int(entries.right) < len(parser.nodes.storage) {
+					entry_count = 2
+				} else {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
 				variables := [2]Node_Id{entries.left, entries.right}
-				for variable in variables {
+				if entry_count == 1 do variables[0] = pattern_node.value
+				for variable in variables[:entry_count] {
 					if parser.nodes.storage[int(variable)].kind != .Variable {
 						fail_from_lookahead(parser, .Expression)
 						return {}, false
@@ -2269,7 +2275,6 @@ parse_pipe :: proc(
 				// temporary item binding deliberately reuses the first user name;
 				// the innermost slot binding shadows it with the first element.
 				first := parser.nodes.storage[int(variables[0])]
-				second := parser.nodes.storage[int(variables[1])]
 				first_ref, first_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
 				if !first_ref_ok do return {}, false
 				first_index, first_index_ok := append_node(parser, Node{kind=.Index, span=first.span, number_text="0", has_number_text=true, child=first_ref, has_child=true})
@@ -2278,14 +2283,17 @@ parse_pipe :: proc(
 				bound, bound_ok := append_node(parser, Node{kind=.Binding, span=bound_span, left=first_index, right=nested, name_span=first.name_span, has_name_span=true})
 				if !bound_ok do return {}, false
 				nested = bound
-				first_ref, first_ref_ok = append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
-				if !first_ref_ok do return {}, false
-				second_index, second_index_ok := append_node(parser, Node{kind=.Index, span=second.span, number_text="1", has_number_text=true, child=first_ref, has_child=true})
-				if !second_index_ok do return {}, false
-				bound_span, span_ok = spanning(parser, parser.nodes.storage[int(second_index)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
-				bound, bound_ok = append_node(parser, Node{kind=.Binding, span=bound_span, left=second_index, right=nested, name_span=second.name_span, has_name_span=true})
-				if !bound_ok do return {}, false
-				nested = bound
+				if entry_count == 2 {
+					second := parser.nodes.storage[int(variables[1])]
+					first_ref, first_ref_ok = append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+					if !first_ref_ok do return {}, false
+					second_index, second_index_ok := append_node(parser, Node{kind=.Index, span=second.span, number_text="1", has_number_text=true, child=first_ref, has_child=true})
+					if !second_index_ok do return {}, false
+					bound_span, span_ok = spanning(parser, parser.nodes.storage[int(second_index)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
+					bound, bound_ok = append_node(parser, Node{kind=.Binding, span=bound_span, left=second_index, right=nested, name_span=second.name_span, has_name_span=true})
+					if !bound_ok do return {}, false
+					nested = bound
+				}
 				bound_span, span_ok = spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(nested)].span); assert(span_ok)
 				bound, bound_ok = append_node(parser, Node{kind=.Binding, span=bound_span, left=left, right=nested, name_span=first.name_span, has_name_span=true})
 				if !bound_ok do return {}, false
