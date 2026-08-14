@@ -1,0 +1,14 @@
+# A parenthesized try expression can be a right-hand pipe stage and must
+# preserve stream cardinality and error values.
+.[]|(try (if .=="hi" then . else error end) catch empty) | "\(.) there!"
+["hi","ho"]
+"hi there!"
+
+try (["hi","ho"]|.[]|(try . catch (if .=="ho" then "BROKEN"|error else empty end)) | if .=="ho" then error else "\(.) there!" end) catch "caught outside \(.)"
+null
+"hi there!"
+"caught outside ho"
+
+.[]|(try . catch (if .=="ho" then "BROKEN"|error else empty end)) | if .=="ho" then error else "\(.) there!" end
+["hi","ho"]
+"hi there!"

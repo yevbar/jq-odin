@@ -1174,7 +1174,11 @@ parse_pipe :: proc(
 				// particular, `try error(0) // 1` must let the defined-or fallback
 				// observe the suppressed error rather than swallowing the fallback
 				// inside the try expression.
-				expression, expression_ok := parse_pipe(parser, closing, true, true, false, false, true)
+				try_closing := closing
+				if parser.frames.count > entry_frame_depth {
+					try_closing = .Close_Paren
+				}
+				expression, expression_ok := parse_pipe(parser, try_closing, true, true, false, false, true)
 				if !expression_ok {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
@@ -1185,7 +1189,7 @@ parse_pipe :: proc(
 					advance(parser)
 					// A catch filter binds through binary and pipe operators, but a
 					// comma at this level starts the surrounding query stream.
-					catch_filter, catch_ok = parse_pipe(parser, closing, true, false, true, true)
+					catch_filter, catch_ok = parse_pipe(parser, try_closing, true, false, true, true)
 				} else {
 					// The evaluator already treats an empty catch as suppression;
 					// materialize that existing opcode rather than adding a second
@@ -2684,6 +2688,11 @@ parse_pipe :: proc(
 			current = frame_state.outer_current
 			pipe_root = frame_state.outer_pipe_root
 			pipe_tail = frame_state.outer_pipe_tail
+			// When the parenthesized group was opened as the right operand of
+			// an already-live pipe, the outer current is intentionally empty.
+			// Carry the completed group into that pipe now; otherwise the old
+			// tail remains an open placeholder and lowering rejects the valid
+			// filter as an invalid AST.
 			current_pipe_count = frame_state.outer_pipe_count
 			term_prefix_overhead = frame_state.outer_prefix_overhead
 			minus_before_group = frame_state.outer_minus_before_group

@@ -8511,7 +8511,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				child, child_ok := child_instruction(storage, instruction, 0)
 				message_instruction, message_instruction_ok := program.program_instruction(storage.compiled, child)
 				if child_ok && message_instruction_ok && message_instruction.opcode == .Identity && !message_instruction.has_literal {
-					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span})
+					err := Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					// For a string input, jq's bare `error` reports the string
+					// itself when uncaught. Keeping the borrowed text in the
+					// runtime-error transport also preserves the same value for
+					// try/catch; retain_runtime_error copies it before the frame
+					// can be retired.
+					if text, text_ok := value.string_borrowed(&frame.input); text_ok do err.key = text
+					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue
 				}
