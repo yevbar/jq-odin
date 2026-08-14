@@ -2355,6 +2355,21 @@ parse_pipe :: proc(
 							return pipe_root, true
 						}
 					}
+					// Preserve the existing bounded `.field |= .+number` lowering
+					// after this exact optional-identity probe has consumed the RHS.
+					if rhs.form == .Binary && rhs.binary_operator == .Add && rhs.left >= 0 && rhs.right >= 0 {
+						identity := parser.nodes.storage[int(rhs.left)]
+						number := parser.nodes.storage[int(rhs.right)]
+						if identity.form == .Kinded && identity.kind == .Identity && !identity.has_child &&
+							number.form == .Kinded && number.kind == .Number && number.has_number_text {
+							span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+							update, update_ok := append_node(parser, Node{kind=.Static_Field_Add_Number, span=span, right=rhs.right, name_span=left_node.name_span, has_name_span=true})
+							if !update_ok do return {}, false
+							if pipe_root == invalid_id do return update, true
+							tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+							return pipe_root, true
+						}
+					}
 					fail_from_lookahead(parser, .Expression); return {}, false
 				}
 			}
