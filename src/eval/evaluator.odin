@@ -178,6 +178,8 @@ frame_phase :: enum u8 {
 	Paths_Active,
 	Path_Active,
 	Complete,
+	Debug_Emit,
+	Debug_Output,
 }
 
 @(private)
@@ -236,6 +238,11 @@ eval_frame :: struct {
 	iterator_break_at: int,
 	iterator_break_enabled: bool,
 	iterator_break_name: string,
+	// Debug emits its diagnostic before allowing the value to flow downstream.
+	// Keeping the diagnostic on the frame preserves event ordering when the
+	// downstream filter is empty or raises an error, without changing the
+	// public evaluator handle ABI.
+	debug_value: value.Value,
 }
 
 @(private)
@@ -3130,6 +3137,8 @@ finish_top_frame :: proc(storage: ^evaluator_storage) -> (runtime.Allocator_Erro
 	if free_error != nil do return free_error, true
 	free_error = value.destroy_value(&storage.frames[index].paths_results)
 	if free_error != nil do return free_error, true
+	free_error = value.destroy_value(&storage.frames[index].debug_value)
+	if free_error != nil do return free_error, true
 	storage.frames[index] = {}
 	storage.frame_count -= 1
 	return nil, notify_exhausted(storage, parent)
@@ -3300,14 +3309,7 @@ propagate_output :: proc(
 	for {
 		parent := storage.frames[current].parent
 		if parent < 0 {
-			debug := false
-			debug_frame := producer
-			for debug_frame >= 0 {
-				producer_instruction, producer_ok := program.program_instruction(storage.compiled, storage.frames[debug_frame].instruction)
-				if producer_ok && producer_instruction.opcode == .Debug { debug = true; break }
-				debug_frame = storage.frames[debug_frame].parent
-			}
-			return Step_Result{kind = .Output, output = value.take_value(owned), debug = debug}, true
+			return Step_Result{kind = .Output, output = value.take_value(owned)}, true
 		}
 		frame := &storage.frames[parent]
 		instruction, instruction_ok := program.program_instruction(
@@ -6902,9 +6904,6 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		return resource_step(pending_error)
 	}
 	if storage.pending == .Terminal_Cleanup do return complete_terminal_cleanup(storage)
-	if value.kind_of(&storage.pending_value) != .Invalid && storage.pending == .None {
-		return Step_Result{kind = .Debug_Event, debug_output = value.take_value(&storage.pending_value)}
-	}
 	if storage.pending == .Suppress_Runtime {
 		result, ready := continue_suppression(storage)
 		if ready do return result
@@ -6917,6 +6916,18 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		if !instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
 		if !resumed_composite_instruction_valid(storage, frame, instruction) {
 			return begin_terminal_misuse(storage, .Malformed_Program)
+		}
+		if frame.phase == .Debug_Emit {
+			frame.phase = .Debug_Output
+			return Step_Result{kind = .Debug_Event, debug_output = value.take_value(&frame.debug_value)}
+		}
+		if frame.phase == .Debug_Output {
+			output := value.clone_value(&frame.input)
+			if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+			frame.phase = .Leaf_Yielded
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
+			continue
 		}
 		if frame.constructor_pending_failure {
 			free_error := constructor_frame_retry_pending(frame)
@@ -7263,11 +7274,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame = &storage.frames[index]
 				output := value.clone_value(&frame.input)
 				if value.kind_of(&output) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
-				storage.pending_value = value.clone_value(&frame.input)
-				if value.kind_of(&storage.pending_value) == .Invalid { _ = value.destroy_value(&output); return begin_terminal_misuse(storage, .Malformed_Program) }
-				frame.phase = .Leaf_Yielded
-				result, ready := propagate_output(storage, index, &output)
-				if ready do return result
+				frame.debug_value = output
+				frame.phase = .Debug_Emit
+				continue
 			case .Recurse:
 				if !capture_composite_instruction(storage, frame, instruction) {
 					return begin_terminal_misuse(storage, .Malformed_Program)
