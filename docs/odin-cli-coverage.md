@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `ae8d287a`, the authoritative selected catalog measurement
+At integration head `3b36ef88`, the authoritative selected catalog measurement
 is **463/522 passed, 59 failed, 0 harness errors**
-(`/tmp/coverage-final.json`). Persistent `input` stream behavior is covered by
+(`/tmp/coverage-group.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -16,6 +16,11 @@ Root iterator filter updates are covered by
 selected gains at jq.test:1257 and :2348. Sequential top-level definition
 metadata is covered by syntax/compiler tests and remains distinct from the
 deferred nested lexical-definition contract.
+Static `group_by(.field)` keyed materialization is covered by
+`compat/group-by-keyed.jq.test` and decision
+`docs/decisions/0333-group-by-keyed-materialization.md`; the selected catalog
+total is unchanged because jq.test:1639 also contains deferred dynamic and
+multi-key grouping forms.
 Static field compound addition is covered by
 `compat/field-compound-add.jq.test`, and comma composition of root iterator
 compound updates is covered by `compat/iterator-compound-sequence.jq.test`.
