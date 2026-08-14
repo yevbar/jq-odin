@@ -765,7 +765,10 @@ flow, and the debug diagnostic event). The candidate built with Odin
 external-boundary suites. Focused compatibility shards passed 7/7 for dynamic
 slices, 2/2 for piped destructuring, 3/3 for dynamic trimstr, 3/3 for
 label/break, and 1/1 for debug. The pinned jq 1.8.1 catalog selected all 522
-cases and reports **424 passed, 98 failed, 0 harness errors**. The remaining
+cases and reports **426 passed, 96 failed, 0 harness errors**. The subsequent
+trimstr typed-input error propagation fix (commit `3db4cdde`) adds exact
+`ltrimstr`/`rtrimstr` diagnostics for non-string bases under `try`; the
+focused trimstr shard is now 7/7. The remaining
 failures are primarily richer destructuring/foreach, update-path assignment,
 `?//`, module closures, dynamic builtins, process I/O, and exact diagnostics;
 these remain implementation work rather than skipped coverage.

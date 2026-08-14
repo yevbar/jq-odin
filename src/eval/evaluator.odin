@@ -7840,7 +7840,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output, runtime_kind, resource_error := join_result(&frame.input, separator, storage.allocator)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
-					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					message := "endswith() requires string inputs" if instruction.opcode == .Rtrimstr else "startswith() requires string inputs"
+					err_kind: Runtime_Error_Kind = runtime_kind
+					if runtime_kind == .Cannot_Iterate do err_kind = .User_Error
+					err := Runtime_Error{kind=err_kind, input_kind=value.kind_of(&frame.input), span=instruction.span, key=message}
 					owned_key := ""
 					if runtime_kind == .Cannot_Iterate {
 						key_error: runtime.Allocator_Error
@@ -8067,7 +8070,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output, runtime_kind, resource_error := trimstr_result(&frame.input, needle, instruction.opcode, storage.allocator)
 				if resource_error != nil do return resource_step(resource_error)
 				if runtime_kind != .None {
-					err := Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&frame.input), span=instruction.span}
+					message := "endswith() requires string inputs" if instruction.opcode == .Rtrimstr else "startswith() requires string inputs"
+					err_kind: Runtime_Error_Kind = runtime_kind
+					if runtime_kind == .Cannot_Iterate do err_kind = .User_Error
+					err := Runtime_Error{kind=err_kind, input_kind=value.kind_of(&frame.input), span=instruction.span, key=message}
 					result, ready := raise_runtime(storage, index, err)
 					if ready do return result
 					continue

@@ -26,6 +26,13 @@
 .[] as [$x, $y] | try ["ok", ($x | rtrimstr($y))] catch ["ko", .]
 [["hi",1],[1,"hi"],["hi","hi"],[1,1]]
 ["ko","endswith() requires string inputs"]
+
+# Literal separators use the same typed base-input diagnostics.
+try (1 | ltrimstr("1")) catch .
+"startswith() requires string inputs"
+
+try (null | rtrimstr("x")) catch .
+"endswith() requires string inputs"
 ["ko","endswith() requires string inputs"]
 ["ok",""]
 ["ko","endswith() requires string inputs"]
