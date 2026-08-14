@@ -231,7 +231,7 @@ eval_frame :: struct {
 	iterator_cursor: int,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
-	in_source_values: value.Value,
+	in_source_value: value.Value,
 	selected_value: value.Value,
 	selected_seen: bool,
 	add_accumulator: value.Value,
@@ -648,7 +648,7 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.reduce_binding)
 	if free_error != nil do return free_error
-	free_error = value.destroy_value(&frame.in_source_values)
+	free_error = value.destroy_value(&frame.in_source_value)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.selected_value)
 	if free_error != nil do return free_error
@@ -2971,9 +2971,14 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .In_Child_Active:
 		frame.phase = .In_Result
 	case .In_First_Child_Active:
-		frame.phase = .In_Second_Start
-	case .In_Second_Child_Active:
 		frame.phase = .In_Result
+	case .In_Second_Child_Active:
+		// The source value is retained while the second generator streams.  If
+		// that generator exhausts without a match, release it before resuming
+		// the source generator for its next value.
+		free_error := value.destroy_value(&frame.in_source_value)
+		if free_error != nil do return false
+		frame.phase = .In_First_Child_Active
 	case .In_Second_Start:
 		// Second-generator activation is handled by the consumer loop.
 	case .In_Result:
@@ -3541,33 +3546,26 @@ propagate_output :: proc(
 			output := value.boolean_value(true)
 			return propagate_output(storage, parent, &output)
 		case .In_First_Child_Active:
-			_, append_error := value.array_append_take(&frame.in_source_values, owned)
-			if value.array_error_kind(&append_error) != .None {
-				_ = value.destroy_value(owned)
-				return resource_step(.Out_Of_Memory), true
-			}
-			return {}, false
-		case .In_Second_Child_Active:
-			matched := false
-			length, length_ok := value.array_length(&frame.in_source_values)
-			if !length_ok {
+			if value.kind_of(&frame.in_source_value) != .Invalid {
 				_ = value.destroy_value(owned)
 				return begin_terminal_misuse(storage, .Malformed_Program), true
 			}
-			for cursor in 0..<length {
-				candidate, candidate_ok := value.array_element_copy(&frame.in_source_values, cursor)
-				if !candidate_ok {
-					_ = value.destroy_value(owned)
-					return begin_terminal_misuse(storage, .Malformed_Program), true
-				}
-				matched = value.values_equal(&candidate, owned)
-				_ = value.destroy_value(&candidate)
-				if matched do break
+			frame.in_source_value = value.take_value(owned)
+			second, second_ok := child_instruction(storage, instruction, 1)
+			input_copy := value.clone_value(&frame.input)
+			if !second_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, second, parent, &input_copy) {
+				_ = value.destroy_value(&input_copy)
+				return begin_terminal_misuse(storage, .Malformed_Program), true
 			}
+			frame.phase = .In_Second_Child_Active
+			return {}, false
+		case .In_Second_Child_Active:
+			matched := value.values_equal(&frame.in_source_value, owned)
 			_ = value.destroy_value(owned)
 			if !matched do return {}, false
 			free_error := destroy_frames_to(storage, parent+1)
 			if free_error != nil do return resource_step(free_error), true
+			_ = value.destroy_value(&frame.in_source_value)
 			frame.phase = .Complete
 			output := value.boolean_value(true)
 			return propagate_output(storage, parent, &output)
@@ -7009,15 +7007,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 
 		#partial switch frame.phase {
 		case .In_Second_Start:
-			second, second_ok := child_instruction(storage, instruction, 1)
-			input_copy := value.clone_value(&frame.input)
-			if !second_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, second, index, &input_copy) {
-				_ = value.destroy_value(&input_copy)
-				return begin_terminal_misuse(storage, .Malformed_Program)
-			}
-			frame.phase = .In_Second_Child_Active
-			continue
+			return begin_terminal_misuse(storage, .Malformed_Program)
 		case .In_Result:
+			free_error := value.destroy_value(&frame.in_source_value)
+			if free_error != nil do return resource_step(free_error)
 			frame.phase = .Leaf_Yielded
 			output := value.boolean_value(false)
 			result, ready := propagate_output(storage, index, &output)
@@ -8022,9 +8015,6 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				container_instruction, container_ok := program.program_instruction(storage.compiled, child)
 				if instruction.opcode == .In && frame.phase == .Enter && instruction.operands_count == 2 && child_ok && container_ok {
 					if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
-					in_values, array_error := value.array_value(storage.allocator)
-					if value.array_error_kind(&array_error) != .None do return resource_step(.Out_Of_Memory)
-					frame.in_source_values = in_values
 					input_copy := value.clone_value(&frame.input)
 					if value.kind_of(&input_copy) == .Invalid do return resource_step(.Out_Of_Memory)
 					if storage.frame_count == len(storage.frames) {
