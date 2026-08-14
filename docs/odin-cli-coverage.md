@@ -6,12 +6,12 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `f96c858e`, the authoritative selected catalog measurement
-is **451/522 passed, 71 failed, 0 harness errors** (`/tmp/coverage-location-interpolation.json`).
-The one-case gain over the prior 450/522 checkpoint covers bounded location
-interpolation in `upstream/jq/tests/jq.test:1482`; the focused shard is
-`compat/location-interpolation.jq.test` and the implementation decision is
-`docs/decisions/0320-location-interpolation.md`.
+At integration head `e3230508`, the authoritative selected catalog measurement
+is **452/522 passed, 70 failed, 0 harness errors** (`/tmp/coverage-dynamic-index-dot.json`).
+The one-case gain over the prior 451/522 checkpoint covers immediate identity
+dynamic indexing in `upstream/jq/tests/jq.test:1703`; the focused shard is
+`compat/dynamic-index-dot.jq.test` and the implementation decision is
+`docs/decisions/0321-dynamic-index-dot-parser.md`.
 
 ## Current evidence
 
