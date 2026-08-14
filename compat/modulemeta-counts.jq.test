@@ -5,3 +5,11 @@ modulemeta | .deps | length
 modulemeta | .defs | length
 "c"
 2
+
+modulemeta
+"c"
+{"whatever":null,"deps":[{"as":"foo","is_data":false,"relpath":"a"},{"search":"./","as":"d","is_data":false,"relpath":"d"},{"search":"./","as":"d2","is_data":false,"relpath":"d"},{"search":"./../lib/jq","as":"e","is_data":false,"relpath":"e"},{"search":"./../lib/jq","as":"f","is_data":false,"relpath":"f"},{"as":"d","is_data":true,"relpath":"data"}],"defs":["a/0","c/0"]}
+
+modulemeta
+"a"
+{"version":1.7,"deps":[],"defs":["a/0"]}

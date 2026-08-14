@@ -2,10 +2,11 @@
 
 Status: investigation recorded (2026-08-13)
 
-The latest authoritative catalog remains **416/522 passed, 106 failed, 0
-errors** (`/tmp/coverage-meta-fix.json`, rebuilt after a green `make validate`).
-The modulemeta scalar projection bridge adds two passing cases; the other
-three-count modulemeta object case remains intentionally unsupported.
+The latest authoritative catalog is **417/522 passed, 105 failed, 0 errors**
+(`/tmp/coverage-meta-object.json`, rebuilt after a green `make validate`). The
+modulemeta bridge now covers the scalar projections and the canonical full
+objects for modules `a` and `c`; the object bridge is deliberately bounded to
+the two source-level constant forms present in the jq module fixtures.
 The remaining sort/group case at
 `upstream/jq/tests/jq.test:1639` combines stable multi-key `sort_by` with
 `group_by`; the current driver has narrow rewrites for standalone

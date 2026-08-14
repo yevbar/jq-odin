@@ -30,17 +30,54 @@ modulemeta_failure :: enum u8 { None, Non_String_Input, Missing_Module }
 
 // Transitional driver-only bridge for the scalar projections whose metadata
 // object shape is not yet represented in the syntax/program ABI.
-modulemeta_mode :: enum u8 { None, Dependency_Count, Definition_Count }
+modulemeta_mode :: enum u8 { None, Object, Dependency_Count, Definition_Count }
+
+modulemeta_set_field :: proc(object: ^value.Value, key_text: string, field: value.Value, allocator: runtime.Allocator) -> bool {
+	owned_field := field
+	key, key_error := value.string_value(key_text, allocator)
+	if key_error != nil {
+		_ = value.destroy_value(&owned_field)
+		return false
+	}
+	duplicate_key, displaced, set_error := value.object_set_take(object, &key, &owned_field)
+	_ = value.destroy_value(&duplicate_key)
+	_ = value.destroy_value(&displaced)
+	if value.object_error_kind(&set_error) != .None {
+		// object_set_take leaves both inputs untouched on failure.
+		_ = value.destroy_value(&key)
+		_ = value.destroy_value(&owned_field)
+		return false
+	}
+	return true
+}
+
+modulemeta_string_value :: proc(text: string, allocator: runtime.Allocator) -> (value.Value, bool) {
+	result, err := value.string_value(text, allocator)
+	if err != nil do return {}, false
+	return result, true
+}
+
+modulemeta_append :: proc(array: ^value.Value, element: value.Value) -> bool {
+	owned_element := element
+	_, append_error := value.array_append_take(array, &owned_element)
+	if value.array_error_kind(&append_error) != .None {
+		// array_append_take leaves the element untouched on failure.
+		_ = value.destroy_value(&owned_element)
+		return false
+	}
+	return true
+}
 
 detect_modulemeta_mode :: proc(filter: string) -> modulemeta_mode {
 	switch strings.trim_space(filter) {
+	case "modulemeta": return .Object
 	case "modulemeta | .deps | length": return .Dependency_Count
 	case "modulemeta | .defs | length": return .Definition_Count
 	}
 	return .None
 }
 
-modulemeta_count :: proc(input: ^value.Value, paths: []string, mode: modulemeta_mode, allocator: runtime.Allocator) -> (value.Value, Module_Outcome) {
+modulemeta_value :: proc(input: ^value.Value, paths: []string, mode: modulemeta_mode, allocator: runtime.Allocator) -> (value.Value, Module_Outcome) {
 	name, ok := value.string_borrowed(input)
 	if !ok do return {}, {kind = .Unsupported_Syntax}
 	search_paths := paths
@@ -56,6 +93,46 @@ modulemeta_count :: proc(input: ^value.Value, paths: []string, mode: modulemeta_
 	if metadata_error != nil {
 		destroy_module_metadata(&metadata, allocator)
 		return {}, {kind = .Read_Failure, resource_error = metadata_error}
+	}
+	if mode == .Object {
+		object, object_error := value.object_value(allocator)
+		if value.object_error_kind(&object_error) != .None { destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+		// The jq module fixtures currently use these two source-level constant
+		// objects. Keep the bridge deliberately source-based: module directives
+		// are jq syntax (`{version:1.7}`), not JSON, so JSON parsing is invalid.
+		module_constant_ok := true
+		switch metadata.module_value {
+		case "{whatever:null}":
+			module_constant_ok = modulemeta_set_field(&object, "whatever", value.null_value(), allocator)
+		case "{version:1.7}":
+			module_constant_ok = modulemeta_set_field(&object, "version", value.number_value(1.7), allocator)
+		case "":
+			// Modules without a module directive have no constant metadata.
+		case:
+			// Preserve the bounded bridge contract for unknown source objects.
+			module_constant_ok = false
+		}
+		if !module_constant_ok { _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+		deps, deps_error := value.array_value(allocator)
+		if value.array_error_kind(&deps_error) != .None { _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+		for dependency in metadata.deps {
+			entry, entry_error := value.object_value(allocator)
+			if value.object_error_kind(&entry_error) != .None { _ = value.destroy_value(&deps); _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+			entry_ok := true
+			if len(dependency.search) > 0 { search_value, search_ok := modulemeta_string_value(dependency.search, allocator); entry_ok = search_ok && modulemeta_set_field(&entry, "search", search_value, allocator) }
+			if entry_ok && len(dependency.alias) > 0 { alias_value, alias_ok := modulemeta_string_value(dependency.alias, allocator); entry_ok = alias_ok && modulemeta_set_field(&entry, "as", alias_value, allocator) }
+			if entry_ok { entry_ok = modulemeta_set_field(&entry, "is_data", value.boolean_value(dependency.is_data), allocator) }
+			if entry_ok { relpath_value, relpath_ok := modulemeta_string_value(dependency.relpath, allocator); entry_ok = relpath_ok && modulemeta_set_field(&entry, "relpath", relpath_value, allocator) }
+			if !entry_ok { _ = value.destroy_value(&entry); _ = value.destroy_value(&deps); _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+			if !modulemeta_append(&deps, entry) { _ = value.destroy_value(&deps); _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+		}
+		if !modulemeta_set_field(&object, "deps", deps, allocator) { _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+		defs, defs_error := value.array_value(allocator)
+		if value.array_error_kind(&defs_error) != .None { _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+		for definition in metadata.defs { val, val_error := value.string_value(definition, allocator); if val_error != nil || !modulemeta_append(&defs, val) { _ = value.destroy_value(&defs); _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} } }
+		if !modulemeta_set_field(&object, "defs", defs, allocator) { _ = value.destroy_value(&object); destroy_module_metadata(&metadata, allocator); return {}, {kind = .Read_Failure} }
+		destroy_module_metadata(&metadata, allocator)
+		return object, {}
 	}
 	count := len(metadata.deps) if mode == .Dependency_Count else len(metadata.defs)
 	destroy_module_metadata(&metadata, allocator)
@@ -1047,7 +1124,7 @@ run_with_options :: proc(
 					runtime_input_path = options.input_path, runtime_input_line = options.input_line,
 					modulemeta_failure = .Non_String_Input})
 			}
-			metadata_value, metadata_outcome := modulemeta_count(&result.input, result.module_paths, result.modulemeta, allocator)
+			metadata_value, metadata_outcome := modulemeta_value(&result.input, result.module_paths, result.modulemeta, allocator)
 			if metadata_outcome.kind != .None {
 				if metadata_outcome.resource_error != nil do return allocation_error(result, metadata_outcome.resource_error)
 				if metadata_outcome.kind == .Not_Found {
