@@ -1313,6 +1313,24 @@ literal_value :: proc(
 foreach_seed_values :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> (value.Value, bool) {
 	result, result_error := value.array_value(storage.allocator)
 	if value.array_error_kind(&result_error) != .None { _ = value.destroy_array_error(&result_error); return {}, false }
+	append_array_literal :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, result: ^value.Value) -> bool {
+		instruction, instruction_ok := program.program_instruction(storage.compiled, index)
+		if !instruction_ok do return false
+		if instruction.opcode == .Parenthesized {
+			child, child_ok := child_instruction(storage, instruction, 0)
+			return child_ok && append_array_literal(storage, child, result)
+		}
+		if instruction.opcode == .Fork || instruction.opcode == .Sequence {
+			left, left_ok := child_instruction(storage, instruction, 0)
+			right, right_ok := child_instruction(storage, instruction, 1)
+			return left_ok && right_ok && append_array_literal(storage, left, result) && append_array_literal(storage, right, result)
+		}
+		item, item_error, item_cleanup := literal_value(storage, instruction)
+		if item_cleanup != nil || item_error != .None || value.kind_of(&item) == .Invalid { _ = value.destroy_value(&item); return false }
+		_, append_error := value.array_append_take(result, &item)
+		if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&item); return false }
+		return true
+	}
 	append_values :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, result: ^value.Value) -> bool {
 		instruction, instruction_ok := program.program_instruction(storage.compiled, index)
 		if !instruction_ok do return false
@@ -1326,6 +1344,15 @@ foreach_seed_values :: proc(storage: ^evaluator_storage, index: program.Instruct
 			if value.array_error_kind(&empty_error) != .None { _ = value.destroy_array_error(&empty_error); return false }
 			_, append_error := value.array_append_take(result, &empty)
 			if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&empty); return false }
+			return true
+		}
+		if instruction.opcode == .Array && instruction.operands_count == 1 {
+			child, child_ok := child_instruction(storage, instruction, 0)
+			array_value, array_error := value.array_value(storage.allocator)
+			if !child_ok || value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); _ = value.destroy_value(&array_value); return false }
+			if !append_array_literal(storage, child, &array_value) { _ = value.destroy_value(&array_value); return false }
+			_, append_error := value.array_append_take(result, &array_value)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&array_value); return false }
 			return true
 		}
 		seed, seed_error, seed_cleanup := literal_value(storage, instruction)
@@ -1350,6 +1377,9 @@ foreach_extract_value :: proc(storage: ^evaluator_storage, index: program.Instru
 		if !child_ok do return {}, false
 		return foreach_extract_value(storage, child, input)
 	}
+	if instruction.opcode == .Index {
+		return foreach_static_index_extract(storage, instruction, input)
+	}
 	if instruction.opcode != .Multiply do return {}, false
 	left_index, left_ok := child_instruction(storage, instruction, 0)
 	right_index, right_ok := child_instruction(storage, instruction, 1)
@@ -1362,6 +1392,75 @@ foreach_extract_value :: proc(storage: ^evaluator_storage, index: program.Instru
 	_ = value.destroy_value(&right_value)
 	if multiply_kind != .Success { _ = value.destroy_value(&result); return {}, false }
 	return result, true
+}
+
+// foreach_static_index_extract handles the static numeric postfix used by
+// jq's bounded foreach extractor (`.[1]`).  The general evaluator has a
+// resumable Index frame, but foreach materializes its update stream before
+// entering Iterator_Active, so this small literal-only path avoids creating a
+// child frame while preserving array/null/out-of-range semantics.
+foreach_static_index_extract :: proc(storage: ^evaluator_storage, instruction: program.Instruction, input: ^value.Value) -> (value.Value, bool) {
+	if instruction.opcode != .Index || instruction.operands_count != 2 do return {}, false
+	operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+	index_text, text_ok := program.operand_text(storage.compiled, operand)
+	if !operand_ok || !text_ok || operand.kind != .Text do return {}, false
+	index_value, parse_error := value.literal_number_value(index_text, storage.allocator)
+	if value.constructor_error_kind(&parse_error) != .None {
+		_ = value.destroy_constructor_error(&parse_error)
+		return {}, false
+	}
+	number, number_ok := value.number_value_get(&index_value)
+	_ = value.destroy_value(&index_value)
+	if !number_ok || number != f64(int(number)) do return {}, false
+	index_number := int(number)
+	if value.kind_of(input) == .Null do return value.null_value(), true
+	if value.kind_of(input) != .Array do return {}, false
+	length, length_ok := value.array_length(input)
+	if !length_ok do return {}, false
+	if index_number < 0 do index_number += length
+	if index_number < 0 || index_number >= length do return value.null_value(), true
+	return value.array_element_copy(input, index_number)
+}
+
+// foreach_conditional_break_update recognizes the focused jq foreach form
+// whose update either breaks a surrounding label or constructs the next
+// two-slot accumulator.  The evaluator remains deliberately structural here:
+// arbitrary filter-valued foreach updates still require the general child
+// continuation contract.
+foreach_conditional_break_update :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, binding_name: string) -> (string, program.Instruction_Index, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok || instruction.opcode == .Parenthesized {
+		if !ok do return "", {}, false
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return "", {}, false
+		return foreach_conditional_break_update(storage, child, binding_name)
+	}
+	if instruction.opcode != .If || instruction.operands_count != 3 do return "", {}, false
+	condition_index, condition_ok := child_instruction(storage, instruction, 0)
+	condition_instruction, condition_valid := program.program_instruction(storage.compiled, condition_index)
+	if !condition_ok || !condition_valid || condition_instruction.opcode != .Less || condition_instruction.operands_count != 2 do return "", {}, false
+	condition_left, condition_left_ok := child_instruction(storage, condition_instruction, 0)
+	if !condition_left_ok do return "", {}, false
+	then_index, then_ok := child_instruction(storage, instruction, 1)
+	else_index, else_ok := child_instruction(storage, instruction, 2)
+	then_instruction, then_valid := program.program_instruction(storage.compiled, then_index)
+	else_instruction, else_valid := program.program_instruction(storage.compiled, else_index)
+	if !then_ok || !else_ok || !then_valid || !else_valid || then_instruction.opcode != .Break || then_instruction.operands_count != 1 || else_instruction.opcode != .Array || else_instruction.operands_count != 1 do return "", {}, false
+	break_operand, break_ok := program.program_operand(storage.compiled, then_instruction.operands_start)
+	break_name, break_name_ok := program.operand_text(storage.compiled, break_operand)
+	if !break_ok || !break_name_ok || break_operand.kind != .Text do return "", {}, false
+	left_index, left_ok := child_instruction(storage, else_instruction, 0)
+	array_body, array_body_ok := program.program_instruction(storage.compiled, left_index)
+	if !array_body_ok || array_body.opcode != .Fork || array_body.operands_count != 2 do return "", {}, false
+	left_index, left_ok = child_instruction(storage, array_body, 0)
+	right_index, right_ok := child_instruction(storage, array_body, 1)
+	left, left_valid := program.program_instruction(storage.compiled, left_index)
+	right, right_valid := program.program_instruction(storage.compiled, right_index)
+	if !left_ok || !right_ok || !left_valid || !right_valid || left.opcode != .Subtract || right.opcode != .Variable do return "", {}, false
+	variable_operand, variable_ok := program.program_operand(storage.compiled, right.operands_start)
+	variable_name, variable_text_ok := program.operand_text(storage.compiled, variable_operand)
+	if !variable_ok || !variable_text_ok || variable_operand.kind != .Text || variable_name != binding_name do return "", {}, false
+	return break_name, condition_left, true
 }
 
 // foreach_break_extract recognizes the bounded jq idiom used by the label
@@ -8804,6 +8903,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(instruction.operands_count)-1))
 				name, name_text_ok := program.operand_text(storage.compiled, name_operand)
 				if !generator_ok || !init_ok || !update_ok || !generator_valid || !init_valid || !update_valid || !name_ok || !name_text_ok || name_operand.kind != .Text do return begin_terminal_misuse(storage, .Malformed_Program)
+				conditional_break_name, conditional_break_condition_left, conditional_break_update := foreach_conditional_break_update(storage, update_index, name)
+				conditional_break_seen := false
 				seeds, seeds_ok := foreach_seed_values(storage, init_index)
 				if !seeds_ok do return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				items, items_error := value.array_value(storage.allocator)
@@ -8878,7 +8979,32 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					item := value.number_value(f64(item_index))
 					if generator.opcode == .Field || generator_negated { item_value, item_ok := value.array_element_copy(&frame.input, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value; if generator_negated { negated, negate_error, negate_ok := value.number_negate(&item, storage.allocator); if !negate_ok || negate_error != nil { if negate_error != nil do _ = value.destroy_constructor_error(&negate_error); _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = negated } }
 					if has_cartesian { item_value, item_ok := value.array_element_copy(&cartesian_values, item_index); if !item_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); _ = value.destroy_value(&items); _ = value.destroy_value(&cartesian_values); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&item); item = item_value }
-					if update.opcode == .Variable {
+					if conditional_break_update {
+						// The condition is `. [0] < 1`; once true, jq breaks before
+						// emitting the triggering accumulator.  The preceding items
+						// remain available to the normal extraction/iterator path.
+						condition_left, condition_left_ok := program.program_instruction(storage.compiled, conditional_break_condition_left)
+						first_value, first_ok := foreach_static_index_extract(storage, condition_left, &seed)
+						if !condition_left_ok do first_ok = false
+						if !first_ok { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						first_number, first_numeric := value.number_value_get(&first_value)
+						_ = value.destroy_value(&first_value)
+						if !first_numeric { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						if first_number < 1 {
+							_ = value.destroy_value(&item)
+							conditional_break_seen = true
+							break
+						}
+						next_seed, array_error := value.array_value(storage.allocator)
+						if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); _ = value.destroy_value(&item); _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+						decremented := value.number_value(first_number - 1)
+						_, append_error := value.array_append_take(&next_seed, &decremented)
+						if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&decremented); _ = value.destroy_value(&next_seed); _ = value.destroy_value(&item); _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+						_, append_error = value.array_append_take(&next_seed, &item)
+						if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&item); _ = value.destroy_value(&next_seed); _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+						_ = value.destroy_value(&seed)
+						seed = next_seed
+					} else if update.opcode == .Variable {
 						op, op_ok := program.program_operand(storage.compiled, update.operands_start); update_name, text_ok := program.operand_text(storage.compiled, op); if !op_ok || !text_ok || update_name != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 						_ = value.destroy_value(&seed); seed = value.take_value(&item)
 					} else if update.opcode == .Add {
@@ -8909,7 +9035,13 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					} else { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 					out := value.clone_value(&seed); _, append_error := value.array_append_take(&items, &out); if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory) }
 					}
+					if conditional_break_seen do break
 					_ = value.destroy_value(&seed)
+				}
+				if conditional_break_seen {
+					frame.iterator_break_enabled = true
+					frame.iterator_break_at, _ = value.array_length(&items)
+					frame.iterator_break_name = conditional_break_name
 				}
 				if has_cartesian do _ = value.destroy_value(&cartesian_values)
 				if instruction.operands_count == 5 {
@@ -8928,7 +9060,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						extracted, extracted_ok := value.clone_value(&item), true
 						if !break_detected { extracted, extracted_ok = foreach_extract_value(storage, extract_index, &item) }
 						_ = value.destroy_value(&item)
-						if !extracted_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						if !extracted_ok {
+							_ = value.destroy_value(&extracted)
+							_ = value.destroy_value(&seeds)
+							_ = value.destroy_value(&items)
+							return begin_terminal_misuse(storage, .Unsupported_Opcode)
+						}
 						displaced, set_error := value.array_set_take(&items, item_index, &extracted)
 						_ = value.destroy_value(&displaced)
 						if value.array_error_kind(&set_error) != .None {

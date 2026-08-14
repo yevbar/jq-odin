@@ -1,6 +1,6 @@
 # Label/break staged contract
 
-Status: bounded semantic slice; nested label unwind through ordinary generators and try is implemented. Foreach/constructor unwind remains deferred.
+Status: bounded semantic slice; nested label unwind through ordinary generators, try, constructor delimiters, and the jq.test:333 foreach update shape is implemented. General filter-valued foreach updates and constructor unwind remain deferred.
 
 ## Evidence
 
@@ -12,8 +12,8 @@ The jq oracle exercises lexical non-local control flow in `upstream/jq/tests/jq.
 
 ## Semantic slice
 
-The evaluator now activates a label frame, forwards ordinary body outputs, and resolves `break` by nearest lexical label name. It destroys all frames above the target before completing that label, so comma/fork/select pipelines and `try` frames are unwound without leaking child values. The parser also gives a label body inside parentheses the nearest `)` delimiter; this preserves the surrounding comma in constructor forms such as jq.test:315/319. `compat/label-break.jq.test` covers those constructor cases plus 2243-shaped behavior.
+The evaluator now activates a label frame, forwards ordinary body outputs, and resolves `break` by nearest lexical label name. It destroys all frames above the target before completing that label, so comma/fork/select pipelines and `try` frames are unwound without leaking child values. The parser also gives a label body inside parentheses the nearest `)` delimiter; this preserves the surrounding comma in constructor forms such as jq.test:315/319. The foreach materializer recognizes the bounded jq.test:333 update (`if .[0] < 1 then break ... else [.[0]-1, $item] end`) and static extraction path, emitting prior accumulators before non-local unwind. `compat/label-break.jq.test` covers those constructor and foreach cases plus 2243-shaped behavior.
 
 ## Explicit gap
 
-The label frame currently unwinds ordinary generator/fork/try paths and the bounded `foreach range(N) ... ([ ]; .+[$name]; if $name == K then break $label else . end)` shape used by jq.test 333. The foreach materializer records the break cursor, emits prior accumulators, and unwinds at the cursor; broader update/extract programs and constructor cleanup remain deferred. A follow-up lane must verify nested label shadowing and move unresolved-label resolution to compile time so jq's exact non-catchable diagnostic is reproduced. This decision is not a claim of complete label/break parity.
+The label frame currently unwinds ordinary generator/fork/try paths and two bounded foreach forms: `foreach range(N) ... ([ ]; .+[$name]; if $name == K then break $label else . end)` and the jq.test:333 array-accumulator/update form. The foreach materializer records the break cursor, emits prior accumulators, and unwinds at the cursor; arbitrary filter-valued updates/extractors, constructor cleanup, nested label shadowing, and exact compile-time unresolved-label diagnostics remain deferred. This decision is not a claim of complete label/break parity.
