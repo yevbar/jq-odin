@@ -771,7 +771,9 @@ trimstr typed-input error propagation fix (commit `3db4cdde`) adds exact
 focused trimstr shard is now 7/7. Static field assignment now preserves jq's
 null-as-empty-object behavior and typed non-object diagnostics (`4b39bd66`),
 and single-slot array rebinding is covered by a focused 4/4 shard
-(`869a9508`). The pinned catalog now reports **428 passed, 94 failed, 0
-harness errors**. The remaining failures are primarily richer destructuring/foreach, update-path assignment,
+(`869a9508`). Nested static path components are now covered by the
+`path-nested-static-component` shard and the exact `jq.test:1130` case. The
+pinned catalog now reports **429 passed, 93 failed, 0 harness errors**. The
+remaining failures are primarily richer destructuring/foreach, update-path assignment,
 `?//`, module closures, dynamic builtins, process I/O, and exact diagnostics;
 these remain implementation work rather than skipped coverage.

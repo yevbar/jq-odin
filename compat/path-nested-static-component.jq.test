@@ -1,0 +1,4 @@
+# path(.outer[path(.inner)[0]]) is a static two-component path.
+path(.a[path(.b)[0]])
+{"a":{"b":0}}
+["a","b"]

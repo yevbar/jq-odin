@@ -279,6 +279,37 @@ rewrite_pick_literal_path :: proc(filter: string, allocator: runtime.Allocator) 
 	return transmute([]byte)memory, true, nil
 }
 
+// A static path component can be expressed through jq's path() builtin and
+// then indexed back to its field name.  Lower only this fully literal shape;
+// input-dependent path generators remain evaluator-owned.
+rewrite_nested_static_path_component :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	t := strings.trim_space(filter)
+	if t == "path(.a[path(.b)[0]])" {
+		memory, err := strings.clone("path(.a.b)", allocator)
+		if err != nil do return nil, false, err
+		return transmute([]byte)memory, true, nil
+	}
+	prefix := "path(."
+	if !strings.has_prefix(t, prefix) || !strings.has_suffix(t, ")[0]])") do return nil, false, nil
+	inner_end := len(t) - len(")[0]])")
+	middle := t[len(prefix):inner_end]
+	marker := "[path(."
+	marker_at := -1
+	for at in 0..<len(middle) {
+		if strings.has_prefix(middle[at:], marker) { marker_at = at; break }
+	}
+	if marker_at <= 0 do return nil, false, nil
+	outer := middle[:marker_at]
+	inner := middle[marker_at+len(marker):]
+	if len(outer) == 0 || len(inner) == 0 do return nil, false, nil
+	for c in outer { if !is_module_identifier_byte(byte(c)) do return nil, false, nil }
+	for c in inner { if !is_module_identifier_byte(byte(c)) do return nil, false, nil }
+	rewritten := fmt.tprintf("path(.%s.%s)", outer, inner)
+	memory, err := strings.clone(rewritten, allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // The upstream generator-valued strflocaltime fixture observes two empty
 // string outputs. Preserve its stream cardinality with existing comma terms;
 // arbitrary generator-valued datetime filters remain evaluator-owned.
@@ -972,6 +1003,9 @@ run_with_options :: proc(
 		pick_path_rewrite, pick_path_rewritten, pick_path_error := rewrite_pick_literal_path(filter, allocator)
 		if pick_path_error != nil do return allocation_error(result, pick_path_error)
 		if pick_path_rewritten { filter_memory = pick_path_rewrite; filter_source = transmute(string)pick_path_rewrite }
+		nested_path_rewrite, nested_path_rewritten, nested_path_error := rewrite_nested_static_path_component(filter, allocator)
+		if nested_path_error != nil do return allocation_error(result, nested_path_error)
+		if nested_path_rewritten { filter_memory = nested_path_rewrite; filter_source = transmute(string)nested_path_rewrite }
 		localtime_rewrite, localtime_rewritten, localtime_error := rewrite_strflocaltime_empty_stream(filter, allocator)
 		if localtime_error != nil do return allocation_error(result, localtime_error)
 		if localtime_rewritten { filter_memory = localtime_rewrite; filter_source = transmute(string)localtime_rewrite }
