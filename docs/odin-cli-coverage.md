@@ -19,8 +19,8 @@ gain covered multi-output static slice assignment at
 `docs/decisions/0317-static-slice-multi-output.md`. Root `.[] = scalar`
 assignment is also now implemented and focused-tested in
 `compat/iterator-assignment.jq.test` (`docs/decisions/0325-root-iterator-assignment.md`),
-but its selected catalog case still includes unsupported NaN input framing, so
-it does not yet change the 456/522 total. The preceding three-case
+and the nonfinite framing support above allows its selected catalog case at
+`jq.test:1289` to pass. The
 root `.[] |= empty` deletion is now also covered by
 `compat/iterator-delete.jq.test` (`docs/decisions/0326-root-iterator-empty-update.md`);
 its selected upstream cases still combine unsupported update-path forms, so the
