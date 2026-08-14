@@ -1137,6 +1137,9 @@ parse_pipe :: proc(
 				continue
 			case .Identifier:
 				spelling := token_spelling(parser, token)
+				// jq exposes uppercase IN as the generator-membership builtin;
+				// normalize its spelling before the regular call dispatch.
+				if spelling == "IN" do spelling = "in"
 				if parser.has_definition && spelling == token_spelling(parser, Token{span=parser.definition_name}) && !token_is(parser, .Open_Paren) {
 					advance(parser)
 					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=parser.definition_body, has_child=true, call_name_span=token.value_span, has_call_name=true})
@@ -1725,7 +1728,10 @@ parse_pipe :: proc(
 					advance(parser)
 					argument_node := parser.nodes.storage[int(argument)]
 					contains_dynamic := spelling == "contains" && argument_node.kind != .Number && argument_node.kind != .String && argument_node.kind != .Boolean && argument_node.kind != .Null && argument_node.kind != .Nan && !(argument_node.kind == .Identity && argument_node.has_value)
-					stream_selector := spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values" || contains_dynamic
+				// IN(generator) consumes a filter-valued stream and therefore needs
+				// the same admission path as other resumable selectors. Literal IN
+				// operands still use the existing synchronous evaluator path.
+				stream_selector := spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values" || contains_dynamic || spelling == "in"
 					bsearch_comma := spelling == "bsearch" && argument_node.kind == .Comma
 					join_comma := spelling == "join" && argument_node.kind == .Comma
 					flatten_comma := spelling == "flatten" && argument_node.kind == .Comma

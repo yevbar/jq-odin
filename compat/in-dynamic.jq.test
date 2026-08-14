@@ -1,0 +1,16 @@
+# bounded dynamic IN(generator) coverage
+5 | IN(range(10))
+null
+true
+
+5 | IN(range(0;10;3))
+null
+false
+
+range(5;10) | IN(range(10))
+null
+true
+true
+true
+true
+true
