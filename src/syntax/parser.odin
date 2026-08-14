@@ -4238,6 +4238,47 @@ append_postfix :: proc(
 				advance(parser)
 				identity, identity_ok := append_node(parser, Node{kind=.Identity, span=dot_span})
 				if !identity_ok do return {}, false
+				// A bounded arithmetic key such as `[. + 0]` can reuse the
+				// existing Binary and dynamic-Index instruction contracts.  The
+				// general parser cannot restart with an already-built left term,
+				// so consume the first operator here and let the ordinary parser
+				// handle the complete right operand up to the closing bracket.
+				binary_operator, _, has_binary_operator := binary_from_token(parser)
+				if has_binary_operator {
+					operator := parser.lookahead.token
+					advance(parser)
+					right, right_ok := parse_pipe(parser, .Close_Bracket, false)
+					if !right_ok || !token_is(parser, .Close_Bracket) {
+						fail_from_lookahead(parser, .Close_Bracket)
+						return {}, false
+					}
+					binary_span, binary_span_ok := spanning(parser, dot_span, parser.nodes.storage[int(right)].span)
+					assert(binary_span_ok)
+					binary, binary_ok := append_node(parser, Node{
+						form = .Binary,
+						span = binary_span,
+						left = identity,
+						right = right,
+						binary_operator = binary_operator,
+						operator_span = operator.span,
+						has_operator_span = true,
+					})
+					if !binary_ok do return {}, false
+					close := parser.lookahead.token
+					advance(parser)
+					span, span_ok := spanning(parser, parser.nodes.storage[int(node)].span, close.span)
+					assert(span_ok)
+					node, ok = append_node(parser, Node{
+						kind = .Index,
+						span = span,
+						child = node,
+						has_child = true,
+						index_key = binary,
+						has_index_key = true,
+					})
+					if !ok do return {}, false
+					continue
+				}
 				if token_is(parser, .Close_Bracket) {
 					close := parser.lookahead.token
 					advance(parser)

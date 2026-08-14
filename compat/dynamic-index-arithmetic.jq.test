@@ -1,0 +1,18 @@
+# Dynamic index keys may be arithmetic filters over the original input.
+[1][. + 0]
+0
+1
+
+[1,2,3][. - 1]
+0
+2
+
+[10,20,30][. * 2]
+1
+30
+
+[10,20,30][. / 1]
+1
+20
+
+# Existing immediate-identity and numeric forms remain covered separately.
