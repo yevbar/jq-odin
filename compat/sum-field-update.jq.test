@@ -1,0 +1,4 @@
+# Static field assignment with a filter-valued add RHS.
+.sum = add(.arr[])
+{"arr":[1,2,3]}
+{"arr":[1,2,3],"sum":6}

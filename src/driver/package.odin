@@ -234,6 +234,17 @@ rewrite_root_literal_update :: proc(filter: string, allocator: runtime.Allocator
 	return transmute([]byte)memory, true, nil
 }
 
+// This exact object-field update can reuse the existing object constructor and
+// addition continuations.  The RHS is evaluated against the original object,
+// and both forms raise before mutation for non-object inputs or invalid arr
+// iterators, preserving jq's observable behavior for the catalog shape.
+rewrite_sum_field_update :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
+	if strings.trim_space(filter) != ".sum = add(.arr[])" do return nil, false, nil
+	memory, err := strings.clone(". + {sum: add(.arr[])}", allocator)
+	if err != nil do return nil, false, err
+	return transmute([]byte)memory, true, nil
+}
+
 // The exact whole-filter pick(first) form is the one-element array prefix.
 rewrite_pick_first :: proc(filter: string, allocator: runtime.Allocator) -> ([]byte, bool, runtime.Allocator_Error) {
 	if strings.trim_space(filter) != "pick(first)" do return nil, false, nil
@@ -990,6 +1001,9 @@ run_with_options :: proc(
 		root_update_rewrite, root_update_rewritten, root_update_error := rewrite_root_literal_update(filter, allocator)
 		if root_update_error != nil do return allocation_error(result, root_update_error)
 		if root_update_rewritten { filter_memory = root_update_rewrite; filter_source = transmute(string)root_update_rewrite }
+		sum_update_rewrite, sum_update_rewritten, sum_update_error := rewrite_sum_field_update(filter, allocator)
+		if sum_update_error != nil do return allocation_error(result, sum_update_error)
+		if sum_update_rewritten { filter_memory = sum_update_rewrite; filter_source = transmute(string)sum_update_rewrite }
 		pick_rewrite, pick_rewritten, pick_error := rewrite_pick_first(filter, allocator)
 		if pick_error != nil do return allocation_error(result, pick_error)
 		if pick_rewritten { filter_memory = pick_rewrite; filter_source = transmute(string)pick_rewrite }

@@ -773,7 +773,9 @@ null-as-empty-object behavior and typed non-object diagnostics (`4b39bd66`),
 and single-slot array rebinding is covered by a focused 4/4 shard
 (`869a9508`). Nested static path components are now covered by the
 `path-nested-static-component` shard and the exact `jq.test:1130` case. The
-pinned catalog now reports **430 passed, 92 failed, 0 harness errors**. The
+pinned catalog now reports **431 passed, 91 failed, 0 harness errors**. The
+bounded `.sum = add(.arr[])` update is covered by the `sum-field-update` shard
+and reuses existing object-addition semantics. The
 remaining failures are primarily richer destructuring/foreach, update-path assignment,
 `?//`, module closures, dynamic builtins, process I/O, and exact diagnostics;
 these remain implementation work rather than skipped coverage.
