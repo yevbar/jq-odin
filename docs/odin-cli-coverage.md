@@ -6,13 +6,17 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `f5432fc8`, the authoritative selected catalog measurement
+At integration head `f8fee371`, the authoritative selected catalog measurement
 is **456/522 passed, 66 failed, 0 harness errors**
 (`/tmp/coverage-f5432fc8.json`). The one-case gain over the prior
 455/522 checkpoint covers multi-output static slice assignment at
 `upstream/jq/tests/jq.test:478`; the focused shard is
 `compat/static-slice-multi-output.jq.test` and the implementation decision is
-`docs/decisions/0317-static-slice-multi-output.md`. The preceding three-case
+`docs/decisions/0317-static-slice-multi-output.md`. Root `.[] = scalar`
+assignment is also now implemented and focused-tested in
+`compat/iterator-assignment.jq.test` (`docs/decisions/0325-root-iterator-assignment.md`),
+but its selected catalog case still includes unsupported NaN input framing, so
+it does not yet change the 456/522 total. The preceding three-case
 gain covered nested parenthesized `try`/`catch` stream handling in
 `upstream/jq/tests/jq.test:2308,2312,2317`; the focused shard is
 `compat/nested-try-streams.jq.test` and the implementation decision is
