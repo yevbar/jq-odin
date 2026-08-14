@@ -32,3 +32,10 @@ The next VM packet should therefore either:
 Do not claim a coverage gain from parser-only admission or a driver rewrite
 until the full jq.test:1639 stream (all five outputs and tie ordering) matches
 the pinned oracle.
+
+The generator-valued `contains` lane is now integrated and independently
+reviewed. It passes the focused jq.test:1615 and :1619 cases, including direct
+and caught type-mismatch diagnostics and child-generator errors. The full
+catalog remains 419/522 because those forms are not selected by the catalog
+runner; the authoritative report is still `/tmp/coverage-contains.json` with
+no harness errors. This is a semantic lane completion, not a percentage gain.
