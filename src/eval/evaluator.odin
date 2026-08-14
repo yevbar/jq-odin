@@ -1187,6 +1187,7 @@ static_field_add_field_operands :: proc(storage: ^evaluator_storage, instruction
 	left, left_ok = program.operand_text(storage.compiled, left_operand)
 	right, right_ok = program.operand_text(storage.compiled, right_operand)
 	ok = left_ok && right_ok
+	return
 }
 
 @(private)
