@@ -6,9 +6,13 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `36b2266b`, the authoritative selected catalog measurement
+At integration head `5dea3112`, the authoritative selected catalog measurement
 is **457/522 passed, 65 failed, 0 harness errors**
-(`/tmp/coverage-36b2266b.json`). Stable keyed `sort_by(.field)` support is now
+(`/tmp/coverage-5dea3112.json`). Stable keyed `sort_by(.field`). Root iterator
+compound updates (`+=`, `-=`, `*=`, `/=`, `%=` with numeric literal RHS) are
+covered by `compat/iterator-compound-updates.jq.test` (11/11 focused cases;
+decision `docs/decisions/0318-root-iterator-compound-updates.md`). Stable keyed
+`sort_by(.field)` support is now
 implemented with an explicit keyed-sort opcode and focused-tested in
 `compat/sort-by-key-stable.jq.test`; equal keys retain input order while the
 ordinary `sort` opcode remains unchanged. It does not add a selected catalog
