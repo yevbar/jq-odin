@@ -249,6 +249,7 @@ eval_frame :: struct {
 	if_branch_active: bool,
 	iterator_cursor: int,
 	iterator_update_seen: bool,
+	iterator_update_cancel: bool,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
 	in_source_value: value.Value,
@@ -4205,8 +4206,11 @@ propagate_output :: proc(
 			// jq path assignment keeps only the first RHS result. Cancel the
 			// child generator immediately so later outputs/errors cannot escape
 			// after the selected element has been replaced.
+			frame.iterator_update_cancel = true
+			frame.phase = .Iterator_Update_Active
 			free_error := destroy_frames_to(storage, parent+1)
 			if free_error != nil do return resource_step(free_error), true
+			frame.iterator_update_cancel = false
 			frame.phase = .Iterator_Update_Active
 			return {}, false
 		case .Binary_Left_Active:
@@ -7520,6 +7524,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 		frame := &storage.frames[index]
 		instruction, instruction_ok := program.program_instruction(storage.compiled, frame.instruction)
 		if !instruction_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+		if frame.parent >= 0 && storage.frames[frame.parent].iterator_update_cancel {
+			target := frame.parent
+			free_error := destroy_frames_to(storage, target+1)
+			if free_error != nil do return resource_step(free_error)
+			storage.frames[target].iterator_update_cancel = false
+			storage.frames[target].phase = .Iterator_Update_Active
+			continue
+		}
 		if !resumed_composite_instruction_valid(storage, frame, instruction) {
 			return begin_terminal_misuse(storage, .Malformed_Program)
 		}
@@ -10455,7 +10467,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			storage.frames[index].phase = .Iterator_Update_Child_Active
 
 		case .Iterator_Update_Child_Active:
-			return begin_terminal_misuse(storage, .Malformed_Program)
+			if !frame.iterator_update_cancel do return begin_terminal_misuse(storage, .Malformed_Program)
+			free_error := destroy_frames_to(storage, index+1)
+			if free_error != nil do return resource_step(free_error)
+			frame.iterator_update_cancel = false
+			frame.phase = .Iterator_Update_Active
 
 		case .Iterator_Update_Delete_Active:
 			cleanup_error, delete_ok := iterator_update_delete_at(storage, frame, frame.iterator_cursor-1)
