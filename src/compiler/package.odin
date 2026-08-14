@@ -1323,6 +1323,9 @@ lower_filter :: proc(
 			instruction.operands_count = 0
 		case .Static_Iterator_Update:
 			instruction.opcode = .Static_Iterator_Update
+			if node.iterator_compound && node.binary_operator == .Defined_Or {
+				instruction.iterator_compound_operator = 255
+			}
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)}))
 			operand_at += 1
 			instruction.operands_count = 1

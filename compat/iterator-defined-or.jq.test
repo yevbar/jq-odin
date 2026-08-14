@@ -1,0 +1,11 @@
+# Root iterator defined-or updates only null and false values.
+[null,1,false,2] | .[] //= .[0]
+[null,1,null,2]
+
+# A literal RHS replaces each undefined value independently.
+[null,1,false,2] | .[] //= 9
+[9,1,9,2]
+
+# The RHS receives the original root input (`.[0]` is the source null).
+[null,1,false,2] | .[] //= .[0]
+[null,1,null,2]
