@@ -2294,7 +2294,19 @@ parse_pipe :: proc(
 				variables := [2]Node_Id{entries.left, entries.right}
 				if entry_count == 1 do variables[0] = pattern_node.value
 				for variable in variables[:entry_count] {
-					if parser.nodes.storage[int(variable)].kind != .Variable {
+					pattern_variable_ok := parser.nodes.storage[int(variable)].kind == .Variable
+					if !pattern_variable_ok && token_is(parser, .Open_Paren) && entry_count == 2 && variable == variables[1] {
+						nested := parser.nodes.storage[int(variable)]
+						if nested.container_kind == .Object && nested.has_value {
+							entry := parser.nodes.storage[int(nested.value)]
+							if entry.kind == .Field && entry.container_kind == .Object_Entry && entry.has_key && entry.has_value {
+								key := parser.nodes.storage[int(entry.key)]
+								val := parser.nodes.storage[int(entry.value)]
+								pattern_variable_ok = key.kind == .Field && key.has_name_span && val.kind == .Variable && val.has_name_span
+							}
+						}
+					}
+					if !pattern_variable_ok {
 						fail_from_lookahead(parser, .Expression)
 						return {}, false
 					}

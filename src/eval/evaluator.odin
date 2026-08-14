@@ -1407,6 +1407,24 @@ foreach_pattern_array_value :: proc(storage: ^evaluator_storage, index: program.
 		if found_ok do return found, true
 		return foreach_pattern_array_value(storage, right, item, wanted, slot)
 	}
+	if instruction.opcode == .Object {
+		if slot^ >= 0 {
+			if value.kind_of(item) == .Array {
+				length, length_ok := value.array_length(item)
+				if !length_ok do return {}, false
+				if slot^ < length {
+					element, element_ok := value.array_element_copy(item, slot^)
+					if !element_ok do return {}, false
+					slot^ += 1
+					result, found := foreach_pattern_value(storage, index, &element, wanted)
+					_ = value.destroy_value(&element)
+					return result, found
+				}
+			}
+			slot^ += 1
+			return {}, false
+		}
+	}
 	if instruction.opcode != .Variable do return {}, false
 	operand, operand_ok := program.program_operand(storage.compiled, instruction.operands_start)
 	name, name_ok := program.operand_text(storage.compiled, operand)
@@ -9297,6 +9315,59 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					seed = literal_seed
 				}
 				if value.kind_of(&seed) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
+				// A synthetic Binding generator carries destructuring metadata while
+				// preserving the legacy Reduce operand layout. Materialize the bounded
+				// literal/array producer, then reuse the pattern arithmetic evaluator.
+				pattern_generator_index, pattern_generator_ok := child_instruction(storage, instruction, 0)
+				pattern_generator, pattern_generator_valid := program.program_instruction(storage.compiled, pattern_generator_index)
+				pattern_index: program.Instruction_Index
+				has_pattern := false
+				if pattern_generator_ok && pattern_generator_valid && pattern_generator.opcode == .Binding && pattern_generator.operands_count == 3 {
+					candidate_pattern, pattern_ok := child_instruction(storage, pattern_generator, 1)
+					pattern, pattern_valid := program.program_instruction(storage.compiled, candidate_pattern)
+					if pattern_ok && pattern_valid && (pattern.opcode == .Array || pattern.opcode == .Object) {
+						pattern_index = candidate_pattern
+						has_pattern = true
+						producer_index, producer_ok := child_instruction(storage, pattern_generator, 0)
+						pattern_generator, pattern_generator_valid = program.program_instruction(storage.compiled, producer_index)
+						pattern_generator_index = producer_index
+						pattern_generator_ok = producer_ok
+					}
+				}
+				if has_pattern {
+					items := value.clone_value(&frame.input)
+					if pattern_generator.opcode == .Field {
+						if value.kind_of(&items) != .Array {
+							child_index, child_ok := child_instruction(storage, pattern_generator, 0)
+							child_instruction_value, child_valid := program.program_instruction(storage.compiled, child_index)
+							if !child_ok || !child_valid || child_instruction_value.opcode != .Array {
+								_ = value.destroy_value(&items); _ = value.destroy_value(&seed)
+								return begin_terminal_misuse(storage, .Unsupported_Opcode)
+							}
+							_ = value.destroy_value(&items)
+							items, _, _ = literal_array_value(storage, child_instruction_value)
+						}
+					} else {
+						_ = value.destroy_value(&items); _ = value.destroy_value(&seed)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					length, length_ok := value.array_length(&items)
+					if !length_ok { _ = value.destroy_value(&items); _ = value.destroy_value(&seed); return begin_terminal_misuse(storage, .Malformed_Program) }
+					acc := seed
+					for item_index in 0..<length {
+						item, item_ok := value.array_element_copy(&items, item_index)
+						if !item_ok { _ = value.destroy_value(&items); _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Malformed_Program) }
+						next, pattern_update_ok := foreach_pattern_update_value(storage, update_index, &acc, &item, pattern_index)
+						_ = value.destroy_value(&item)
+						if !pattern_update_ok { _ = value.destroy_value(&items); _ = value.destroy_value(&acc); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						_ = value.destroy_value(&acc); acc = next
+					}
+					_ = value.destroy_value(&items)
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &acc)
+					if ready do return result
+					continue
+				}
 				if update_instruction.opcode == .Identity {
 					frame.phase = .Leaf_Yielded
 					result, ready := propagate_output(storage, index, &seed)

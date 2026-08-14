@@ -1,0 +1,9 @@
+# Reduce array/object destructuring (jq.test:894).
+reduce .[] as [$i, {j:$j}] (0; . + $i - $j)
+[[2,{"j":1}],[5,{"j":3}],[6,{"j":4}]]
+5
+
+# Reduce literal-array producer with two array slots (jq.test:898).
+reduce [[1,2,10], [3,4,10]][] as [$i,$j] (0; . + $i * $j)
+null
+14

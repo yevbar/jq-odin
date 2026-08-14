@@ -349,7 +349,15 @@ validate_foreach_pattern :: proc(nodes: []syntax.Node, id: syntax.Node_Id) -> bo
 		entry := nodes[int(entries)]
 		if entry.kind == .Variable do return true
 		if entry.kind != .Comma || !node_reference_valid(entry.left, len(nodes)) || !node_reference_valid(entry.right, len(nodes)) do return false
-		return nodes[int(entry.left)].kind == .Variable && nodes[int(entry.right)].kind == .Variable
+		if nodes[int(entry.left)].kind != .Variable do return false
+		right := nodes[int(entry.right)]
+		if right.kind == .Variable do return true
+		if right.container_kind != .Object || !right.has_value do return false
+		nested := nodes[int(right.value)]
+		if nested.kind != .Field || nested.container_kind != .Object_Entry || !nested.has_key || !nested.has_value do return false
+		key := nodes[int(nested.key)]
+		val := nodes[int(nested.value)]
+		return key.kind == .Field && key.has_name_span && val.kind == .Variable && val.has_name_span
 	}
 	if node.container_kind == .Object {
 		entry_id := node.value
@@ -378,9 +386,17 @@ append_foreach_pattern_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, 
 			if depth^ >= len(scopes) do return false
 			scopes[depth^] = entry.name_span; depth^ += 1
 		} else {
-			if depth^ + 2 > len(scopes) do return false
+			if depth^ >= len(scopes) do return false
 			scopes[depth^] = nodes[int(entry.left)].name_span; depth^ += 1
-			scopes[depth^] = nodes[int(entry.right)].name_span; depth^ += 1
+			right := nodes[int(entry.right)]
+			if right.kind == .Variable {
+				if depth^ >= len(scopes) do return false
+				scopes[depth^] = right.name_span; depth^ += 1
+			} else {
+				nested := nodes[int(right.value)]
+				if depth^ >= len(scopes) do return false
+				scopes[depth^] = nodes[int(nested.value)].name_span; depth^ += 1
+			}
 		}
 		return true
 	}
@@ -472,7 +488,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth+1, next_budget)
 	case .Reduce, .Foreach:
 		generator_pattern := false
-		if node.kind == .Foreach && node_reference_valid(node.left, len(nodes)) {
+		if (node.kind == .Foreach || node.kind == .Reduce) && node_reference_valid(node.left, len(nodes)) {
 			generator := nodes[int(node.left)]
 			if generator.kind == .Binding && node_reference_valid(generator.right, len(nodes)) {
 				pattern := nodes[int(generator.right)]
@@ -487,7 +503,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		if depth >= len(scopes) do return false
 		scopes[depth] = node.name_span
 		next_depth := depth + 1
-		if node.kind == .Foreach && node_reference_valid(node.left, len(nodes)) {
+		if (node.kind == .Foreach || node.kind == .Reduce) && node_reference_valid(node.left, len(nodes)) {
 			generator := nodes[int(node.left)]
 			if generator.kind == .Binding && node_reference_valid(generator.right, len(nodes)) {
 				pattern := nodes[int(generator.right)]
