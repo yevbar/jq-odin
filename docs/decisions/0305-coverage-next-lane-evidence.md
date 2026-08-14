@@ -39,3 +39,10 @@ and caught type-mismatch diagnostics and child-generator errors. The full
 catalog remains 419/522 because those forms are not selected by the catalog
 runner; the authoritative report is still `/tmp/coverage-contains.json` with
 no harness errors. This is a semantic lane completion, not a percentage gain.
+
+The bounded three-clause `foreach` extractor lane is also integrated. It adds
+the optional EXTRACT operand while preserving the four-operand ABI, and its
+identity and identity-times-literal probes match jq. The catalog remains
+419/522 (`/tmp/coverage-foreach.json`); the selected catalog does not include
+the focused extractor forms, so this is another semantic gain without a
+percentage change. General generator-valued extractors remain deferred.
