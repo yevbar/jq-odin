@@ -224,6 +224,9 @@ eval_frame :: struct {
 	map_value_seen: bool,
 	paths_results: value.Value,
 	paths_cursor: int,
+	iterator_break_at: int,
+	iterator_break_enabled: bool,
+	iterator_break_name: string,
 }
 
 @(private)
@@ -1294,6 +1297,13 @@ foreach_seed_values :: proc(storage: ^evaluator_storage, index: program.Instruct
 			left, left_ok := child_instruction(storage, instruction, 0); right, right_ok := child_instruction(storage, instruction, 1)
 			return left_ok && right_ok && append_values(storage, left, result) && append_values(storage, right, result)
 		}
+		if instruction.opcode == .Array && instruction.operands_count == 0 {
+			empty, empty_error := value.array_value(storage.allocator)
+			if value.array_error_kind(&empty_error) != .None { _ = value.destroy_array_error(&empty_error); return false }
+			_, append_error := value.array_append_take(result, &empty)
+			if value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&empty); return false }
+			return true
+		}
 		seed, seed_error, seed_cleanup := literal_value(storage, instruction)
 		if seed_cleanup != nil || seed_error != .None || value.kind_of(&seed) == .Invalid { _ = value.destroy_value(&seed); return false }
 		_, append_error := value.array_append_take(result, &seed)
@@ -1328,6 +1338,50 @@ foreach_extract_value :: proc(storage: ^evaluator_storage, index: program.Instru
 	_ = value.destroy_value(&right_value)
 	if multiply_kind != .Success { _ = value.destroy_value(&result); return {}, false }
 	return result, true
+}
+
+// foreach_break_extract recognizes the bounded jq idiom used by the label
+// regression: `if $item == 1 then break $label else . end`.  It records the
+// generator cursor at which the break must fire; the iterator emits prior
+// accumulators before unwinding the label frame.
+foreach_break_extract :: proc(storage: ^evaluator_storage, index: program.Instruction_Index, binding_name: string) -> (string, int, bool) {
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok || instruction.opcode == .Parenthesized {
+		if !ok do return "", 0, false
+		child, child_ok := child_instruction(storage, instruction, 0)
+		if !child_ok do return "", 0, false
+		return foreach_break_extract(storage, child, binding_name)
+	}
+	if instruction.opcode != .If || instruction.operands_count != 3 do return "", 0, false
+	condition, condition_ok := child_instruction(storage, instruction, 0)
+	then_branch, then_ok := child_instruction(storage, instruction, 1)
+	if !condition_ok || !then_ok do return "", 0, false
+	condition_instruction, condition_valid := program.program_instruction(storage.compiled, condition)
+	if !condition_valid || condition_instruction.opcode != .Equal || condition_instruction.operands_count != 2 do return "", 0, false
+	left_index, left_ok := child_instruction(storage, condition_instruction, 0)
+	right_index, right_ok := child_instruction(storage, condition_instruction, 1)
+	left, left_valid := program.program_instruction(storage.compiled, left_index)
+	right, right_valid := program.program_instruction(storage.compiled, right_index)
+	if !left_ok || !right_ok || !left_valid || !right_valid do return "", 0, false
+	variable := left
+	number := right
+	if variable.opcode != .Variable || number.opcode != .Identity || !number.has_literal || number.literal_kind != .Number {
+		variable = right
+		number = left
+	}
+	if variable.opcode != .Variable || !number.has_literal || number.literal_kind != .Number do return "", 0, false
+	name_operand, name_ok := program.program_operand(storage.compiled, variable.operands_start)
+	variable_name, variable_name_ok := program.operand_text(storage.compiled, name_operand)
+	trigger_text_operand, trigger_operand_ok := program.program_operand(storage.compiled, number.operands_start)
+	trigger_text, trigger_text_ok := program.operand_text(storage.compiled, trigger_text_operand)
+	trigger, trigger_ok := strconv.parse_i64(trigger_text)
+	if !name_ok || !variable_name_ok || !trigger_operand_ok || !trigger_text_ok || name_operand.kind != .Text || trigger_text_operand.kind != .Text || variable_name != binding_name || !trigger_ok do return "", 0, false
+	then_instruction, then_valid := program.program_instruction(storage.compiled, then_branch)
+	if !then_valid || then_instruction.opcode != .Break || then_instruction.operands_count != 1 do return "", 0, false
+	break_operand, break_ok := program.program_operand(storage.compiled, then_instruction.operands_start)
+	break_name, break_name_ok := program.operand_text(storage.compiled, break_operand)
+	if !break_ok || !break_name_ok || break_operand.kind != .Text do return "", 0, false
+	return break_name, int(trigger), true
 }
 
 @(private)
@@ -3223,7 +3277,6 @@ unwind_break :: proc(storage: ^evaluator_storage, producer: int, target_name: st
 	}
 	free_error := destroy_frames_to(storage, target+1)
 	if free_error != nil do return resource_step(free_error), true
-	storage.frames[target].phase = .Complete
 	if !notify_exhausted(storage, target) do return begin_terminal_misuse(storage, .Malformed_Program), true
 	return {}, false
 }
@@ -8660,9 +8713,30 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						op, op_ok := program.program_operand(storage.compiled, update.operands_start); update_name, text_ok := program.operand_text(storage.compiled, op); if !op_ok || !text_ok || update_name != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 						_ = value.destroy_value(&seed); seed = value.take_value(&item)
 					} else if update.opcode == .Add {
-						li, lok := child_instruction(storage, update, 0); ri, rok := child_instruction(storage, update, 1); left, lv := program.program_instruction(storage.compiled, li); right, rv := program.program_instruction(storage.compiled, ri); rop, r_ok := program.program_operand(storage.compiled, right.operands_start); rname, rt_ok := program.operand_text(storage.compiled, rop)
-						if !lok || !rok || !lv || !rv || left.opcode != .Identity || left.has_literal || right.opcode != .Variable || !r_ok || !rt_ok || rname != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
-						next, add_ok := value.number_add(&seed, &item); _ = value.destroy_value(&item); if !add_ok { _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&seed); seed = next
+						li, lok := child_instruction(storage, update, 0); ri, rok := child_instruction(storage, update, 1); left, lv := program.program_instruction(storage.compiled, li); right, rv := program.program_instruction(storage.compiled, ri)
+						if !lok || !rok || !lv || !rv || left.opcode != .Identity || left.has_literal { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						if right.opcode == .Variable {
+							op, op_ok := program.program_operand(storage.compiled, right.operands_start); rname, rt_ok := program.operand_text(storage.compiled, op)
+							if !op_ok || !rt_ok || rname != name { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+							next, add_ok := value.number_add(&seed, &item); _ = value.destroy_value(&item); if !add_ok { _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }; _ = value.destroy_value(&seed); seed = next
+						} else if right.opcode == .Array && right.operands_count == 1 {
+							array_value, array_error := value.array_value(storage.allocator)
+							if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+							array_child, array_child_ok := child_instruction(storage, right, 0)
+							array_child_instruction, array_child_valid := program.program_instruction(storage.compiled, array_child)
+							array_operand, array_name_ok := program.program_operand(storage.compiled, array_child_instruction.operands_start)
+							array_name, array_text_ok := program.operand_text(storage.compiled, array_operand)
+							if !array_child_ok || !array_child_valid || array_child_instruction.opcode != .Variable || !array_name_ok || !array_text_ok || array_operand.kind != .Text || array_name != name {
+								_ = value.destroy_value(&array_value); _ = value.destroy_value(&item); _ = value.destroy_value(&seed); return begin_terminal_misuse(storage, .Unsupported_Opcode)
+							}
+							item_copy := value.clone_value(&item)
+							_, append_error := value.array_append_take(&array_value, &item_copy)
+							if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&array_value); _ = value.destroy_value(&item); _ = value.destroy_value(&seed); return resource_step(.Out_Of_Memory) }
+							next, add_error := value.value_add(&seed, &array_value, storage.allocator)
+							_ = value.destroy_value(&array_value); _ = value.destroy_value(&item)
+							if value.value_add_error_kind(&add_error) != .None { _ = value.destroy_value(&seed); _ = value.destroy_value_add_error(&add_error); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+							_ = value.destroy_value(&seed); seed = next
+						} else { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 					} else { _ = value.destroy_value(&item); _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 					out := value.clone_value(&seed); _, append_error := value.array_append_take(&items, &out); if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&seed); if has_cartesian do _ = value.destroy_value(&cartesian_values); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory) }
 					}
@@ -8678,10 +8752,12 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					}
 					item_count, item_count_ok := value.array_length(&items)
 					if !item_count_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
+					break_name, break_trigger, break_detected := foreach_break_extract(storage, extract_index, name)
 					for item_index in 0..<item_count {
 						item, item_ok := value.array_element_copy(&items, item_index)
 						if !item_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Malformed_Program) }
-						extracted, extracted_ok := foreach_extract_value(storage, extract_index, &item)
+						extracted, extracted_ok := value.clone_value(&item), true
+						if !break_detected { extracted, extracted_ok = foreach_extract_value(storage, extract_index, &item) }
 						_ = value.destroy_value(&item)
 						if !extracted_ok { _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
 						displaced, set_error := value.array_set_take(&items, item_index, &extracted)
@@ -8691,6 +8767,27 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 							// owns extracted and must release it before retry/termination.
 							_ = value.destroy_value(&extracted)
 							_ = value.destroy_array_error(&set_error); _ = value.destroy_value(&seeds); _ = value.destroy_value(&items); return resource_step(.Out_Of_Memory)
+						}
+					}
+					if break_detected {
+						break_cursor := -1
+						if generator.opcode == .Range {
+							if break_trigger >= 0 && break_trigger < length do break_cursor = break_trigger
+						} else if generator.opcode == .Field {
+							for candidate in 0..<length {
+								candidate_value, candidate_ok := value.array_element_copy(&frame.input, candidate)
+								if candidate_ok {
+									candidate_number, number_ok := value.number_value_get(&candidate_value)
+									if number_ok && candidate_number == f64(break_trigger) do break_cursor = candidate
+								}
+								_ = value.destroy_value(&candidate_value)
+								if break_cursor >= 0 do break
+							}
+						}
+						if break_cursor >= 0 {
+							frame.iterator_break_at = break_cursor
+							frame.iterator_break_enabled = true
+							frame.iterator_break_name = break_name
 						}
 					}
 				}
@@ -8720,7 +8817,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					seed_body_instruction, seed_body_valid := program.program_instruction(storage.compiled, seed_body)
 					if !seed_child_ok || !seed_child_valid || !seed_body_ok || !seed_body_valid ||
 						seed_body_instruction.opcode != .Variable {
-						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+								return begin_terminal_misuse(storage, .Unsupported_Opcode)
 					}
 					seed_instruction = seed_child_instruction
 				}
@@ -9225,6 +9322,11 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			if ready do return result
 
 		case .Iterator_Active:
+			if frame.iterator_break_enabled && frame.iterator_cursor >= frame.iterator_break_at {
+				result, ready := unwind_break(storage, index, frame.iterator_break_name)
+				if ready do return result
+				continue
+			}
 			length, length_ok := value.array_length(&frame.input)
 			if !length_ok {
 				length, length_ok = value.object_length(&frame.input)

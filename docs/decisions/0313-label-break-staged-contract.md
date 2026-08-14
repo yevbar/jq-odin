@@ -16,4 +16,4 @@ The evaluator now activates a label frame, forwards ordinary body outputs, and r
 
 ## Explicit gap
 
-The label frame currently unwinds ordinary generator/fork/try paths. A follow-up evaluator lane must exercise and repair constructor and foreach frame cleanup (jq.test 333), verify nested label shadowing, and move unresolved-label resolution to compile time so jq's exact non-catchable diagnostic is reproduced. This decision is not a claim of complete label/break parity.
+The label frame currently unwinds ordinary generator/fork/try paths and the bounded `foreach range(N) ... ([ ]; .+[$name]; if $name == K then break $label else . end)` shape used by jq.test 333. The foreach materializer records the break cursor, emits prior accumulators, and unwinds at the cursor; broader update/extract programs and constructor cleanup remain deferred. A follow-up lane must verify nested label shadowing and move unresolved-label resolution to compile time so jq's exact non-catchable diagnostic is reproduced. This decision is not a claim of complete label/break parity.

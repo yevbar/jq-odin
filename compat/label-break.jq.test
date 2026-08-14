@@ -5,3 +5,7 @@ null
 label $here | .[] | if . > 1 then break $here else . end
 [1,2,3]
 1
+
+label $x | foreach range(3) as $i ([ ]; .+[$i]; if $i == 1 then break $x else . end)
+null
+[0]
