@@ -6,10 +6,14 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `a87b8103`, the authoritative selected catalog measurement
+At integration head `36b2266b`, the authoritative selected catalog measurement
 is **457/522 passed, 65 failed, 0 harness errors**
-(`/tmp/coverage-a87b8103.json`). The one-case gain over the prior
-456/522 checkpoint covers jq-compatible nonfinite JSON input framing at
+(`/tmp/coverage-36b2266b.json`). Stable keyed `sort_by(.field)` support is now
+implemented with an explicit keyed-sort opcode and focused-tested in
+`compat/sort-by-key-stable.jq.test`; equal keys retain input order while the
+ordinary `sort` opcode remains unchanged. It does not add a selected catalog
+case yet because the existing selected sort cases are already covered. The
+one-case gain over the prior 456/522 checkpoint covers jq-compatible nonfinite JSON input framing at
 `upstream/jq/tests/jq.test:1290`; the focused shard is
 `compat/cli-nonfinite-framing.jq.test` and the implementation decision is
 `docs/decisions/0320-cli-nonfinite-framing.md`. The preceding checkpoint’s
