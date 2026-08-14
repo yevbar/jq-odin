@@ -1245,9 +1245,15 @@ lower_filter :: proc(
 				if bound >= 0 { text = nodes[int(bound)].number_text }
 				if len(text) > 0 {
 					assert(program.set_text(output, program.Byte_Offset(text_at), text))
+					assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(text))}))
+					text_at += u32(len(text)); operand_at += 1
+				} else if bound >= 0 {
+					assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(bound)}))
+					operand_at += 1
+				} else {
+					assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=0}))
+					operand_at += 1
 				}
-				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(text))}))
-				text_at += u32(len(text)); operand_at += 1
 			}
 			instruction.operands_count = 3
 		case .Last, .First:

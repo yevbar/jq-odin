@@ -131,6 +131,10 @@ frame_phase :: enum u8 {
 	Index_Key_Active,
 	Slice_Start_Child,
 	Slice_Child_Active,
+	Slice_Start_Bound_Start,
+	Slice_Start_Bound_Active,
+	Slice_End_Bound_Start,
+	Slice_End_Bound_Active,
 	Slice_Result_Active,
 	Iterator_Active,
 	Binding_Start_Left,
@@ -172,6 +176,9 @@ eval_frame :: struct {
 	phase:       frame_phase,
 	input:       value.Value,
 	dynamic_index_base: value.Value,
+	dynamic_slice_start: int,
+	dynamic_slice_end: int,
+	dynamic_slice_start_seen: bool,
 	// Composite continuations retain the exact sealed instruction and operands
 	// that established their phase. Resumption compares the live Program bytes
 	// before using either the saved phase or a current operand.
@@ -1400,7 +1407,7 @@ capture_composite_instruction :: proc(
 		_, child_ok := child_instruction(storage, instruction, 0)
 		for offset in 1..<3 {
 			operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(offset)))
-			if !operand_ok || operand.kind != .Text do return false
+			if !operand_ok || (operand.kind != .Text && operand.kind != .Instruction) do return false
 		}
 		if !child_ok do return false
 		case .Try:
@@ -1541,7 +1548,7 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Contains do return false
 	case .Index_Start_Child, .Index_Child_Active, .Index_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Index_Only || instruction.opcode != .Index do return false
-	case .Slice_Start_Child, .Slice_Child_Active, .Slice_Result_Active:
+	case .Slice_Start_Child, .Slice_Child_Active, .Slice_Start_Bound_Start, .Slice_Start_Bound_Active, .Slice_End_Bound_Start, .Slice_End_Bound_Active, .Slice_Result_Active:
 		if frame.mode != .Normal && frame.mode != .Slice_Only || instruction.opcode != .Slice do return false
 	case .Fork_Start_Left, .Fork_Left_Active, .Fork_Start_Right, .Fork_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
@@ -1580,7 +1587,7 @@ resumed_composite_instruction_valid :: proc(
 	else if frame.phase == .Index_Start_Child || frame.phase == .Index_Child_Active || frame.phase == .Index_Result_Active || frame.phase == .Index_Key_Active {
 		expected_operand_count = 2
 	}
-	else if frame.phase == .Slice_Start_Child || frame.phase == .Slice_Child_Active || frame.phase == .Slice_Result_Active {
+	else if frame.phase == .Slice_Start_Child || frame.phase == .Slice_Child_Active || frame.phase == .Slice_Start_Bound_Start || frame.phase == .Slice_Start_Bound_Active || frame.phase == .Slice_End_Bound_Start || frame.phase == .Slice_End_Bound_Active || frame.phase == .Slice_Result_Active {
 		expected_operand_count = 3
 	}
 	else if frame.phase == .Constructor_Start || frame.phase == .Constructor_Child_Active || frame.phase == .Constructor_Emit {
@@ -1839,6 +1846,60 @@ slice_result :: proc(
 		_, append_error := value.array_append_take(&result, &item)
 		if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(&item); _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&result); return {}, {}, false }
 	}
+	return result, {}, true
+}
+
+@(private)
+slice_bound_number :: proc(
+	storage: ^evaluator_storage,
+	frame: ^eval_frame,
+	instruction: program.Instruction,
+	bound: ^value.Value,
+	start_bound: bool,
+) -> (Runtime_Error, bool) {
+	if value.kind_of(bound) == .Null {
+		length, length_ok := value.array_length(&frame.dynamic_index_base)
+		if !length_ok { text, text_ok := value.string_borrowed(&frame.dynamic_index_base); if !text_ok do return {}, false; length = utf8_codepoint_length(text) }
+		if start_bound { frame.dynamic_slice_start = 0; frame.dynamic_slice_start_seen = true } else { frame.dynamic_slice_end = length }
+		return {}, true
+	}
+	if value.kind_of(bound) != .Number {
+		return Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.dynamic_index_base), span=instruction.span, key="Array/string slice indices must be numbers"}, true
+	}
+	n, ok := value.number_value_get(bound)
+	if !ok do return Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&frame.dynamic_index_base), span=instruction.span, key="Array/string slice indices must be numbers"}, true
+	length, length_ok := value.array_length(&frame.dynamic_index_base)
+	if !length_ok { text, text_ok := value.string_borrowed(&frame.dynamic_index_base); if !text_ok do return {}, false; length = utf8_codepoint_length(text) }
+	if math.is_nan(n) {
+		if start_bound { frame.dynamic_slice_start = 0; frame.dynamic_slice_start_seen = true } else { frame.dynamic_slice_end = length }
+		return {}, true
+	}
+	index := int(math.floor(n))
+	if !start_bound { index = int(math.ceil(n)) }
+	if index < 0 { index += length }
+	if index < 0 { index = 0 }
+	if index > length { index = length }
+	if start_bound { frame.dynamic_slice_start = index; frame.dynamic_slice_start_seen = true } else { frame.dynamic_slice_end = index }
+	return {}, true
+}
+
+@(private)
+dynamic_slice_result :: proc(storage: ^evaluator_storage, frame: ^eval_frame, instruction: program.Instruction) -> (value.Value, Runtime_Error, bool) {
+	base := &frame.dynamic_index_base
+	if value.kind_of(base) == .Null do return value.null_value(), {}, true
+	if value.kind_of(base) != .Array && value.kind_of(base) != .String do return {}, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(base), span=instruction.span}, true
+	length, length_ok := value.array_length(base)
+	text := ""
+	if !length_ok { text_ok: bool; text, text_ok = value.string_borrowed(base); if !text_ok do return {}, {}, false; length = utf8_codepoint_length(text) }
+	start, end := frame.dynamic_slice_start, frame.dynamic_slice_end
+	if !frame.dynamic_slice_start_seen { start = 0 }
+	if start > end {
+		if value.kind_of(base) == .String { result, e := value.string_value("", storage.allocator); if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, {}, false }; return result, {}, true }
+		result, e := value.array_value(storage.allocator); if value.array_error_kind(&e) != .None { _ = value.destroy_array_error(&e); return {}, {}, false }; return result, {}, true
+	}
+	if value.kind_of(base) == .String { a := utf8_byte_offset_for_codepoint(text, start); b := utf8_byte_offset_for_codepoint(text, end); result, e := value.string_value(text[a:b], storage.allocator); if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return {}, {}, false }; return result, {}, true }
+	result, e := value.array_value(storage.allocator); if value.array_error_kind(&e) != .None { _ = value.destroy_array_error(&e); return {}, {}, false }
+	for i in start..<end { item, ok := value.array_element_copy(base, i); if !ok { _ = value.destroy_value(&result); return {}, {}, false }; _, ae := value.array_append_take(&result, &item); if value.array_error_kind(&ae) != .None { _ = value.destroy_value(&item); _ = value.destroy_array_error(&ae); _ = value.destroy_value(&result); return {}, {}, false } }
 	return result, {}, true
 }
 
@@ -2827,7 +2888,21 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .Index_Result_Active:
 		frame.phase = .Index_Child_Active
 	case .Slice_Child_Active:
+		start_operand, start_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+		end_operand, end_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+2))
+		if !start_ok || !end_ok { return false }
+		if start_operand.kind == .Instruction || end_operand.kind == .Instruction {
+			_ = value.destroy_value(&frame.dynamic_index_base)
+		}
 		frame.phase = .Complete
+	case .Slice_Start_Bound_Active:
+		_ = value.destroy_value(&frame.dynamic_index_base)
+		frame.phase = .Complete
+	case .Slice_End_Bound_Active:
+		// The start-bound producer remains suspended below the end-bound
+		// frame; resume it for the next start value after this end stream is
+		// exhausted rather than launching a duplicate producer.
+		frame.phase = .Slice_Start_Bound_Active
 	case .Slice_Result_Active:
 		frame.phase = .Slice_Child_Active
 	case .Iterator_Active:
@@ -3397,11 +3472,54 @@ propagate_output :: proc(
 	case .Index_Result_Active:
 		current = parent
 	case .Slice_Child_Active:
-		if !push_frame(storage, frame.instruction, parent, owned, .Slice_Only) {
-			return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+		start_operand, start_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+		end_operand, end_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+2))
+		if !start_ok || !end_ok { return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true }
+		if value.kind_of(owned) == .Null {
+			if !push_frame(storage, frame.instruction, parent, owned, .Slice_Only) { return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true }
+			frame.phase = .Slice_Result_Active
+			return {}, false
 		}
-		frame.phase = .Slice_Result_Active
-		return {}, false
+		if start_operand.kind == .Text && end_operand.kind == .Text {
+			if !push_frame(storage, frame.instruction, parent, owned, .Slice_Only) { return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true }
+			frame.phase = .Slice_Result_Active
+			return {}, false
+		}
+		frame.dynamic_index_base = value.take_value(owned)
+		frame.dynamic_slice_start = 0
+		frame.dynamic_slice_end = 0
+		frame.dynamic_slice_start_seen = false
+		if start_operand.kind == .Instruction {
+			input_copy := value.clone_value(&frame.input)
+			if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, start_operand.instruction, parent, &input_copy) { return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true }
+			frame.phase = .Slice_Start_Bound_Active
+			return {}, false
+		}
+		frame.dynamic_slice_start_seen = true
+		if start_operand.kind == .Text {
+			start_text, text_ok := program.operand_text(storage.compiled, start_operand); if !text_ok { return begin_terminal_misuse(storage, .Malformed_Program), true }
+			if len(start_text) > 0 { v, e := value.literal_number_value(start_text, storage.allocator); if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return begin_terminal_misuse(storage, .Malformed_Program), true }; bound_error, bound_ok := slice_bound_number(storage, frame, instruction, &v, true); _ = value.destroy_value(&v); if !bound_ok { return begin_terminal_misuse(storage, .Malformed_Program), true }; if bound_error.kind != .None { return raise_runtime(storage, parent, bound_error) } }
+		}
+		if end_operand.kind == .Instruction {
+			input_copy := value.clone_value(&frame.input); if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, end_operand.instruction, parent, &input_copy) { return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true }; frame.phase = .Slice_End_Bound_Active; return {}, false
+		}
+		if end_operand.kind == .Text { end_text, text_ok := program.operand_text(storage.compiled, end_operand); if !text_ok { return begin_terminal_misuse(storage, .Malformed_Program), true }; if len(end_text) > 0 { v, e := value.literal_number_value(end_text, storage.allocator); if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return begin_terminal_misuse(storage, .Malformed_Program), true }; bound_error, bound_ok := slice_bound_number(storage, frame, instruction, &v, false); _ = value.destroy_value(&v); if !bound_ok { return begin_terminal_misuse(storage, .Malformed_Program), true }; if bound_error.kind != .None { return raise_runtime(storage, parent, bound_error) } } else { frame.dynamic_slice_end, _ = value.array_length(&frame.dynamic_index_base); if value.kind_of(&frame.dynamic_index_base) == .String { text, _ := value.string_borrowed(&frame.dynamic_index_base); frame.dynamic_slice_end = utf8_codepoint_length(text) } } }
+		output, slice_error, slice_valid := dynamic_slice_result(storage, frame, instruction); if !slice_valid { return begin_terminal_misuse(storage, .Malformed_Program), true }; if slice_error.kind != .None { return raise_runtime(storage, parent, slice_error) }; return propagate_output(storage, parent, &output)
+	case .Slice_Start_Bound_Active:
+		if value.kind_of(owned) == .Invalid { return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true }
+		runtime_error, valid := slice_bound_number(storage, frame, instruction, owned, true); _ = value.destroy_value(owned); if !valid { return begin_terminal_misuse(storage, .Malformed_Program), true }; if runtime_error.kind != .None { return raise_runtime(storage, parent, runtime_error) }
+		end_operand, end_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+2)); if !end_ok { return begin_terminal_misuse(storage, .Malformed_Program), true }
+		if end_operand.kind == .Instruction { input_copy := value.clone_value(&frame.input); if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, end_operand.instruction, parent, &input_copy) { return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy), true }; frame.phase = .Slice_End_Bound_Active; return {}, false }
+		if end_operand.kind == .Text {
+			end_text, text_ok := program.operand_text(storage.compiled, end_operand); if !text_ok { return begin_terminal_misuse(storage, .Malformed_Program), true }
+			if len(end_text) > 0 { v, e := value.literal_number_value(end_text, storage.allocator); if value.constructor_error_kind(&e) != .None { _ = value.destroy_constructor_error(&e); return begin_terminal_misuse(storage, .Malformed_Program), true }; end_error, end_valid := slice_bound_number(storage, frame, instruction, &v, false); _ = value.destroy_value(&v); if !end_valid { return begin_terminal_misuse(storage, .Malformed_Program), true }; if end_error.kind != .None { return raise_runtime(storage, parent, end_error) } } else { frame.dynamic_slice_end, _ = value.array_length(&frame.dynamic_index_base); if value.kind_of(&frame.dynamic_index_base) == .String { text, _ := value.string_borrowed(&frame.dynamic_index_base); frame.dynamic_slice_end = utf8_codepoint_length(text) } }
+		}
+		frame.phase = .Slice_Start_Bound_Active
+		output, slice_error, slice_valid := dynamic_slice_result(storage, frame, instruction); if !slice_valid { return begin_terminal_misuse(storage, .Malformed_Program), true }; if slice_error.kind != .None { return raise_runtime(storage, parent, slice_error) }; return propagate_output(storage, parent, &output)
+	case .Slice_End_Bound_Active:
+		if value.kind_of(owned) == .Invalid { return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true }
+		bound_error, bound_valid := slice_bound_number(storage, frame, instruction, owned, false); _ = value.destroy_value(owned); if !bound_valid { return begin_terminal_misuse(storage, .Malformed_Program), true }; if bound_error.kind != .None { return raise_runtime(storage, parent, bound_error) }
+		output, runtime_error, valid := dynamic_slice_result(storage, frame, instruction); if !valid { return begin_terminal_misuse(storage, .Malformed_Program), true }; if runtime_error.kind != .None { return raise_runtime(storage, parent, runtime_error) }; return propagate_output(storage, parent, &output)
 	case .Slice_Result_Active:
 		current = parent
 		case .Iterator_Active:
@@ -8756,7 +8874,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 
-		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right, .Call_Start, .Loop_Start_Condition, .Loop_Start_Update:
+		case .Try_Start_Expression, .Try_Start_Catch, .Field_Start_Child, .Index_Start_Child, .Slice_Start_Child, .Slice_Start_Bound_Start, .Slice_End_Bound_Start, .Fork_Start_Left, .Fork_Start_Right, .Sequence_Start_Left, .Binding_Start_Left, .Binary_Start_Left, .Binary_Start_Right, .Call_Start, .Loop_Start_Condition, .Loop_Start_Update:
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -8775,6 +8893,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				offset, next_phase = 0, .Index_Child_Active
 			case .Slice_Start_Child:
 				offset, next_phase = 0, .Slice_Child_Active
+			case .Slice_Start_Bound_Start:
+				offset, next_phase = 1, .Slice_Start_Bound_Active
+			case .Slice_End_Bound_Start:
+				offset, next_phase = 2, .Slice_End_Bound_Active
 			case .Fork_Start_Left:
 				offset, next_phase = 0, .Fork_Left_Active
 			case .Fork_Start_Right:

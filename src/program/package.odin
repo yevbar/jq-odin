@@ -715,7 +715,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		index_key_instruction := instruction.opcode == .Index && instruction.index_key_kind == .Instruction && offset == 1
 		if instruction.opcode == .Static_Field_Add_Number || instruction.opcode == .Static_Field_Set_Number || instruction.opcode == .Static_Index_Set_Number || instruction.opcode == .Static_Slice_Set_Number || (instruction.opcode == .Dynamic_Field_Set && offset == 0) ||
 		   (!index_key_instruction && (instruction.opcode == .Field || instruction.opcode == .Index) && offset == count-1) ||
-		   (instruction.opcode == .Slice && offset > 0) ||
+		   (instruction.opcode == .Slice && offset > 0 && operand.kind != .Instruction) ||
 		   (instruction.has_literal && offset == 0) {
 			expected_kind = .Text
 		}
@@ -774,7 +774,12 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 	case .Join, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Error, .In, .Inside, .IsEmpty, .Map, .Map_Values, .Strftime, .Strptime:
 		return 1
 	case .Slice:
-		return 1
+		count: Count = 1
+		for offset in 1..<instruction.operands_count {
+			operand := program.operands[int(u64(instruction.operands_start)+u64(offset))]
+			if operand.kind == .Instruction do count += 1
+		}
+		return count
 	case .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Index_Set_Number, .Static_Slice_Set_Number, .Dynamic_Field_Set:
 		return 0
 	case .Path, .Getpath, .Delpaths:
@@ -837,7 +842,18 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 instruction_child_at :: proc(program: ^Program, instruction: Instruction, offset: Count) -> Instruction_Index {
 	assert(offset < instruction_child_count(program, instruction))
 	operand_offset: Count
-	if instruction.opcode != .Object {
+	if instruction.opcode == .Slice {
+		edge: Count
+		for candidate in 0..<instruction.operands_count {
+			operand := program.operands[int(u64(instruction.operands_start)+u64(candidate))]
+			if operand.kind != .Instruction do continue
+			if edge == offset {
+				operand_offset = candidate
+				break
+			}
+			edge += 1
+		}
+	} else if instruction.opcode != .Object {
 		operand_offset = offset
 	} else {
 		edge: Count

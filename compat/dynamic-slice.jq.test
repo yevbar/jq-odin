@@ -1,0 +1,28 @@
+# Dynamic slice bounds are evaluated against the input before the slice child.
+map([1, 2][0:.])
+[0, 1, 2]
+[[], [1], [1, 2]]
+
+# Both bounds may be filters; each bound stream participates in the slice stream.
+map([1, 2][(.):(. + 1)])
+[0, 1, 2]
+[[1], [2], []]
+
+# Empty and multi-output bounds preserve jq stream cardinality.
+map([1, 2][0:(., . + 1)])
+[0, 1]
+[[], [1], [1], [1, 2]]
+
+# Fractional bounds use floor for starts and ceil for ends.
+[1, 2, 3, 4][(1.9):(3.1)]
+[2, 3, 4]
+
+# Null source and NaN dynamic bounds retain jq's null/omitted-bound behavior.
+null | .[.:2]
+null
+
+[1, 2, 3] | .[0:(nan)]
+[1, 2, 3]
+
+[1, 2, 3] | .[length:]
+[]
