@@ -9,3 +9,11 @@ label $here | .[] | if . > 1 then break $here else . end
 label $x | foreach range(3) as $i ([ ]; .+[$i]; if $i == 1 then break $x else . end)
 null
 [0]
+
+[(label $here | .[] | if .>1 then break $here else . end), "hi!"]
+[0,1,2]
+[0,1,"hi!"]
+
+[(label $here | .[] | if .>1 then break $here else . end), "hi!"]
+[0,2,1]
+[0,"hi!"]

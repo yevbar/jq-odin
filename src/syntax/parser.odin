@@ -1077,7 +1077,9 @@ parse_pipe :: proc(
 					return {}, false
 				}
 				advance(parser)
-				body, body_ok := parse_pipe(parser, closing, false)
+				body_closing := closing
+				if parser.frames.count > entry_frame_depth do body_closing = .Close_Paren
+				body, body_ok := parse_pipe(parser, body_closing, false)
 				if !body_ok { return {}, false }
 				span, span_ok := spanning(parser, label_token.span, parser.nodes.storage[int(body)].span)
 				assert(span_ok)
@@ -1492,7 +1494,9 @@ parse_pipe :: proc(
 						return {}, false
 					}
 					advance(parser)
-					body, body_ok := parse_pipe(parser, closing, false)
+					body_closing := closing
+					if parser.frames.count > entry_frame_depth do body_closing = .Close_Paren
+					body, body_ok := parse_pipe(parser, body_closing, false)
 					if !body_ok {
 						return {}, false
 					}

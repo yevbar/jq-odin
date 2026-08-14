@@ -12,7 +12,7 @@ The jq oracle exercises lexical non-local control flow in `upstream/jq/tests/jq.
 
 ## Semantic slice
 
-The evaluator now activates a label frame, forwards ordinary body outputs, and resolves `break` by nearest lexical label name. It destroys all frames above the target before completing that label, so comma/fork/select pipelines and `try` frames are unwound without leaking child values. `compat/label-break.jq.test` covers jq.test 315, 319, and 2243-shaped behavior.
+The evaluator now activates a label frame, forwards ordinary body outputs, and resolves `break` by nearest lexical label name. It destroys all frames above the target before completing that label, so comma/fork/select pipelines and `try` frames are unwound without leaking child values. The parser also gives a label body inside parentheses the nearest `)` delimiter; this preserves the surrounding comma in constructor forms such as jq.test:315/319. `compat/label-break.jq.test` covers those constructor cases plus 2243-shaped behavior.
 
 ## Explicit gap
 
