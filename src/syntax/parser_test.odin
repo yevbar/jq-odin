@@ -66,6 +66,23 @@ test_repeated_elif_lowers_to_nested_if_chain :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_piped_generator_destructuring_attaches_to_pipe_tail :: proc(t: ^testing.T) {
+	cases := [?]string{
+		`[{a:1}] | .[] as {a:$a} | $a`,
+		`.[] as [$a,$b] | [$a,$b]`,
+	}
+	for index in 0..<len(cases) {
+		source_text := cases[index]
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, source_text)
+		expect_parse_success(t, &parser, outcome)
+		expected_kind := Node_Kind.Pipe if index == 0 else Node_Kind.Binding
+		testing.expect_value(t, parser.nodes.storage[int(outcome.root)].kind, expected_kind)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
 test_parenthesized_generator_binary_expression_parses :: proc(t: ^testing.T) {
 	cases := [?]string{
 		`1 * (range(0;3) / 2)`,
