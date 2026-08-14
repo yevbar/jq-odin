@@ -1,0 +1,25 @@
+# jq.test:775 — a definition body may contain a local definition. The inner
+# g is visible only in the outer g body; the final g call resolves the outer
+# declaration.
+def f: . + 1; def g: def g: . + 100; f | g | f; (f | g), g
+3.0
+106.0
+105.0
+
+# jq.test:789 — declaration-time lexical snapshots across redefinitions and
+# nested array expressions.
+def f: 1; def g: f, def f: 2; def g: 3; f, def f: g; f, g; def f: 4; [f, def f: g; def g: 5; f, g]+[f,g]
+null
+[4,1,2,3,3,5,4,1,2,3,3]
+
+# jq.test:864 — parameterized definitions close over caller variables and
+# preserve independent parameter/local binding frames.
+def id(x):x; 2000 as $x | def f(x):1 as $x | id([$x, x, x]); def g(x): 100 as $x | f($x,$x+x); g($x)
+"more testing"
+[1,100,2100.0,100,2100.0]
+
+# jq.test:875 — nested local definitions must retain generator backtracking
+# and return to each caller continuation in order.
+[[20,10][1,0] as $x | def f: (100,200) as $y | def g: [$x + $y, .]; . + $x | g; f[0] | [f][0][1] | f]
+999999999
+[[110.0, 130.0], [210.0, 130.0], [110.0, 230.0], [210.0, 230.0], [120.0, 160.0], [220.0, 160.0], [120.0, 260.0], [220.0, 260.0]]
