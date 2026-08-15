@@ -49,6 +49,11 @@ to existing `Map`/`Index`/array instructions and passes jq.test:2051; its
 focused shard is `compat/join-index.jq.test` and its contract is recorded in
 `docs/decisions/0346-join-index-contract.md`. JOIN/3, JOIN/4, and dynamic
 index-object streams remain deferred.
+Uppercase `IN({}, [])` comma-literal membership is also lowered through the
+existing two-child `In` continuation; `compat/in-uppercase-args.jq.test` and
+decision `docs/decisions/0347-uppercase-in-comma-contract.md` cover its scalar,
+array, object, and null results. The surrounding dynamic `walk` predicate is
+still deferred.
 Root iterator
 compound updates (`+=`, `-=`, `*=`, `/=`, `%=` with numeric literal RHS) are
 covered by `compat/iterator-compound-updates.jq.test` (11/11 focused cases;
