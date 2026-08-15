@@ -5209,12 +5209,69 @@ literal_numeric_sequence :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id,
 // Dynamic filters and computed indexes deliberately remain rejected until the
 // general path continuation contract exists; literal root slices are grouped
 // here for the evaluator's coordinate-mask continuation.
+static_nonnegative_integer :: proc(text: string) -> bool {
+	if len(text) == 0 do return false
+	for byte in text { if byte < '0' || byte > '9' do return false }
+	return true
+}
+
 @(private="package")
 lower_static_del_filter :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, bool) {
 	invalid := Node_Id(-1)
 	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return invalid, false
 	node := parser.nodes.storage[int(node_id)]
 	if node.kind == .Parenthesized && node.has_child do return lower_static_del_filter(parser, node.child)
+	if node.kind == .Empty {
+		return append_node(parser, Node{kind=.Identity, span=node.span})
+	}
+	if node.kind == .Identity && !node.has_child && !node.has_value {
+		empty_path, empty_path_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span})
+		if !empty_path_ok do return invalid, false
+		outer, outer_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=empty_path, has_value=true})
+		if !outer_ok do return invalid, false
+		return append_node(parser, Node{kind=.Delpaths, span=node.span, child=outer, has_child=true})
+	}
+	if node.kind == .Pipe {
+		left_paths, left_ok := lower_static_del_group_paths(parser, node.left)
+		right_selector := node.right
+		// A piped numeric selector stream is applied to each base path in
+		// original coordinates, so lower its leaves in descending order before
+		// forming the Cartesian product.
+		selector_ids: [16]Node_Id
+		selector_count := 0
+		collect_pipe_indices :: proc(parser: ^Parser, id: Node_Id, ids: ^[16]Node_Id, count: ^int) -> bool {
+			if id < 0 || int(id) >= parser.nodes.count || count^ >= len(ids) do return false
+			n := parser.nodes.storage[int(id)]
+			if n.kind == .Parenthesized && n.has_child do return collect_pipe_indices(parser, n.child, ids, count)
+			if n.kind == .Comma { return collect_pipe_indices(parser, n.left, ids, count) && collect_pipe_indices(parser, n.right, ids, count) }
+			if n.kind != .Index || !n.has_number_text || !static_nonnegative_integer(n.number_text) do return false
+			ids[count^] = id; count^ += 1
+			return true
+		}
+		if collect_pipe_indices(parser, node.right, &selector_ids, &selector_count) && selector_count > 1 {
+			for left in 0..<selector_count {
+				best := left
+				for right_index in (left+1)..<selector_count {
+					a := parser.nodes.storage[int(selector_ids[best])].number_text
+					b := parser.nodes.storage[int(selector_ids[right_index])].number_text
+					if len(a) < len(b) || (len(a) == len(b) && b > a) { best = right_index }
+				}
+				if best != left { selector_ids[left], selector_ids[best] = selector_ids[best], selector_ids[left] }
+			}
+			right_selector = selector_ids[0]
+			for selector_index in 1..<selector_count {
+				span := node.span
+				right_selector, _ = append_node(parser, Node{kind=.Comma, span=span, left=right_selector, right=selector_ids[selector_index]})
+			}
+		}
+		right_paths, right_ok := lower_static_del_group_paths(parser, right_selector)
+		if !left_ok || !right_ok do return invalid, false
+		product, product_ok := lower_static_del_path_product(parser, left_paths, right_paths)
+		if !product_ok do return invalid, false
+		grouped, grouped_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=product, has_value=true})
+		if !grouped_ok do return invalid, false
+		return append_node(parser, Node{kind=.Delpaths, span=node.span, child=grouped, has_child=true})
+	}
 	if node.kind == .Comma {
 		// Keep scalar-only comma selectors on their legacy sequential lowering.
 		// Once a literal slice is present, retain all selectors in one Delpaths
@@ -5238,6 +5295,36 @@ lower_static_del_filter :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, 
 	return append_node(parser, Node{kind=.Delpaths, span=node.span, child=paths, has_child=true})
 }
 
+// lower_static_del_path_product forms the Cartesian product of two static
+// path streams. Each leaf is an inner path array; concatenating its component
+// comma trees yields the path used by Delpaths. Filters, dynamic keys, and
+// non-array path leaves fail closed in the callers that build these streams.
+lower_static_del_path_product :: proc(parser: ^Parser, left, right: Node_Id) -> (Node_Id, bool) {
+	invalid := Node_Id(-1)
+	if left < 0 || right < 0 || int(left) >= parser.nodes.count || int(right) >= parser.nodes.count do return invalid, false
+	left_node := parser.nodes.storage[int(left)]
+	right_node := parser.nodes.storage[int(right)]
+	if left_node.kind == .Comma {
+		l, lok := lower_static_del_path_product(parser, left_node.left, right)
+		r, rok := lower_static_del_path_product(parser, left_node.right, right)
+		if !lok || !rok do return invalid, false
+		span, span_ok := spanning(parser, parser.nodes.storage[int(l)].span, parser.nodes.storage[int(r)].span); assert(span_ok)
+		return append_node(parser, Node{kind=.Comma, span=span, left=l, right=r})
+	}
+	if right_node.kind == .Comma {
+		l, lok := lower_static_del_path_product(parser, left, right_node.left)
+		r, rok := lower_static_del_path_product(parser, left, right_node.right)
+		if !lok || !rok do return invalid, false
+		span, span_ok := spanning(parser, parser.nodes.storage[int(l)].span, parser.nodes.storage[int(r)].span); assert(span_ok)
+		return append_node(parser, Node{kind=.Comma, span=span, left=l, right=r})
+	}
+	if !left_node.has_value || left_node.container_kind != .Array || !right_node.has_value || right_node.container_kind != .Array do return invalid, false
+	components, component_ok := append_node(parser, Node{kind=.Comma, span=left_node.span, left=left_node.value, right=right_node.value})
+	if !component_ok do return invalid, false
+	span, span_ok := spanning(parser, left_node.span, right_node.span); assert(span_ok)
+	return append_node(parser, Node{kind=.Identity, container_kind=.Array, span=span, value=components, has_value=true})
+}
+
 // static_del_selector_has_slice identifies the bounded grammar that must stay
 // grouped. It deliberately does not inspect arbitrary filter expressions.
 static_del_selector_has_slice :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
@@ -5259,9 +5346,7 @@ lower_static_del_group_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node
 		left, left_ok := lower_static_del_group_paths(parser, node.left)
 		right, right_ok := lower_static_del_group_paths(parser, node.right)
 		if !left_ok || !right_ok do return invalid, false
-		span, span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(right)].span)
-		assert(span_ok)
-		return append_node(parser, Node{kind=.Comma, span=span, left=left, right=right})
+		return append_node(parser, Node{kind=.Comma, span=node.span, left=left, right=right})
 	}
 	wrapped, wrapped_ok := lower_static_del_paths(parser, node_id)
 	if !wrapped_ok do return invalid, false
