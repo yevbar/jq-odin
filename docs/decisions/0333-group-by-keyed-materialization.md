@@ -8,8 +8,10 @@ stable-key comparator used by bounded `sort_by(.field)` and keeps the ordinary
 `sort` opcode unchanged.
 
 The implementation accepts a comma-separated tuple of static field selectors
-for `sort_by` and `group_by` (for example, `sort_by(.a,.b)`). Dynamic key
-filters and expression keys remain deferred; those require resumable key-stream
-evaluation and jq's exact runtime error/cardinality behavior. The focused
-fixture `compat/group-by-keyed.jq.test` covers direct grouping, composition,
-and tuple-key ordering.
+and static arithmetic/comparison expressions for `sort_by` and `group_by` (for
+example, `sort_by(.a,.b)` and `group_by(.a + .b - .c == 2)`). Dynamic key
+filters, variables, postfix paths, and generator-valued expressions remain
+deferred; those require resumable key-stream evaluation and jq's exact runtime
+error/cardinality behavior. The focused fixture `compat/group-by-keyed.jq.test`
+covers direct grouping, composition, tuple-key ordering, and one static
+expression key.

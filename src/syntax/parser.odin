@@ -4891,6 +4891,15 @@ append_node :: proc(parser: ^Parser, node: Node) -> (Node_Id, bool) {
 static_key_filter :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
 	node := parser.nodes.storage[int(node_id)]
 	if node.kind == .Field && node.has_name_span && !node.has_child && !node.has_value do return true
+	if (node.kind == .Number || node.kind == .Boolean || node.kind == .Null) && !node.has_child && !node.has_value do return true
+	if node.form == .Binary && node.has_operator_span {
+		switch node.binary_operator {
+		case .Add, .Subtract, .Multiply, .Divide, .Modulo, .Equal, .Not_Equal, .Less, .Less_Equal, .Greater, .Greater_Equal:
+			return static_key_filter(parser, node.left) && static_key_filter(parser, node.right)
+		case .Defined_Or, .Or, .And:
+			return false
+		}
+	}
 	if node.kind == .Comma && !node.has_child && !node.has_value {
 		return static_key_filter(parser, node.left) && static_key_filter(parser, node.right)
 	}
