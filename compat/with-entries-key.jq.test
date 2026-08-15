@@ -1,0 +1,13 @@
+# Bounded with_entries lowering through to_entries | map(update) | from_entries.
+with_entries(.key |= "KEY_" + .)
+{"a":1,"b":2}
+{"KEY_a":1,"KEY_b":2}
+
+with_entries(.key |= "KEY_" + .) | .[]
+{"a":1,"b":2}
+1
+2
+
+with_entries(.key |= "KEY_" + .)
+{}
+{}

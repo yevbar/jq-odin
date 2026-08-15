@@ -1392,6 +1392,26 @@ parse_pipe :: proc(
 					term_ready = true
 					continue
 				}
+				if spelling == "with_entries" {
+					advance(parser)
+				}
+				if spelling == "with_entries" && token_is(parser, .Open_Paren) {
+					advance(parser)
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
+					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					close := parser.lookahead.token; advance(parser)
+					to_entries, to_ok := append_node(parser, Node{kind=.To_Entries, span=token.span})
+					map_node, map_ok := append_node(parser, Node{kind=.Map, span=parser.nodes.storage[int(argument)].span, child=argument, has_child=true})
+					from_entries, from_ok := append_node(parser, Node{kind=.From_Entries, span=close.span})
+					if !to_ok || !map_ok || !from_ok do return {}, false
+					first_span, first_span_ok := spanning(parser, parser.nodes.storage[int(to_entries)].span, parser.nodes.storage[int(map_node)].span); assert(first_span_ok)
+					first_pipe, first_pipe_ok := append_node(parser, Node{kind=.Pipe, span=first_span, left=to_entries, right=map_node}); if !first_pipe_ok do return {}, false
+					full_span, full_span_ok := spanning(parser, parser.nodes.storage[int(first_pipe)].span, parser.nodes.storage[int(from_entries)].span); assert(full_span_ok)
+					new_term, term_ok := append_node(parser, Node{kind=.Pipe, span=full_span, left=first_pipe, right=from_entries}); if !term_ok do return {}, false
+					term = new_term
+					term_ready = true
+					continue
+				}
 				if spelling == "select" {
 					advance(parser)
 					if !token_is(parser, .Open_Paren) { fail_from_lookahead(parser, .Expression); return {}, false }
@@ -3086,10 +3106,13 @@ parse_dynamic_field_set :: proc(parser: ^Parser, left, pipe_root, pipe_tail: Nod
 		right = parser.nodes.storage[int(right)].child
 	}
 	right_node := parser.nodes.storage[int(right)]
-	valid_rhs := right_node.kind == .Identity || right_node.kind == .Field ||
+	valid_prefix_add := right_node.form == .Binary && right_node.binary_operator == .Add && right_node.left >= 0 && right_node.right >= 0 &&
+		parser.nodes.storage[int(right_node.left)].kind == .String &&
+		parser.nodes.storage[int(right_node.right)].kind == .Identity
+	valid_rhs := valid_prefix_add || right_node.kind == .Identity || right_node.kind == .Field ||
 		right_node.kind == .Number || right_node.kind == .Boolean ||
 		right_node.kind == .Null || right_node.kind == .String
-	if right_node.form != .Kinded || right_node.container_kind != .None || right_node.has_child || right_node.has_value || !valid_rhs {
+	if right_node.form != .Kinded || (right_node.form == .Kinded && right_node.container_kind != .None) || (!valid_prefix_add && (right_node.has_child || right_node.has_value)) || !valid_rhs {
 		fail_from_lookahead(parser, .Expression)
 		return {}, false
 	}
