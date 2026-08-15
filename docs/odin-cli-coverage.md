@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `049c04db`, the authoritative selected catalog measurement
+At integration head `7ea44cc3`, the authoritative selected catalog measurement
 is **516/522 passed, 6 failed, 0 harness errors**
 (`/tmp/coverage-callable-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
@@ -19,9 +19,10 @@ The six remaining selected failures are jq.test:864, :929, :1273, :1277,
 recursive-pattern, or filter-path continuation ABIs.
 The append-only `Parameter_Reference` syntax/program scaffold now distinguishes
 formal filter references from lexical `$` variables. A bounded one-formal
-closure activation phase is integrated and covered by evaluator 89/89 and
-driver 74/74; composed and generator-valued callable bodies remain deferred
-under decisions 0385 and 0386.
+closure activation phase, including a literal-binding caller-scope shape, is
+integrated and covered by evaluator 89/89 and driver 74/74; multi-definition
+and generator-valued callable bodies remain deferred under decisions 0385 and
+0386.
 Undefined-variable compile diagnostics now include jq-compatible source/name spans
 and carets (jq.test:560); boolean object-key diagnostics remain deferred.
 Invalid string escapes now preserve the lexical message and offending-line caret
