@@ -7,7 +7,7 @@ formal `x` in `def f(x): ...` is a filter closure, while `$x` is an ordinary
 lexical value. For example, jq evaluates
 `2000 as $x | def f(x): 1 as $x | x; f($x)` to `2000`, but evaluates the
 corresponding `$x` body to `1`. Treating the formal as a value binding is
-therefore incorrect (see `docs/decisions/0382-formal-filter-argument-evidence.md`).
+therefore incorrect (see `docs/decisions/0384-formal-filter-argument-evidence.md`).
 
 ## Decision
 
@@ -28,4 +28,3 @@ The syntax, compiler, program, and evaluator packages are affected. This is a
 shared AST/program contract; consumers must add closure-frame activation before
 the opcode can be routed in production. Existing zero-argument calls and the
 legacy top-level parameterized path remain unchanged.
-
