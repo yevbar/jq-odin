@@ -343,6 +343,27 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
 		return ok
 	}
+	if err.kind == .Filter_Compile && err.compile_kind == .Unresolved_Label && len(source) > 0 {
+		start := err.compile_error_span.start
+		end := err.compile_error_span.end
+		name_start := err.compile_error_name_span.start
+		name_end := err.compile_error_name_span.end
+		if start < 0 || end < start || end > len(source) || name_start < 0 || name_end < name_start || name_end > len(source) {
+			return write_all(os.stderr, "jq-odin: filter compile error\n")
+		}
+		name := source[name_start:name_end]
+		ok = write_all(os.stderr, "jq: error: $*label-") && ok
+		ok = write_all(os.stderr, name) && ok
+		ok = write_all(os.stderr, " is not defined at <top-level>, line 1, column ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", start+1)) && ok
+		ok = write_all(os.stderr, ":\n    ") && ok
+		ok = write_all(os.stderr, source) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 1..<start+1 do ok = write_all(os.stderr, " ") && ok
+		for _ in start..<end do ok = write_all(os.stderr, "^") && ok
+		ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
+		return ok
+	}
 	ok = write_all(os.stderr, "jq-odin: ") && ok
 	ok = write_all(os.stderr, kind_name(err.kind)) && ok
 	if err.kind == .Module {

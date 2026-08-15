@@ -467,6 +467,8 @@ Run_Error :: struct {
 	filter_start:         int,
 	filter_end:           int,
 	compile_kind:         compiler.Lower_Error_Kind,
+	compile_error_span:   diagnostic.Span,
+	compile_error_name_span: diagnostic.Span,
 	module_kind:          Module_Error_Kind,
 	json_kind:            json.Scalar_Parse_Error_Kind,
 	json_offset:          int,
@@ -1311,7 +1313,7 @@ run_with_options :: proc(
 		)
 		if lowered.kind != .None {
 			if lowered.kind == .Resource_Failure do return allocation_error(result, lowered.resource_error)
-			return finish(result, {kind = .Filter_Compile, compile_kind = lowered.kind})
+			return finish(result, {kind = .Filter_Compile, compile_kind = lowered.kind, compile_error_span = lowered.error_span, compile_error_name_span = lowered.error_name_span})
 		}
 	}
 

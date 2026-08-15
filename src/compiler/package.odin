@@ -11,11 +11,14 @@ Lower_Error_Kind :: enum u8 {
 	Invalid_AST,
 	Size_Overflow,
 	Resource_Failure,
+	Unresolved_Label,
 }
 
 Lower_Outcome :: struct {
 	kind:           Lower_Error_Kind,
 	resource_error: runtime.Allocator_Error,
+	error_span:     diagnostic.Span,
+	error_name_span: diagnostic.Span,
 }
 
 @(private="package")
@@ -658,6 +661,48 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	return true
 }
 
+// validate_label_scopes performs the compile-time label lookup jq applies to
+// `break $name`. It is intentionally a non-allocating structural pass; the
+// returned spans let the driver reproduce jq's source/caret diagnostic.
+validate_label_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source: diagnostic.Source, labels: []diagnostic.Span, depth, budget: int) -> (bool, diagnostic.Span, diagnostic.Span) {
+	if budget <= 0 || !node_reference_valid(id, len(nodes)) do return false, {}, {}
+	node := nodes[int(id)]
+	next := budget - 1
+	if node.kind == .Break {
+		for index := depth-1; index >= 0; index -= 1 {
+			if binding_name_equal(source, node.name_span, labels[index]) do return true, {}, {}
+		}
+		error_span := node.span
+		error_span.end = node.name_span.end
+		return false, error_span, node.name_span
+	}
+	if node.kind == .Label {
+		if depth >= len(labels) do return false, {}, {}
+		labels[depth] = node.name_span
+		return validate_label_scopes(nodes, node.child, source, labels, depth+1, next)
+	}
+	if node.kind == .Call {
+		// Definition call bodies may be recursive cycles; label resolution is
+		// structural at the call site and does not descend through the body edge.
+		return true, {}, {}
+	}
+	if node.form == .Binary {
+		ok, span, name := validate_label_scopes(nodes, node.left, source, labels, depth, next)
+		if !ok do return false, span, name
+		return validate_label_scopes(nodes, node.right, source, labels, depth, next)
+	}
+	if node.kind == .Binding || node.kind == .Pipe || node.kind == .Comma || node.kind == .Try {
+		ok, span, name := validate_label_scopes(nodes, node.left, source, labels, depth, next)
+		if !ok do return false, span, name
+		return validate_label_scopes(nodes, node.right, source, labels, depth, next)
+	}
+	if node.has_child {
+		ok, span, name := validate_label_scopes(nodes, node.child, source, labels, depth, next)
+		if !ok do return false, span, name
+	}
+	return true, {}, {}
+}
+
 // lower_filter translates a complete borrowed syntax arena into one owned,
 // source-independent Program. It performs a non-allocating validation/counting
 // pass before Program's single exact allocation, then fills storage in arena
@@ -1092,6 +1137,11 @@ lower_filter :: proc(
 	}
 	if !validate_binding_scopes(nodes, root, source, scope_stack[:], 0, len(nodes)+1) {
 		return Lower_Outcome{kind = .Invalid_AST}
+	}
+	label_stack: [1024]diagnostic.Span
+	labels_ok, label_span, label_name_span := validate_label_scopes(nodes, root, source, label_stack[:], 0, len(nodes)+1)
+	if !labels_ok {
+		return Lower_Outcome{kind = .Unresolved_Label, error_span = label_span, error_name_span = label_name_span}
 	}
 	if has_unlowered_node {
 		return Lower_Outcome{kind = .Invalid_AST}
