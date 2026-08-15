@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `8967a822`, the authoritative selected catalog measurement
+At integration head `786a19f9`, the authoritative selected catalog measurement
 is **475/522 passed, 47 failed, 0 harness errors**
-(`/tmp/coverage-0cd12.json`). Persistent `input` stream behavior is covered by
+(`/tmp/coverage-786a.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -926,3 +926,12 @@ RHS deletion/no-op behavior, first-output cardinality, late-error cancellation,
 and typed scalar/object/index errors. The focused shard passes 10/10 and adds
 jq.test:1232-shaped coverage; general nested paths and dynamic selectors remain
 deferred.
+
+## Nested field-index-field filter update follow-up (2026-08-14)
+
+The next bounded path form `.field[nonnegative-index].field |= FILTER` now has
+its own four-operand continuation. It preserves nested-field deletion inside an
+array element, synthesizes missing/null intermediates, cancels later RHS output
+after the first update, and reports typed intermediate failures. The focused
+shard passes 10/10; dynamic selectors, slices, and parameterized callable
+updates remain deferred.
