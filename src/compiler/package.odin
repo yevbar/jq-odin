@@ -232,6 +232,10 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       node.next == 0 && !node.has_next && node.key == 0 && !node.has_key &&
 		       no_container_links && !node.boolean_value && no_number &&
 		       !node.has_string_text && string_header_absent(node.string_text)
+	case .Pattern_Descriptor:
+		return node.container_kind == .None && node.has_child && node.child >= 0 &&
+		       node.left == 0 && node.right == 0 && !node.has_value && !node.has_next &&
+		       !node.has_name_span && !node.has_string_text && string_header_absent(node.string_text)
 	case .Path, .Getpath, .Delpaths:
 		return node.container_kind == .None && node.has_child && node.child >= 0 && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Setpath:
@@ -542,13 +546,16 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		// definition's call site independently of this scope walk.
 		return true
 	case .Alternation:
-		if !validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) ||
-		   !validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget) { return false }
-		// Branch variable scopes are committed transactionally by the future
-		// evaluator activation; this structural phase deliberately does not
-		// treat pattern leaves as ordinary body variables.
+		// Producer, branch captures, and body variables share a transactional
+		// scope that is not represented by ordinary Binding frames yet.
+		// Structural lowering therefore defers the complete scope walk.
 		return true
 	case .Alternation_Branch:
+		return true
+	case .Pattern_Descriptor:
+		// Recursive pattern captures are committed transactionally by the
+		// evaluator phase; do not interpret pattern variables as ordinary body
+		// lexical references during this structural lowering phase.
 		return true
 	case .Path, .Getpath, .Delpaths:
 		return validate_binding_scopes(nodes, node.child, source, scopes, depth, next_budget)
@@ -960,6 +967,10 @@ lower_filter :: proc(
 				branch = branch_node.next if branch_node.has_next else syntax.Node_Id(-1)
 			}
 			if !checked_count_add(&operand_count, u64(2 + branch_count)) { return Lower_Outcome{kind = .Size_Overflow} }
+		case .Pattern_Descriptor:
+			if !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
 		case .Path, .Getpath, .Delpaths:
 			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Setpath:
@@ -1358,6 +1369,11 @@ lower_filter :: proc(
 				branch = branch_node.next if branch_node.has_next else syntax.Node_Id(-1)
 			}
 			instruction.operands_count = program.Count(operand_at - u32(instruction.operands_start))
+		case .Pattern_Descriptor:
+			instruction.opcode = .Pattern_Descriptor
+			instruction.operands_count = 1
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
+			operand_at += 1
 		case .Index:
 			instruction.opcode = .Index
 			instruction.operands_count = 2

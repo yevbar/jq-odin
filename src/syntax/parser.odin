@@ -311,6 +311,9 @@ Node_Kind :: enum {
 	// Alternation retains the producer, branch pattern descriptors, and body.
 	Alternation,
 	Alternation_Branch,
+	// Pattern_Descriptor wraps recursive destructuring branches for staged
+	// lowering; evaluator capture activation is a later phase.
+	Pattern_Descriptor,
 }
 
 Node_Id :: distinct int
@@ -1210,7 +1213,7 @@ parse_alternation_binding :: proc(
 		if token_is(parser, .Open_Bracket) || token_is(parser, .Open_Brace) {
 			branch, branch_ok = parse_container(parser, parser.lookahead.token.kind)
 		} else {
-			branch, branch_ok = parse_pipe(parser, .Alternation, stop_at_comma)
+			branch, branch_ok = parse_pipe(parser, .Alternation, stop_at_comma, false, false, true)
 		}
 		if !branch_ok || branch < 0 {
 			fail_from_lookahead(parser, .Expression)
@@ -1230,11 +1233,23 @@ parse_alternation_binding :: proc(
 	}
 	head := Node_Id(-1)
 	for index := branch_count-1; index >= 0; index -= 1 {
+		branch_pattern := branches[index]
+		if pattern_has_nested_container(parser, branch_pattern) {
+			descriptor_span := parser.nodes.storage[int(branch_pattern)].span
+			descriptor, descriptor_ok := append_node(parser, Node{
+				kind = .Pattern_Descriptor,
+				span = descriptor_span,
+				child = branch_pattern,
+				has_child = true,
+			})
+			if !descriptor_ok do return {}, false
+			branch_pattern = descriptor
+		}
 		branch_span := parser.nodes.storage[int(branches[index])].span
 		wrapper, wrapper_ok := append_node(parser, Node{
 			kind = .Alternation_Branch,
 			span = branch_span,
-			child = branches[index],
+			child = branch_pattern,
 			has_child = true,
 			next = head,
 			has_next = head >= 0,
@@ -1260,6 +1275,35 @@ parse_alternation_binding :: proc(
 		return {}, false
 	}
 	return result, true
+}
+
+pattern_has_nested_container :: proc(parser: ^Parser, id: Node_Id) -> bool {
+	if id < 0 || int(id) >= len(parser.nodes.storage) do return false
+	node := parser.nodes.storage[int(id)]
+	if node.container_kind != .Array && node.container_kind != .Object {
+		if node.has_value do return pattern_has_nested_container(parser, node.value)
+		if node.has_child do return pattern_has_nested_container(parser, node.child)
+		return false
+	}
+	if !node.has_value do return false
+	child := node.value
+	for child >= 0 {
+		if int(child) >= len(parser.nodes.storage) do return false
+		entry := parser.nodes.storage[int(child)]
+		if entry.kind == .Comma {
+			if pattern_has_nested_container(parser, entry.left) || pattern_has_nested_container(parser, entry.right) do return true
+		} else if entry.container_kind == .Array || entry.container_kind == .Object {
+			return true
+		} else if entry.has_value {
+			if int(entry.value) >= 0 && int(entry.value) < len(parser.nodes.storage) {
+				value_node := parser.nodes.storage[int(entry.value)]
+				if value_node.container_kind == .Array || value_node.container_kind == .Object do return true
+			}
+			if pattern_has_nested_container(parser, entry.value) do return true
+		}
+		child = entry.next if entry.has_next else Node_Id(-1)
+	}
+	return false
 }
 
 // parse_pipe is an explicit-state precedence parser. Parenthesized state lives
@@ -3715,6 +3759,12 @@ parse_pipe :: proc(
 				if pattern_node.container_kind != .Object || !pattern_node.has_value {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
+				}
+				// Recursive object/array patterns use the first-class alternation
+				// descriptor ABI; simple object permutations stay on their legacy
+				// lowering path for compatibility.
+				if token_is(parser, .Alternation) && pattern_has_nested_container(parser, pattern) {
+					return parse_alternation_binding(parser, left, pattern, closing, stop_at_comma)
 				}
 				ordinary, ordinary_ok := try_parse_ordinary_pattern_binding(parser, left, pattern, pipe_root, pipe_tail, closing, stop_at_comma)
 				if ordinary_ok do return ordinary, true

@@ -29,6 +29,21 @@ alternation_binding_retains_producer_and_branch_list :: proc(t: ^testing.T) {
 }
 
 @(test)
+recursive_alternation_retains_pattern_descriptor_nodes :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, `.[] | . as {$a, b: [$c, {$d}]} ?// [$a, {$b}, $e] ?// $f | [$a, $b, $c, $d, $e, $f]`)
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Pipe)
+	bound := parser.nodes.storage[int(root.right)]
+	testing.expect_value(t, bound.kind, Node_Kind.Alternation)
+	branch := parser.nodes.storage[int(bound.value)]
+	testing.expect_value(t, branch.kind, Node_Kind.Alternation_Branch)
+	testing.expect_value(t, parser.nodes.storage[int(branch.child)].kind, Node_Kind.Pattern_Descriptor)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_select_lowers_to_existing_if_shape :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<select>", "select(. > 1)")

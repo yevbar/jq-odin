@@ -2126,7 +2126,10 @@ capture_composite_instruction :: proc(
 			if !child_ok do return false
 		}
 	case .Alternation:
-		if instruction.operands_count < 3 do return false
+		// The current evaluator frame snapshot stores at most four operands;
+		// recursive descriptor branches are intentionally rejected before the
+		// snapshot loop until a growable capture frame lands.
+		if instruction.operands_count < 3 || instruction.operands_count > 4 do return false
 		for offset in 0..<int(instruction.operands_count) {
 			_, child_ok := child_instruction(storage, instruction, u32(offset))
 			if !child_ok do return false
@@ -8842,6 +8845,8 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						return begin_terminal_misuse_owned(storage, .Malformed_Program, &body_input)
 					}
 					frame.phase = .Alternation_Body_Active
+				case .Pattern_Descriptor:
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				case .Alternation_Branch:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Parameter_Identity_Update:

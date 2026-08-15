@@ -350,6 +350,7 @@ Opcode :: enum u8 {
 	// Alternation retains original producer, branch descriptors, and body.
 	Alternation,
 	Alternation_Branch,
+	Pattern_Descriptor,
 }
 
 Operand_Kind :: enum u8 {
@@ -624,7 +625,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 		return false
 	case .Pow, .Identity, .If, .While, .Until, .Label, .Break, .Static_Iterator_Delete, .Static_Iterator_Update, .Static_Field_Add_Field, .Static_Field_Optional_Identity, .Static_Field_Delete, .Static_Field_Update, .Static_Field_Index_Update, .Static_Index_Field_Update, .Static_Field_Index_Field_Update, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Iterator_Set_Number, .Static_Index_Set_Number, .Static_Slice_Set_Number, .Dynamic_Field_Set, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 		     .In, .Inside, .Setpath, .Delpaths,
-	     .Array, .Object, .Variable, .Binding, .Reduce, .Foreach, .Call, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Debug, .Input, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Sort_By_Key, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Paths, .Alternation, .Alternation_Branch:
+	     .Array, .Object, .Variable, .Binding, .Reduce, .Foreach, .Call, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Debug, .Input, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Sort_By_Key, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Paths, .Alternation, .Alternation_Branch, .Pattern_Descriptor:
 		return false
 	}
 	return false
@@ -738,6 +739,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Alternation:
 		if count < 3 { return false }; expected_count = count
 	case .Alternation_Branch:
+		if count != 1 { return false }; expected_count = 1
+	case .Pattern_Descriptor:
 		if count != 1 { return false }; expected_count = 1
 	case .Path, .Getpath, .Delpaths:
 		if count != 1 { return false }; expected_count = 1
@@ -876,6 +879,8 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 	case .Alternation:
 		return instruction.operands_count
 	case .Alternation_Branch:
+		return 1
+	case .Pattern_Descriptor:
 		return 1
 	case .Any, .All:
 		return instruction.operands_count

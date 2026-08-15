@@ -25,6 +25,24 @@ alternation_binding_lowers_to_explicit_program_metadata :: proc(t: ^testing.T) {
 	expect_cleanup(t, &parser, &compiled)
 }
 
+@(test)
+recursive_alternation_lowers_pattern_descriptor_operands :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	text := `.[] | . as {$a, b: [$c, {$d}]} ?// [$a, {$b}, $e] ?// $f | [$a, $b, $c, $d, $e, $f]`
+	_, parsed, lowered := parse_and_lower(t, text, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	pipe := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+	root := instruction_child(&compiled, pipe, 1)
+	testing.expect_value(t, root.opcode, program.Opcode.Alternation)
+	testing.expect_value(t, root.operands_count, program.Count(5))
+	descriptor := instruction_child(&compiled, root, 2)
+	testing.expect_value(t, descriptor.opcode, program.Opcode.Alternation_Branch)
+	pattern := instruction_child(&compiled, descriptor, 0)
+	testing.expect_value(t, pattern.opcode, program.Opcode.Pattern_Descriptor)
+	expect_cleanup(t, &parser, &compiled)
+}
+
 @(private="package")
 parse_and_lower :: proc(
 	t: ^testing.T,
