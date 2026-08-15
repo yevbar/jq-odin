@@ -11799,25 +11799,27 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 								_ = value.destroy_value(&input_copy)
 								return begin_terminal_misuse(storage, .Malformed_Program)
 							}
-							if value.kind_of(&frame.input) != .Array {
-								_ = value.destroy_value(&input_copy)
-								key, key_error := cannot_iterate_runtime_key(&frame.input, storage.allocator)
+							if value.kind_of(&input_copy) != .Array {
+								key, key_error := cannot_iterate_runtime_key(&input_copy, storage.allocator)
 								if key_error != nil { return resource_step(key_error) }
-								result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span, key=key})
+								result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&input_copy), span=instruction.span, key=key})
 								if len(key) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
 								if ready do return result
+								_ = value.destroy_value(&input_copy)
 								continue
 							}
-							length, length_ok := value.array_length(&frame.input)
+							length, length_ok := value.array_length(&input_copy)
 							if !length_ok { _ = value.destroy_value(&input_copy); return begin_terminal_misuse(storage, .Malformed_Program) }
+							path_runtime_suppressed := false
 							for offset in 0..<length {
-								element, element_ok := value.array_element_copy(&frame.input, offset)
+								element, element_ok := value.array_element_copy(&input_copy, offset)
 								if !element_ok { _ = value.destroy_value(&input_copy); return begin_terminal_misuse(storage, .Malformed_Program) }
 								if value.kind_of(&element) != .Object && value.kind_of(&element) != .Null {
 									input_kind := value.kind_of(&element); _ = value.destroy_value(&element); _ = value.destroy_value(&input_copy)
 									result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=generator_key})
 									if ready do return result
-									continue
+									path_runtime_suppressed = true
+									break
 								}
 								working := element
 								if value.kind_of(&working) == .Null {
@@ -11837,18 +11839,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 								result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&element), span=instruction.span, key=message})
 								if len(message) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
 								if ready do return result
-								continue
+								path_runtime_suppressed = true
+								break
 							}
 							_ = value.destroy_value(&selected); _ = value.destroy_value(&rhs)
 							key_value, key_error := value.string_value(generator_key, storage.allocator)
 							if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_constructor_error(&key_error); _ = value.destroy_value(&updated); _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); return resource_step(.Out_Of_Memory) }
 							_, displaced, set_error := value.object_set_take(&working, &key_value, &updated); _ = value.destroy_value(&displaced)
 							if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key_value); _ = value.destroy_value(&updated); _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); _ = value.destroy_object_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
-							displaced_array, array_error := value.array_set_take(&frame.input, offset, &working); _ = value.destroy_value(&displaced_array)
+							displaced_array, array_error := value.array_set_take(&input_copy, offset, &working); _ = value.destroy_value(&displaced_array)
 							if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); _ = value.destroy_array_error(&array_error); return resource_step(.Out_Of_Memory) }
 							_ = value.destroy_value(&working)
 							}
-							_ = value.destroy_value(&input_copy)
+							if path_runtime_suppressed { continue }
+							_ = value.destroy_value(&frame.input)
+							frame.input = value.take_value(&input_copy)
 							output := value.take_value(&frame.input)
 							frame.phase = .Leaf_Yielded
 							result, ready := propagate_output(storage, index, &output)
