@@ -2601,7 +2601,56 @@ parse_pipe :: proc(
 		if token_is(parser, .Assign_Pipe) {
 			optional_left := current if pipe_root != invalid_id else result
 			if optional_left >= 0 {
-				left_node := parser.nodes.storage[int(optional_left)]
+				left_id := optional_left
+				left_node := parser.nodes.storage[int(left_id)]
+				if left_node.kind == .Parenthesized && left_node.has_child {
+					left_id = left_node.child
+					left_node = parser.nodes.storage[int(left_id)]
+				}
+				// A bounded filtered-iterator deletion such as
+				// `(.[] | select(. >= 2)) |= empty` is equivalent to applying
+				// `if predicate then empty else . end` to every iterator item.
+				// Lower it into the existing resumable Static_Iterator_Update
+				// contract; arbitrary filtered path updates remain deferred.
+				if left_node.kind == .Pipe && left_node.left >= 0 && left_node.right >= 0 {
+					iterator := parser.nodes.storage[int(left_node.left)]
+					selector := parser.nodes.storage[int(left_node.right)]
+					selector_then := parser.nodes.storage[int(selector.if_then)] if selector.if_then >= 0 && int(selector.if_then) < len(parser.nodes.storage) else Node{}
+					selector_else := parser.nodes.storage[int(selector.if_else)] if selector.if_else >= 0 && int(selector.if_else) < len(parser.nodes.storage) else Node{}
+					iterator_name_start, iterator_name_end, iterator_name_ok := diagnostic.span_offsets(parser.source, iterator.name_span)
+					iterator_child := parser.nodes.storage[int(iterator.child)] if iterator.child >= 0 && int(iterator.child) < len(parser.nodes.storage) else Node{}
+					if iterator.kind == .Field && iterator.has_child && iterator.has_name_span && iterator_child.kind == .Identity &&
+						iterator_name_ok && iterator_name_start == iterator_name_end &&
+						selector.kind == .If && selector.has_if_condition && selector.has_if_then && selector.has_if_else &&
+						selector_then.kind == .Identity && !selector_then.has_child && !selector_then.has_value && selector_then.container_kind == .None &&
+						selector_else.kind == .Empty && !selector_else.has_child && !selector_else.has_value {
+						advance(parser)
+						rhs, rhs_ok := parse_pipe(parser, closing, true, false, false, true)
+						if !rhs_ok do return {}, false
+						for rhs >= 0 && parser.nodes.storage[int(rhs)].kind == .Parenthesized && parser.nodes.storage[int(rhs)].has_child {
+							rhs = parser.nodes.storage[int(rhs)].child
+						}
+						rhs_node := parser.nodes.storage[int(rhs)]
+						if rhs_node.kind == .Empty && rhs_node.form == .Kinded && !rhs_node.has_child && !rhs_node.has_value {
+							empty_node, empty_ok := append_node(parser, Node{kind=.Empty, span=rhs_node.span})
+							identity_node, identity_ok := append_node(parser, Node{kind=.Identity, span=rhs_node.span})
+							if !empty_ok || !identity_ok do return {}, false
+							filtered_update, filtered_ok := append_node(parser, Node{
+								kind=.If, span=rhs_node.span,
+								if_condition=selector.if_condition, has_if_condition=true,
+								if_then=empty_node, has_if_then=true,
+								if_else=identity_node, has_if_else=true,
+							})
+							if !filtered_ok do return {}, false
+							span, span_ok := spanning(parser, left_node.span, rhs_node.span); assert(span_ok)
+							update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Update, span=span, right=filtered_update})
+							if !update_ok do return {}, false
+							if int(pipe_root) < 0 do return update, true
+							tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+							return pipe_root, true
+						}
+					}
+				}
 				// A numeric selector list such as `.foo[1,4,2,3] |= empty`
 				// is deletion of several static paths against one input.  The
 				// postfix parser already represents the selector list as a Comma

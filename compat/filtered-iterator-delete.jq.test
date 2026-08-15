@@ -1,0 +1,9 @@
+# Bounded filtered iterator deletion, covering jq.test:1253.
+(.[] | select(. >= 2)) |= empty
+[1,2,3]
+[1]
+
+# No matching elements leaves the original array unchanged.
+(.[] | select(. >= 9)) |= empty
+[1,2,3]
+[1,2,3]
