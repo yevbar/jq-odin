@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `3fd1c1a5`, the authoritative selected catalog measurement
-is **515/522 passed, 7 failed, 0 harness errors**
-(`/tmp/coverage-reduce-integrated.json`). The bounded same-name destructuring alternation
+At integration head `b7e75c4e`, the authoritative selected catalog measurement
+is **516/522 passed, 6 failed, 0 harness errors**
+(`/tmp/coverage-callable-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
@@ -1045,6 +1045,9 @@ and resumable empty/error cardinality remain deferred. Coverage is now
 
 The callable-path AST shape is now pinned by a compiler test: the argument in
 `inc(.[].a)` remains `Call -> Field(a) -> Field(empty) -> Identity`, with the
-call argument edge retained and parser cleanup verified. Runtime capture/apply
-of path vectors and the original caller root remains the next ABI phase; no
-scalar shortcut is claimed for jq.test:1236.
+call argument edge retained and parser cleanup verified. A bounded runtime phase
+now handles `x |= .+N` over `.[].field`, including missing/null field synthesis,
+empty arrays, typed iterate/add diagnostics, and clone/swap cleanup on suppressed
+errors. This brings jq.test:1236 to parity; general path vectors, arbitrary RHS
+streams, and recursive/nested selectors remain deferred. Coverage is now
+**516/522**.
