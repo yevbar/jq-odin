@@ -2448,6 +2448,85 @@ parse_pipe :: proc(
 			optional_left := current if pipe_root != invalid_id else result
 			if optional_left >= 0 {
 				left_node := parser.nodes.storage[int(optional_left)]
+				// A numeric selector list such as `.foo[1,4,2,3] |= empty`
+				// is deletion of several static paths against one input.  The
+				// postfix parser already represents the selector list as a Comma
+				// of Index nodes, and Delpaths already owns the required
+				// copy-on-write multi-path deletion semantics.  Lower only this
+				// empty-RHS shape; filter-valued selector updates remain outside
+				// this bounded contract.
+				static_nonnegative_integer :: proc(text: string) -> bool {
+					if len(text) == 0 do return false
+					for byte in text { if byte < '0' || byte > '9' do return false }
+					return true
+				}
+				static_index_selector_group :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+					if node_id < 0 || int(node_id) >= len(parser.nodes.storage) do return false
+					n := parser.nodes.storage[int(node_id)]
+					if n.kind == .Parenthesized && n.has_child do return static_index_selector_group(parser, n.child)
+					if n.kind == .Comma {
+						return static_index_selector_group(parser, n.left) && static_index_selector_group(parser, n.right)
+					}
+					if n.kind != .Index || !n.has_child || !n.has_number_text || !static_nonnegative_integer(n.number_text) do return false
+					base := parser.nodes.storage[int(n.child)]
+					return base.kind == .Field && !base.has_child && base.has_name_span
+				}
+				if left_node.kind == .Comma && static_index_selector_group(parser, optional_left) {
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !right_ok do return {}, false
+					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+						right = parser.nodes.storage[int(right)].child
+					}
+					rhs := parser.nodes.storage[int(right)]
+					if rhs.form != .Kinded || rhs.kind != .Empty || rhs.has_child || rhs.has_value {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					selector_ids: [16]Node_Id
+					selector_count := 0
+					collect_selector_ids :: proc(parser: ^Parser, node_id: Node_Id, ids: ^[16]Node_Id, count: ^int) -> bool {
+						if node_id < 0 || int(node_id) >= len(parser.nodes.storage) || count^ >= len(ids) do return false
+						n := parser.nodes.storage[int(node_id)]
+						if n.kind == .Parenthesized && n.has_child do return collect_selector_ids(parser, n.child, ids, count)
+						if n.kind == .Comma {
+							return collect_selector_ids(parser, n.left, ids, count) && collect_selector_ids(parser, n.right, ids, count)
+						}
+						if n.kind != .Index || !n.has_number_text || !static_nonnegative_integer(n.number_text) do return false
+						ids[count^] = node_id; count^ += 1
+						return true
+					}
+					if !collect_selector_ids(parser, optional_left, &selector_ids, &selector_count) || selector_count < 2 do return {}, false
+					// Sort positive decimal indexes by numeric value descending. This
+					// keeps deletion coordinates anchored to the original array.
+					for left in 0..<selector_count {
+						best := left
+						for right_index in (left+1)..<selector_count {
+							a := parser.nodes.storage[int(selector_ids[best])].number_text
+							b := parser.nodes.storage[int(selector_ids[right_index])].number_text
+							if len(a) < len(b) || (len(a) == len(b) && b > a) { best = right_index }
+						}
+						if best != left { selector_ids[left], selector_ids[best] = selector_ids[best], selector_ids[left] }
+					}
+					paths: Node_Id = invalid_id
+					for selector_index in 0..<selector_count {
+						path, path_ok := lower_static_del_paths(parser, selector_ids[selector_index])
+						if !path_ok do return {}, false
+						if paths == invalid_id { paths = parser.nodes.storage[int(path)].value } else {
+							span := left_node.span
+							paths, path_ok = append_node(parser, Node{kind=.Comma, span=span, left=paths, right=parser.nodes.storage[int(path)].value})
+							if !path_ok do return {}, false
+						}
+					}
+					grouped, grouped_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=left_node.span, value=paths, has_value=true})
+					if !grouped_ok do return {}, false
+					span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+					update, update_ok := append_node(parser, Node{kind=.Delpaths, span=span, child=grouped, has_child=true})
+					if !update_ok do return {}, false
+					if pipe_root == invalid_id do return update, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+					return pipe_root, true
+				}
 				// A bounded bridge for jq's literal-path `getpath(...) |= scalar`
 				// form.  The existing Setpath evaluator already owns copy-on-write
 				// path updates; lower only literal string/number path arrays so

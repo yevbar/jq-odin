@@ -34,3 +34,7 @@ try (.foo[0] |= (2,error("late"))) catch .
 try (.foo[0] |= .+1) catch .
 {"foo":1}
 "Cannot index number with number"
+
+.foo[1,4,2,3] |= empty
+{"foo":[0,1,2,3,4,5]}
+{"foo":[0,5]}

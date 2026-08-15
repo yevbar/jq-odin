@@ -8006,7 +8006,50 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				if argument_instruction.operands_count == 1 { op,ok:=program.program_operand(storage.compiled,program.Operand_Index(u32(argument_instruction.operands_start)));if ok&&op.kind==.Instruction&&mask_tree_has_slice(storage,op.instruction) { mask_ok,mask_error:=delete_mask(storage,op.instruction,&frame.input);if mask_error != nil{return resource_step(mask_error)};if !mask_ok{return begin_terminal_misuse(storage,.Unsupported_Opcode)};out:=value.clone_value(&frame.input);frame.phase=.Leaf_Yielded;result,ready:=propagate_output(storage,index,&out);if ready{return result};continue } }
 				current := value.clone_value(&frame.input); if value.kind_of(&current) == .Invalid { return resource_step(.Out_Of_Memory) }
-				for offset in 0..<argument_instruction.operands_count {
+				// Multiple numeric paths into the same array must be deleted from
+				// the original coordinate space.  Applying them in source order
+				// shifts later indexes (for example `.foo[1,4,2,3]`) and diverges
+				// from jq.  For the bounded static two-component path shape, order
+				// non-negative numeric leaves descending; all other path mixes keep
+				// the established sequential behavior.
+				ordered_offsets: [64]int
+				ordered_count := argument_instruction.operands_count
+				ordered_ok := argument_instruction.operands_count <= len(ordered_offsets)
+				if ordered_ok {
+					for offset in 0..<argument_instruction.operands_count { ordered_offsets[offset] = int(offset) }
+					parent_name := ""
+					parent_set := false
+					indices: [64]f64
+					for offset in 0..<argument_instruction.operands_count {
+						operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(argument_instruction.operands_start)+u32(offset)))
+						if !operand_ok || operand.kind != .Instruction { ordered_ok = false; break }
+						path, path_ok := literal_path_value(storage, operand.instruction)
+						if !path_ok { ordered_ok = false; break }
+						path_length, length_ok := value.array_length(&path)
+						first, first_ok := value.array_element_copy(&path, 0)
+						last, last_ok := value.array_element_copy(&path, 1)
+						first_text, text_ok := value.string_borrowed(&first)
+						last_number, number_ok := value.number_value_get(&last)
+						if !length_ok || path_length != 2 || !first_ok || !last_ok || !text_ok || !number_ok || last_number < 0 {
+							_ = value.destroy_value(&first); _ = value.destroy_value(&last); _ = value.destroy_value(&path)
+							ordered_ok = false; break
+						}
+						if !parent_set { parent_name = first_text; parent_set = true } else if parent_name != first_text { ordered_ok = false }
+						indices[offset] = last_number
+						_ = value.destroy_value(&first); _ = value.destroy_value(&last); _ = value.destroy_value(&path)
+						if !ordered_ok { break }
+					}
+					if ordered_ok {
+						for left in 0..<ordered_count {
+							best := left
+							for right in (left+1)..<ordered_count { if indices[ordered_offsets[right]] > indices[ordered_offsets[best]] { best = right } }
+							if best != left { ordered_offsets[left], ordered_offsets[best] = ordered_offsets[best], ordered_offsets[left] }
+						}
+					}
+				}
+				for order_index in 0..<argument_instruction.operands_count {
+					offset := int(order_index)
+					if ordered_ok { offset = ordered_offsets[order_index] }
 					operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(argument_instruction.operands_start)+u32(offset)))
 					if !operand_ok || operand.kind != .Instruction { _ = value.destroy_value(&current); return begin_terminal_misuse(storage, .Malformed_Program) }
 					if !delete_literal_path_argument(storage, operand.instruction, &current, index) { _ = value.destroy_value(&current); return begin_terminal_misuse(storage, .Malformed_Program) }
