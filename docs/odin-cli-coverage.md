@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `a47f436c`, the authoritative selected catalog measurement
-is **472/522 passed, 50 failed, 0 harness errors**
-(`/tmp/coverage-walk.json`). Persistent `input` stream behavior is covered by
+At integration head `c0bed78c`, the authoritative selected catalog measurement
+is **473/522 passed, 49 failed, 0 harness errors**
+(`/tmp/coverage-filtered.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -26,7 +26,11 @@ The uppercase `INDEX(stream; key)` case at jq.test:2047 is covered by
 `docs/decisions/0349-index-generator-lowering.md`; the source stream is
 materialized and keyed entries are passed through the existing `from_entries`
 path.
-The remaining recursive `walk(filter)` case at jq.test:2388 is explicitly
+The filtered iterator deletion case at jq.test:1253 is covered by
+`compat/filtered-iterator-delete.jq.test` and decision
+`docs/decisions/0350-filtered-iterator-delete.md`; only the canonical
+`select(...)`-to-`empty` shape enters this lowering.
+The recursive `walk(filter)` case at jq.test:2388 is explicitly
 covered by `compat/walk-filter-postorder.jq.test` and decision
 `docs/decisions/0348-walk-filter-ast-lowering-prototype.md`; it uses recursive
 AST calls with post-order `Map`/`Map_Values` rebuilding rather than a driver
