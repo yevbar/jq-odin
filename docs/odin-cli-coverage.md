@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `a9235f69`, the authoritative selected catalog measurement
-is **467/522 passed, 55 failed, 0 harness errors**
-(`/tmp/coverage-66699.json`). Persistent `input` stream behavior is covered by
+At integration head `225f7a9c`, the authoritative selected catalog measurement
+is **468/522 passed, 54 failed, 0 harness errors**
+(`/tmp/coverage-final.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -876,3 +876,12 @@ paths, and generator-valued RHS updates remain deferred.
 key-prefix and composition shard passes 3/3, and jq.test:1683 now passes in
 the full catalog. Non-object diagnostic wording and richer generator-valued
 entry updates remain deferred.
+
+## Multi-index empty deletion follow-up (2026-08-14)
+
+The bounded selector form `.foo[1,4,2,3] |= empty` now lowers to the existing
+`Delpaths` copy-on-write evaluator. Numeric selectors are ordered descending
+before deletion so their coordinates remain anchored to the original array;
+the jq.test:1261-shaped case passes against jq 1.8.1. Signed, fractional,
+dynamic, slice, and filter-valued selector updates remain deferred under the
+general path-update contract.
