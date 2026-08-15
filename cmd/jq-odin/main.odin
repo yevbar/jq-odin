@@ -7,6 +7,7 @@ import "core:os"
 import "core:sys/posix"
 import driver "jq:driver"
 import eval "jq:eval"
+import syntax "jq:syntax"
 import value "jq:value"
 
 CANDIDATE_VERSION :: "jq-1.8.1\n"
@@ -316,6 +317,34 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		}
 	}
 	ok := true
+	if err.kind == .Filter_Parse && err.filter_parse_kind == .Unexpected_Token &&
+	   err.filter_has_actual && len(err.filter_parse_message) > 0 && len(source) > 0 &&
+	   (err.filter_parse_message == "empty destructuring array" || err.filter_parse_message == "empty destructuring object") {
+		start := err.filter_start
+		end := err.filter_end
+		if start < 0 || end <= start || end > len(source) do return write_all(os.stderr, "jq-odin: filter parse error\n")
+		line := 1
+		line_start := 0
+		for at := 0; at < start; at += 1 {
+			if source[at] == '\n' { line += 1; line_start = at + 1 }
+		}
+		line_end := line_start
+		for line_end < len(source) && source[line_end] != '\n' { line_end += 1 }
+		ok = write_all(os.stderr, "jq: error: ") && ok
+		if err.filter_actual == syntax.Token_Kind.Close_Brace {
+			ok = write_all(os.stderr, "syntax error, unexpected '}'") && ok
+		} else {
+			ok = write_all(os.stderr, "syntax error, unexpected ']', expecting BINDING or '[' or '{'") && ok
+		}
+		ok = write_all(os.stderr, " at <top-level>, line ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d, column %d:\n    ", line, start-line_start+1)) && ok
+		ok = write_all(os.stderr, source[line_start:line_end]) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 0..<start-line_start { ok = write_all(os.stderr, " ") && ok }
+		for _ in start..<end { ok = write_all(os.stderr, "^") && ok }
+		ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
+		return ok
+	}
 	// jq reports a source-located diagnostic for a lone unmatched brace. Keep
 	// this single-error formatter narrow; multi-diagnostic parser recovery (for
 	// example arithmetic object keys) remains a separate contract.

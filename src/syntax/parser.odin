@@ -3672,6 +3672,10 @@ parse_pipe :: proc(
 				}
 				pattern_node := parser.nodes.storage[int(pattern)]
 				if pattern_node.container_kind != .Array || !pattern_node.has_value {
+					if pattern_node.container_kind == .Array && !pattern_node.has_value {
+						fail_empty_destructuring(parser, pattern_node, .Close_Bracket, "empty destructuring array")
+						return {}, false
+					}
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
@@ -3787,6 +3791,10 @@ parse_pipe :: proc(
 				}
 				pattern_node := parser.nodes.storage[int(pattern)]
 				if pattern_node.container_kind != .Object || !pattern_node.has_value {
+					if pattern_node.container_kind == .Object && !pattern_node.has_value {
+						fail_empty_destructuring(parser, pattern_node, .Close_Brace, "empty destructuring object")
+						return {}, false
+					}
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
@@ -6604,6 +6612,35 @@ fail_at_current :: proc(
 			expected = expected,
 			actual = parser.lookahead.token.kind,
 			has_actual = kind == .Unexpected_Token,
+		},
+	}
+}
+
+// Empty array/object literals are valid constructors, but jq rejects them in
+// the `as` destructuring position. Preserve the closing delimiter span so the
+// CLI can report the token-level diagnostic instead of the later pipe token.
+fail_empty_destructuring :: proc(parser: ^Parser, pattern: Node, actual: Token_Kind, marker: string) {
+	if parser.failed do return
+	start, end, span_ok := diagnostic.span_offsets(parser.source, pattern.span)
+	if !span_ok || end <= start {
+		fail_from_lookahead(parser, .Expression)
+		return
+	}
+	close_span, close_ok := diagnostic.make_span(parser.source, end-1, end)
+	if !close_ok {
+		fail_from_lookahead(parser, .Expression)
+		return
+	}
+	parser.failed = true
+	parser.failure = Parse_Outcome{
+		kind = .Input_Error,
+		error = Parse_Error{
+			kind = .Unexpected_Token,
+			span = close_span,
+			expected = .Expression,
+			actual = actual,
+			has_actual = true,
+			message = marker,
 		},
 	}
 }
