@@ -3536,6 +3536,111 @@ parse_pipe :: proc(
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
+				// Bounded same-name destructuring alternation used by jq.test:952/959:
+				// `{a:$a} ?// {a:$a} ?// $a | $a`. Capture the producer once and
+				// reuse the existing Binding/Try frames for each object projection.
+				// This intentionally accepts only one field named `a`, repeated with
+				// the same variable, followed by the scalar fallback.
+				if token_is(parser, .Alternation) && count == 1 {
+					first := parser.nodes.storage[int(variables[0])]
+					first_key := parser.nodes.storage[int(keys[0])]
+					first_start, first_end, first_span_ok := diagnostic.span_offsets(parser.source, first.name_span)
+					key_start, key_end, key_span_ok := diagnostic.span_offsets(parser.source, first_key.name_span)
+					first_name := diagnostic.source_bytes(parser.source)[first_start:first_end] if first_span_ok else ""
+					key_name := diagnostic.source_bytes(parser.source)[key_start:key_end] if key_span_ok else ""
+					if !first_span_ok || !key_span_ok || key_name != "a" {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					advance(parser)
+					if !token_is(parser, .Open_Brace) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					second_pattern, second_ok := parse_container(parser, .Open_Brace)
+					if !second_ok do return {}, false
+					second_node := parser.nodes.storage[int(second_pattern)]
+					if second_node.container_kind != .Object || !second_node.has_value {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					second_entry := parser.nodes.storage[int(second_node.value)]
+					if second_entry.kind != .Field || second_entry.container_kind != .Object_Entry || !second_entry.has_key || !second_entry.has_value {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					second_key := parser.nodes.storage[int(second_entry.key)]
+					second_variable := parser.nodes.storage[int(second_entry.value)]
+					second_key_start, second_key_end, second_key_ok := diagnostic.span_offsets(parser.source, second_key.name_span)
+					second_var_start, second_var_end, second_var_ok := diagnostic.span_offsets(parser.source, second_variable.name_span)
+					second_key_name := diagnostic.source_bytes(parser.source)[second_key_start:second_key_end] if second_key_ok else ""
+					second_var_name := diagnostic.source_bytes(parser.source)[second_var_start:second_var_end] if second_var_ok else ""
+					if second_key.kind != .Field || !second_key.has_name_span || second_variable.kind != .Variable || !second_variable.has_name_span ||
+						!second_key_ok || !second_var_ok || second_key_name != "a" || second_var_name != first_name {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					if !token_is(parser, .Alternation) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					advance(parser)
+					if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					fallback_token_span := parser.lookahead.token.span
+					fallback_name := parser.lookahead.token.value_span
+					fallback_start, fallback_end, fallback_ok := diagnostic.span_offsets(parser.source, fallback_name)
+					fallback_text := diagnostic.source_bytes(parser.source)[fallback_start:fallback_end] if fallback_ok else ""
+					if !fallback_ok || fallback_text != first_name {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					advance(parser)
+					if !token_is(parser, .Pipe) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					advance(parser)
+					body, body_ok := parse_pipe(parser, closing, stop_at_comma)
+					if !body_ok do return {}, false
+					outer_ref, outer_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+					if !outer_ref_ok do return {}, false
+					field_one, field_one_ok := append_node(parser, Node{kind=.Field, span=first_key.span, child=outer_ref, has_child=true, name_span=first_key.name_span, has_name_span=true})
+					if !field_one_ok do return {}, false
+					branch_one, branch_one_ok := append_node(parser, Node{kind=.Binding, span=parser.nodes.storage[int(field_one)].span, left=field_one, right=body, name_span=first.name_span, has_name_span=true})
+					if !branch_one_ok do return {}, false
+					outer_ref_two, outer_ref_two_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+					if !outer_ref_two_ok do return {}, false
+					field_two, field_two_ok := append_node(parser, Node{kind=.Field, span=second_key.span, child=outer_ref_two, has_child=true, name_span=second_key.name_span, has_name_span=true})
+					if !field_two_ok do return {}, false
+					branch_two, branch_two_ok := append_node(parser, Node{kind=.Binding, span=parser.nodes.storage[int(field_two)].span, left=field_two, right=body, name_span=second_variable.name_span, has_name_span=true})
+					if !branch_two_ok do return {}, false
+					fallback_ref, fallback_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+					if !fallback_ref_ok do return {}, false
+					fallback_input, fallback_input_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true})
+					if !fallback_input_ok do return {}, false
+					fallback_sequence_span, fallback_sequence_span_ok := spanning(parser, parser.nodes.storage[int(fallback_input)].span, parser.nodes.storage[int(body)].span); assert(fallback_sequence_span_ok)
+					fallback_sequence, fallback_sequence_ok := append_node(parser, Node{kind=.Pipe, span=fallback_sequence_span, left=fallback_input, right=body})
+					if !fallback_sequence_ok do return {}, false
+					fallback_branch, fallback_branch_ok := append_node(parser, Node{kind=.Binding, span=fallback_token_span, left=fallback_ref, right=fallback_sequence, name_span=fallback_name, has_name_span=true})
+					if !fallback_branch_ok do return {}, false
+					second_try_span, second_try_span_ok := spanning(parser, parser.nodes.storage[int(branch_two)].span, fallback_token_span); assert(second_try_span_ok)
+					second_try, second_try_ok := append_node(parser, Node{kind=.Try, span=second_try_span, left=branch_two, right=fallback_branch})
+					if !second_try_ok do return {}, false
+					try_span, try_span_ok := spanning(parser, parser.nodes.storage[int(branch_one)].span, parser.nodes.storage[int(second_try)].span); assert(try_span_ok)
+					try_node, try_ok := append_node(parser, Node{kind=.Try, span=try_span, left=branch_one, right=second_try})
+					if !try_ok do return {}, false
+					outer_span, outer_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(try_node)].span); assert(outer_span_ok)
+					outer, outer_ok := append_node(parser, Node{kind=.Binding, span=outer_span, left=left, right=try_node, name_span=first.name_span, has_name_span=true})
+					if !outer_ok do return {}, false
+					if pipe_root != invalid_id {
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = outer; tail.has_child = false
+						return pipe_root, true
+					}
+					return outer, true
+				}
 				if token_is(parser, .Open_Paren) {
 					first := parser.nodes.storage[int(variables[0])]
 					bound_span, bound_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, pattern_node.span); assert(bound_span_ok)

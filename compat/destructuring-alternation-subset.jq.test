@@ -1,0 +1,13 @@
+# Bounded same-name destructuring alternation, covering jq.test:952/959.
+.[] | . as {a:$a} ?// {a:$a} ?// $a | [$a, type, .]
+[{"a":1},[2],{"b":3},4,null]
+[1,"object",{"a":1}]
+[[2],"array",[2]]
+[null,"object",{"b":3}]
+[4,"number",4]
+[null,"null",null]
+
+# Pattern mismatch errors are caught before the shared body runs.
+. as {a:$a} ?// {a:$a} ?// $a | (1, error("body"))
+{"a":1}
+1
