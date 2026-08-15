@@ -6,33 +6,28 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `351f3137`, the authoritative selected catalog measurement
-is **519/522 passed, 3 failed, 0 harness errors**
-(`/tmp/coverage-callable-integrated.json`). The bounded same-name destructuring alternation
+At integration head `b1afe586`, the authoritative selected catalog measurement
+is **522/522 passed, 0 failed, 0 harness errors**
+(`/tmp/jq-final-522-tight`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
-continuations; the remaining `?//` forms still require a first-class
-alternation ABI. Persistent `input` stream behavior is covered by
+continuations, while jq.test:929 is covered by the strict recursive capture
+phase in decision 0400. Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
-The three remaining selected failures are jq.test:864, :929, and :2093;
-existing decisions document their required lexical-call,
-recursive-pattern, or filter-path continuation ABIs.
-The composed formal-call cardinality failure at jq.test:864 is further pinned
-in decision `docs/decisions/0396-composed-formal-call-cardinality-boundary.md`;
-temporary nested routing removed the crash but did not preserve argument-stream
-cursor semantics, so no route change is integrated.
+The former final failures at jq.test:864, :929, and :2093 are now covered by
+the nested lexical-call ABI (decision 0401), recursive alternation runtime
+(decision 0400), and recursive post-order update phase (decision
+`docs/decisions/0400-recursive-postorder-update.md`), respectively. No selected
+catalog failures remain.
 The append-only `Parameter_Reference` syntax/program scaffold now distinguishes
-formal filter references from lexical `$` variables. A bounded one-formal
-closure activation phase, including a literal-binding caller-scope shape, is
-integrated and covered by evaluator 89/89 and driver 74/74; multi-definition
-and generator-valued callable bodies remain deferred under decisions 0385 and
-0386.
+formal filter references from lexical `$` variables. The nested lexical-call
+scope phase is integrated and covered by the exact jq.test:864 fixture, while
+broader callable generator/cardinality cases remain separately tracked under
+decisions 0385 and 0386.
 Binding-aware assignment, generated map/select assignment, and recursive
-post-order updates now have exact oracle seam records in decisions 0387, 0388,
-0389, 0391, and 0392; nested-call parser/compiler shape tests now pin the
-definition/ordinal structure, while runtime continuation remains deferred. The
-generated map/select assignment parser-precedence blocker is additionally
-recorded in decision 0395.
+post-order updates now have exact oracle records in decisions 0397, 0398,
+0399, and the integrated runtime phases. Generated map/select assignment
+parser-precedence constraints remain explicitly shape-gated in decision 0395.
 Undefined-variable compile diagnostics now include jq-compatible source/name spans
 and carets (jq.test:560); boolean object-key diagnostics remain deferred.
 Invalid string escapes now preserve the lexical message and offending-line caret
@@ -47,8 +42,8 @@ Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
 `docs/decisions/0017-iterator-rhs-continuation.md`; this accounts for the
 selected gains at jq.test:1257 and :2348. Sequential top-level definition
-metadata is covered by syntax/compiler tests and remains distinct from the
-deferred nested lexical-definition contract.
+metadata is covered by syntax/compiler tests; nested lexical calls are covered
+by decision 0401.
 Static `group_by(.field)` keyed materialization is covered by
 `compat/group-by-keyed.jq.test` and decision
 `docs/decisions/0333-group-by-keyed-materialization.md`; the selected catalog
