@@ -1121,7 +1121,13 @@ parameterized_path_identity_definition :: proc(source: string, allocator: runtim
 					supported = true
 				} else if argument.child >= 0 && int(argument.child) < len(nodes) {
 					base := nodes[int(argument.child)]
-					supported = base.form == .Kinded && base.kind == .Identity && !base.has_child && !base.has_value
+					if base.form == .Kinded && base.kind == .Identity && !base.has_child && !base.has_value {
+						supported = true
+					} else if base.form == .Kinded && base.kind == .Field && base.has_child && base.has_name_span && !base.has_value && base.child >= 0 && int(base.child) < len(nodes) {
+						base_start, base_end := base.name_span.start, base.name_span.end
+						identity := nodes[int(base.child)]
+						supported = base_start == base_end && identity.form == .Kinded && identity.kind == .Identity && !identity.has_child && !identity.has_value
+					}
 				}
 			}
 		}

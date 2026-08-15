@@ -1062,6 +1062,23 @@ callable_field_argument_key :: proc(storage: ^evaluator_storage, argument: progr
 }
 
 @(private)
+callable_generator_field_argument :: proc(storage: ^evaluator_storage, argument: program.Instruction_Index) -> (string, bool) {
+	outer, ok := program.program_instruction(storage.compiled, argument)
+	if !ok || outer.opcode != .Field || outer.operands_count != 2 do return "", false
+	key_operand, key_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(outer.operands_start)+1))
+	key, text_ok := program.operand_text(storage.compiled, key_operand)
+	parent_index, parent_ok := child_instruction(storage, outer, 0)
+	parent, parent_valid := program.program_instruction(storage.compiled, parent_index)
+	if !key_ok || key_operand.kind != .Text || !text_ok || !parent_ok || !parent_valid || parent.opcode != .Field || parent.operands_count != 2 do return "", false
+	parent_key_operand, parent_key_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(parent.operands_start)+1))
+	parent_key, parent_text_ok := program.operand_text(storage.compiled, parent_key_operand)
+	base_index, base_ok := child_instruction(storage, parent, 0)
+	base, base_valid := program.program_instruction(storage.compiled, base_index)
+	if !parent_key_ok || parent_key_operand.kind != .Text || !parent_text_ok || parent_key != "" || !base_ok || !base_valid || base.opcode != .Identity || base.has_literal do return "", false
+	return key, true
+}
+
+@(private)
 variable_result :: proc(storage: ^evaluator_storage, producer: int, instruction: program.Instruction) -> (value.Value, bool) {
 	if instruction.opcode != .Variable || instruction.operands_count != 1 do return {}, false
 	name_operand, name_ok := program.program_operand(storage.compiled, instruction.operands_start)
@@ -11770,6 +11787,74 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					argument, argument_ok := child_instruction(storage, instruction, 1)
 					body_instruction, body_ok := program.program_instruction(storage.compiled, child)
 					if body_ok && body_instruction.opcode == .Parameter_Identity_Update {
+						generator_key, generator_shape_ok := callable_generator_field_argument(storage, argument)
+						if argument_ok && generator_shape_ok && body_instruction.operands_count == 1 {
+							operand, operand_ok := program.program_operand(storage.compiled, body_instruction.operands_start)
+							text, text_ok := program.operand_text(storage.compiled, operand)
+							number, number_error := value.literal_number_value(text, storage.allocator)
+							number_value, number_ok := value.number_value_get(&number)
+							_ = value.destroy_value(&number)
+							if !operand_ok || operand.kind != .Text || !text_ok || value.constructor_error_kind(&number_error) != .None || !number_ok {
+								if value.constructor_error_kind(&number_error) != .None { _ = value.destroy_constructor_error(&number_error) }
+								_ = value.destroy_value(&input_copy)
+								return begin_terminal_misuse(storage, .Malformed_Program)
+							}
+							if value.kind_of(&frame.input) != .Array {
+								_ = value.destroy_value(&input_copy)
+								key, key_error := cannot_iterate_runtime_key(&frame.input, storage.allocator)
+								if key_error != nil { return resource_step(key_error) }
+								result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=value.kind_of(&frame.input), span=instruction.span, key=key})
+								if len(key) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
+								if ready do return result
+								continue
+							}
+							length, length_ok := value.array_length(&frame.input)
+							if !length_ok { _ = value.destroy_value(&input_copy); return begin_terminal_misuse(storage, .Malformed_Program) }
+							for offset in 0..<length {
+								element, element_ok := value.array_element_copy(&frame.input, offset)
+								if !element_ok { _ = value.destroy_value(&input_copy); return begin_terminal_misuse(storage, .Malformed_Program) }
+								if value.kind_of(&element) != .Object && value.kind_of(&element) != .Null {
+									input_kind := value.kind_of(&element); _ = value.destroy_value(&element); _ = value.destroy_value(&input_copy)
+									result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=generator_key})
+									if ready do return result
+									continue
+								}
+								working := element
+								if value.kind_of(&working) == .Null {
+									object_value, object_error := value.object_value(storage.allocator)
+									if value.object_error_kind(&object_error) != .None { _ = value.destroy_object_error(&object_error); _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); return resource_step(.Out_Of_Memory) }
+									_ = value.destroy_value(&working); working = object_value
+								}
+							selected, found := value.object_get_copy(&working, generator_key)
+							if !found { selected = value.null_value() }
+							rhs := value.number_value(number_value)
+							updated, runtime_kind, resource_error := apply_binary(.Add, &selected, &rhs, instruction.span, storage.allocator)
+							if resource_error != nil { _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); return resource_step(resource_error) }
+							if runtime_kind != .None {
+								message, message_error := binary_type_error_runtime_key(&selected, &rhs, "added", storage.allocator)
+								_ = value.destroy_value(&updated); _ = value.destroy_value(&selected); _ = value.destroy_value(&rhs); _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy)
+								if message_error != nil do return resource_step(message_error)
+								result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=value.kind_of(&element), span=instruction.span, key=message})
+								if len(message) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
+								if ready do return result
+								continue
+							}
+							_ = value.destroy_value(&selected); _ = value.destroy_value(&rhs)
+							key_value, key_error := value.string_value(generator_key, storage.allocator)
+							if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_constructor_error(&key_error); _ = value.destroy_value(&updated); _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); return resource_step(.Out_Of_Memory) }
+							_, displaced, set_error := value.object_set_take(&working, &key_value, &updated); _ = value.destroy_value(&displaced)
+							if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key_value); _ = value.destroy_value(&updated); _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); _ = value.destroy_object_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
+							displaced_array, array_error := value.array_set_take(&frame.input, offset, &working); _ = value.destroy_value(&displaced_array)
+							if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&working); _ = value.destroy_value(&input_copy); _ = value.destroy_array_error(&array_error); return resource_step(.Out_Of_Memory) }
+							_ = value.destroy_value(&working)
+							}
+							_ = value.destroy_value(&input_copy)
+							output := value.take_value(&frame.input)
+							frame.phase = .Leaf_Yielded
+							result, ready := propagate_output(storage, index, &output)
+							if ready do return result
+							continue
+						}
 						key, key_ok := callable_field_argument_key(storage, argument)
 						if !argument_ok || !key_ok {
 							_ = value.destroy_value(&input_copy)

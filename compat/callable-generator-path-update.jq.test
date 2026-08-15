@@ -1,0 +1,20 @@
+# Bounded generator-valued callable path update for jq.test:1236.
+def inc(x): x |= .+1; inc(.[].a)
+[{"a":1},{"a":2}]
+[{"a":2},{"a":3}]
+
+def inc(x): x |= .+1; inc(.[].a)
+[]
+[]
+
+def inc(x): x |= .+1; inc(.[].a)
+[{"a":1},{}]
+[{"a":2},{"a":1}]
+
+def inc(x): x |= .+1; inc(.[].a)
+null
+%%FAIL
+
+def inc(x): x |= .+1; inc(.[].a)
+[{"a":{}}]
+%%FAIL
