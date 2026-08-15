@@ -853,9 +853,10 @@ these remain implementation work rather than skipped coverage.
 
 ## Tuple-key follow-up (2026-08-14)
 
-The current integration head (`4190df85`) keeps the catalog at **464/522
-passed, 58 failed, 0 harness errors**. The static keyed materialization lane
-now accepts comma-separated static tuple selectors in `sort_by(.a,.b)` and
-`group_by(.a,.b)`; the focused keyed shard passes 4/4 against jq 1.8.1.
-Dynamic key expressions, generator-valued keys, and the remaining composite
-sort/group forms remain deferred.
+The current integration head (`adbc49de`) measures **465/522 passed, 57
+failed, 0 harness errors**. The static keyed materialization lane accepts
+comma-separated static tuple selectors in `sort_by(.a,.b)` and
+`group_by(.a,.b)`, plus bounded arithmetic/comparison expressions such as
+`group_by(.a + .b - .c == 2)`; the focused keyed shard passes 5/5 against jq
+1.8.1. Variables, postfix paths, dynamic key expressions, generator-valued
+keys, and the remaining composite sort/group forms remain deferred.
