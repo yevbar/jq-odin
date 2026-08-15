@@ -11486,6 +11486,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						_ = value.destroy_value(&seed)
 						return begin_terminal_misuse(storage, .Unsupported_Opcode)
 					}
+					iteration_count := f64(0)
+					if step > 0 && start < end { iteration_count = math.ceil((end-start)/step) }
+					if step < 0 && start > end { iteration_count = math.ceil((start-end)/(-step)) }
+					// Keep this synchronous first slice bounded; larger streams need the
+					// resumable Reduce_Assign frame described in Decision 0379.
+					if iteration_count > 1_000_000 {
+						_ = value.destroy_value(&seed)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
 					acc := seed
 					current := start
 					for (step > 0 && current < end) || (step < 0 && current > end) {
