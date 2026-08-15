@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `786a19f9`, the authoritative selected catalog measurement
+At integration head `177721dd`, the authoritative selected catalog measurement
 is **475/522 passed, 47 failed, 0 harness errors**
-(`/tmp/coverage-786a.json`). Persistent `input` stream behavior is covered by
+(`/tmp/coverage-1777.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -935,3 +935,12 @@ array element, synthesizes missing/null intermediates, cancels later RHS output
 after the first update, and reports typed intermediate failures. The focused
 shard passes 10/10; dynamic selectors, slices, and parameterized callable
 updates remain deferred.
+
+## One-argument callable activation follow-up (2026-08-15)
+
+The evaluator now activates a bounded one-argument callable frame for the exact
+`def id(x): x; id(...)` shape. Argument filters execute in Odin, generator
+cardinality is preserved (`id(1,2)` emits two values), semicolon/zero-argument
+misuse is rejected, and other parameterized definitions remain on the legacy
+bridge. The focused shard passes 4/4; this does not yet claim general
+parameterized lexical definitions.
