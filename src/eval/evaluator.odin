@@ -11363,10 +11363,16 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					}
 					seed_instruction = seed_child_instruction
 				}
+				seed_error: value.Error
+				seed_cleanup: runtime.Allocator_Error
 				if seed_instruction.opcode == .Identity && !seed_instruction.has_literal {
 					seed = value.clone_value(&frame.input)
+				} else if seed_instruction.opcode == .Array {
+					seed, seed_error, seed_cleanup = literal_array_value(storage, seed_instruction)
+					if seed_cleanup != nil || seed_error != .None do return begin_terminal_misuse(storage, .Malformed_Program)
 				} else {
-					literal_seed, seed_error, seed_cleanup := literal_value(storage, seed_instruction)
+					literal_seed, literal_error, literal_cleanup := literal_value(storage, seed_instruction)
+					seed_error, seed_cleanup = literal_error, literal_cleanup
 					if seed_cleanup != nil || seed_error != .None do return begin_terminal_misuse(storage, .Malformed_Program)
 					seed = literal_seed
 				}
@@ -11427,6 +11433,87 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if update_instruction.opcode == .Identity {
 					frame.phase = .Leaf_Yielded
 					result, ready := propagate_output(storage, index, &seed)
+					if ready do return result
+					continue
+				}
+				// Narrow dynamic-index reducer slice: `reduce range(a;b;s) as $name
+				// ([]; .[$name] = $name)`.  Keep this structural and literal-only;
+				// arbitrary key/RHS streams still require a resumable Reduce frame.
+				if update_instruction.opcode == .Dynamic_Index_Assign {
+					generator_index, generator_ok := child_instruction(storage, instruction, 0)
+					generator, generator_valid := program.program_instruction(storage.compiled, generator_index)
+					base_index, base_ok := child_instruction(storage, update_instruction, 0)
+					key_index, key_ok := child_instruction(storage, update_instruction, 1)
+					rhs_index, rhs_ok := child_instruction(storage, update_instruction, 2)
+					base, base_valid := program.program_instruction(storage.compiled, base_index)
+					key, key_valid := program.program_instruction(storage.compiled, key_index)
+					rhs, rhs_valid := program.program_instruction(storage.compiled, rhs_index)
+					name_operand, name_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+3))
+					name, name_text_ok := program.operand_text(storage.compiled, name_operand)
+					key_operand, key_operand_ok := program.program_operand(storage.compiled, key.operands_start)
+					rhs_operand, rhs_operand_ok := program.program_operand(storage.compiled, rhs.operands_start)
+					key_name, key_text_ok := program.operand_text(storage.compiled, key_operand)
+					rhs_name, rhs_text_ok := program.operand_text(storage.compiled, rhs_operand)
+					if !generator_ok || !generator_valid || generator.opcode != .Range || generator.operands_count != 3 ||
+						!base_ok || !base_valid || base.opcode != .Identity || base.has_literal ||
+						!key_ok || !key_valid || key.opcode != .Variable || key.operands_count != 1 ||
+						!rhs_ok || !rhs_valid || rhs.opcode != .Variable || rhs.operands_count != 1 ||
+						!name_ok || name_operand.kind != .Text || !name_text_ok ||
+						!key_operand_ok || key_operand.kind != .Text || !key_text_ok ||
+						!rhs_operand_ok || rhs_operand.kind != .Text || !rhs_text_ok ||
+						key_name != name || rhs_name != name || (value.kind_of(&seed) != .Array && value.kind_of(&seed) != .Null) {
+						_ = value.destroy_value(&seed)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					start := f64(0)
+					end := f64(0)
+					step := f64(1)
+					bounds_ok := true
+					for offset in 0..<3 {
+						bound_index, bound_ok := child_instruction(storage, generator, u32(offset))
+						bound_instruction, bound_valid := program.program_instruction(storage.compiled, bound_index)
+						bound_value, bound_error, bound_cleanup := literal_value(storage, bound_instruction)
+						bound_number, bound_numeric := value.number_value_get(&bound_value)
+						if bound_cleanup != nil || bound_error != .None || !bound_ok || !bound_valid || !bound_numeric {
+							if value.kind_of(&bound_value) != .Invalid do _ = value.destroy_value(&bound_value)
+							bounds_ok = false
+							break
+						}
+						if offset == 0 { start = bound_number } else if offset == 1 { end = bound_number } else { step = bound_number }
+						_ = value.destroy_value(&bound_value)
+					}
+					if !bounds_ok || step == 0 || start != f64(int(start)) || end != f64(int(end)) || step != f64(int(step)) {
+						_ = value.destroy_value(&seed)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					acc := seed
+					current := start
+					for (step > 0 && current < end) || (step < 0 && current > end) {
+						item := value.number_value(current)
+						path, path_error := value.array_value(storage.allocator)
+						if value.array_error_kind(&path_error) != .None {
+							_ = value.destroy_array_error(&path_error); _ = value.destroy_value(&item); _ = value.destroy_value(&acc)
+							return resource_step(.Out_Of_Memory)
+						}
+						key_value := value.clone_value(&item)
+						_, append_error := value.array_append_take(&path, &key_value)
+						if value.array_error_kind(&append_error) != .None {
+							_ = value.destroy_array_error(&append_error); _ = value.destroy_value(&key_value); _ = value.destroy_value(&path); _ = value.destroy_value(&item); _ = value.destroy_value(&acc)
+							return resource_step(.Out_Of_Memory)
+						}
+						replacement := value.clone_value(&item)
+						updated, updated_ok := set_path_value(&acc, &path, 0, &replacement, storage.allocator)
+						_ = value.destroy_value(&path); _ = value.destroy_value(&replacement); _ = value.destroy_value(&item)
+						if !updated_ok {
+							_ = value.destroy_value(&acc)
+							return begin_terminal_misuse(storage, .Unsupported_Opcode)
+						}
+						_ = value.destroy_value(&acc)
+						acc = updated
+						current += step
+					}
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &acc)
 					if ready do return result
 					continue
 				}

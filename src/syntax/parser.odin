@@ -570,6 +570,7 @@ Parser :: struct {
 	pending_string_text: []byte,
 	pending_reduce_name: diagnostic.Span,
 	has_pending_reduce: bool,
+	allow_dynamic_variable_rhs: bool,
 	definition_name: diagnostic.Span,
 	has_definition: bool,
 	definition_body: Node_Id,
@@ -2698,7 +2699,10 @@ parse_pipe :: proc(
 				if !token_is(parser, .Open_Paren) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
 				init, init_ok := parse_pipe(parser, .Close_Paren, true)
 				if !init_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); return {}, false }; advance(parser)
+				previous_dynamic_variable_rhs := parser.allow_dynamic_variable_rhs
+				parser.allow_dynamic_variable_rhs = true
 				update, update_ok := parse_pipe(parser, .Close_Paren, true)
+				parser.allow_dynamic_variable_rhs = previous_dynamic_variable_rhs
 				if !update_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }; close := parser.lookahead.token; advance(parser)
 				span, _ := spanning(parser, reduce_span, close.span)
 				new_term, ok := append_node(parser, Node{kind=.Reduce, span=span, left=exp, right=init, reduce_update=update, has_reduce_update=true, name_span=name, has_name_span=true})
@@ -3415,7 +3419,7 @@ parse_pipe :: proc(
 						right = parser.nodes.storage[int(right)].child
 					}
 					rhs := parser.nodes.storage[int(right)]
-					if rhs.form != .Kinded || (rhs.kind != .Number && rhs.kind != .Boolean && rhs.kind != .Null && rhs.kind != .String) || rhs.has_child || rhs.has_value {
+					if rhs.form != .Kinded || (rhs.kind != .Number && rhs.kind != .Boolean && rhs.kind != .Null && rhs.kind != .String && !(rhs.kind == .Variable && parser.allow_dynamic_variable_rhs)) || rhs.has_child || rhs.has_value {
 						fail_from_lookahead(parser, .Expression); return {}, false
 					}
 					span, span_ok := spanning(parser, index_node.span, rhs.span); assert(span_ok)
