@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `9a642b3b`, the authoritative selected catalog measurement
+At integration head `3fd1c1a5`, the authoritative selected catalog measurement
 is **515/522 passed, 7 failed, 0 harness errors**
 (`/tmp/coverage-reduce-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
@@ -1040,3 +1040,11 @@ transactional sparse updates with jq-compatible null filling and descending
 range order, covering jq.test:490. General key/RHS streams, computed bounds,
 and resumable empty/error cardinality remain deferred. Coverage is now
 **515/522**.
+
+## Callable generator-path ABI checkpoint (2026-08-15)
+
+The callable-path AST shape is now pinned by a compiler test: the argument in
+`inc(.[].a)` remains `Call -> Field(a) -> Field(empty) -> Identity`, with the
+call argument edge retained and parser cleanup verified. Runtime capture/apply
+of path vectors and the original caller root remains the next ABI phase; no
+scalar shortcut is claimed for jq.test:1236.
