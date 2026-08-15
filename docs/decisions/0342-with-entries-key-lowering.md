@@ -15,6 +15,10 @@ object/composition/empty-object cases against jq 1.8.1. Existing `To_Entries`,
 `Map`, and `From_Entries` instructions provide the runtime pipeline; the
 bounded field update already owns copy-on-write key replacement.
 
+The parser guard checks the visible definition table before applying the
+builtin lowering, so a user-defined `with_entries` name is not silently
+rewritten as the builtin.
+
 Scalar/non-object diagnostics, arbitrary filter-valued entry updates,
 generator RHS cardinality, and dynamic entry paths remain deferred until the
 generic path-update continuation contract is implemented.
