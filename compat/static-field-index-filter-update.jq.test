@@ -1,0 +1,36 @@
+# One-level nested static index filter updates.
+.foo[0] |= .+1
+{"foo":[2,3],"bar":9}
+{"foo":[3,3],"bar":9}
+
+.foo[0] |= .+1
+{}
+{"foo":[1]}
+
+.foo[0] |= empty
+{"foo":[2,3],"bar":9}
+{"foo":[3],"bar":9}
+
+.foo[0] |= empty
+{}
+{}
+
+.foo[0] |= empty
+null
+null
+
+.foo[0] |= (1,2)
+{"foo":[2,3]}
+{"foo":[1,3]}
+
+try (.foo[0] |= (1,2/0)) catch .
+{"foo":[2,3]}
+{"foo":[1,3]}
+
+try (.foo[0] |= (2,error("late"))) catch .
+{"foo":[1,2]}
+{"foo":[2,2]}
+
+try (.foo[0] |= .+1) catch .
+{"foo":1}
+"Cannot index number with number"

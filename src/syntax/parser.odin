@@ -291,6 +291,8 @@ Node_Kind :: enum {
 	Static_Field_Delete,
 	// Static_Field_Update is a resumable root `.name |= FILTER` update.
 	Static_Field_Update,
+	// Static_Field_Index_Update is a bounded `.name[index] |= FILTER` update.
+	Static_Field_Index_Update,
 	// Static_Iterator_Update preserves a filter-valued root iterator RHS.
 	Static_Iterator_Update,
 }
@@ -2426,6 +2428,21 @@ parse_pipe :: proc(
 			optional_left := current if pipe_root != invalid_id else result
 			if optional_left >= 0 {
 				left_node := parser.nodes.storage[int(optional_left)]
+				if left_node.form == .Kinded && left_node.kind == .Index && left_node.has_child && left_node.has_number_text {
+					base := parser.nodes.storage[int(left_node.child)]
+					if base.form == .Kinded && base.kind == .Field && !base.has_child && base.has_name_span {
+						advance(parser)
+						right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+						if !right_ok do return {}, false
+						for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child { right = parser.nodes.storage[int(right)].child }
+						span, span_ok := spanning(parser, left_node.span, parser.nodes.storage[int(right)].span); assert(span_ok)
+						update, update_ok := append_node(parser, Node{kind=.Static_Field_Index_Update, span=span, right=right, number_text=left_node.number_text, has_number_text=true, name_span=base.name_span, has_name_span=true})
+						if !update_ok do return {}, false
+						if pipe_root == invalid_id do return update, true
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+						return pipe_root, true
+					}
+				}
 				if left_node.form == .Kinded && left_node.kind == .Field && !left_node.has_child && left_node.has_name_span {
 					advance(parser)
 					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
