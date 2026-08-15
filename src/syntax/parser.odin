@@ -305,6 +305,9 @@ Node_Kind :: enum {
 	Dynamic_Index_Assign,
 	// Parameter_Identity_Update is the bounded `x |= .` callable body.
 	Parameter_Identity_Update,
+	// Alternation retains the producer, branch pattern descriptors, and body.
+	Alternation,
+	Alternation_Branch,
 }
 
 Node_Id :: distinct int
@@ -1178,6 +1181,82 @@ parse_nested_definition :: proc(
 	parser.definition_parameter = previous_parameter
 	parser.has_definition_parameter = previous_has_parameter
 	return continuation, continuation_ok
+}
+
+// parse_alternation_binding retains the original producer and every pattern
+// branch. Branch wrappers form a source-owned linked list; lowering turns them
+// into explicit program metadata instead of rewriting to nullable bindings.
+parse_alternation_binding :: proc(
+	parser: ^Parser,
+	producer: Node_Id,
+	first_pattern: Node_Id,
+	closing := Token_Kind.Invalid,
+	stop_at_comma := false,
+) -> (Node_Id, bool) {
+	branches: [8]Node_Id
+	branch_count := 1
+	branches[0] = first_pattern
+	for token_is(parser, .Alternation) {
+		if branch_count >= len(branches) {
+			fail_from_lookahead(parser, .Expression)
+			return {}, false
+		}
+		advance(parser)
+		branch: Node_Id
+		branch_ok: bool
+		if token_is(parser, .Open_Bracket) || token_is(parser, .Open_Brace) {
+			branch, branch_ok = parse_container(parser, parser.lookahead.token.kind)
+		} else {
+			branch, branch_ok = parse_pipe(parser, .Alternation, stop_at_comma)
+		}
+		if !branch_ok || branch < 0 {
+			fail_from_lookahead(parser, .Expression)
+			return {}, false
+		}
+		branches[branch_count] = branch
+		branch_count += 1
+	}
+	if !token_is(parser, .Pipe) {
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	advance(parser)
+	body, body_ok := parse_pipe(parser, closing, stop_at_comma)
+	if !body_ok {
+		return {}, false
+	}
+	head := Node_Id(-1)
+	for index := branch_count-1; index >= 0; index -= 1 {
+		branch_span := parser.nodes.storage[int(branches[index])].span
+		wrapper, wrapper_ok := append_node(parser, Node{
+			kind = .Alternation_Branch,
+			span = branch_span,
+			child = branches[index],
+			has_child = true,
+			next = head,
+			has_next = head >= 0,
+		})
+		if !wrapper_ok {
+			return {}, false
+		}
+		head = wrapper
+	}
+	result_span, span_ok := spanning(parser, parser.nodes.storage[int(producer)].span, parser.nodes.storage[int(body)].span)
+	if !span_ok {
+		return {}, false
+	}
+	result, result_ok := append_node(parser, Node{
+		kind = .Alternation,
+		span = result_span,
+		left = producer,
+		right = body,
+		value = head,
+		has_value = true,
+	})
+	if !result_ok {
+		return {}, false
+	}
+	return result, true
 }
 
 // parse_pipe is an explicit-state precedence parser. Parenthesized state lives
@@ -3501,6 +3580,9 @@ parse_pipe :: proc(
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
+				if token_is(parser, .Alternation) {
+					return parse_alternation_binding(parser, left, pattern, closing, stop_at_comma)
+				}
 				ordinary, ordinary_ok := try_parse_ordinary_pattern_binding(parser, left, pattern, pipe_root, pipe_tail, closing, stop_at_comma)
 				if ordinary_ok do return ordinary, true
 				entries := parser.nodes.storage[int(pattern_node.value)]
@@ -3612,6 +3694,9 @@ parse_pipe :: proc(
 				if pattern_node.container_kind != .Object || !pattern_node.has_value {
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
+				}
+				if token_is(parser, .Alternation) {
+					return parse_alternation_binding(parser, left, pattern, closing, stop_at_comma)
 				}
 				ordinary, ordinary_ok := try_parse_ordinary_pattern_binding(parser, left, pattern, pipe_root, pipe_tail, closing, stop_at_comma)
 				if ordinary_ok do return ordinary, true

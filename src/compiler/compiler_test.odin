@@ -9,6 +9,22 @@ import "core:testing"
 
 TRACKING_MEMORY : bool : #config(ODIN_TEST_TRACK_MEMORY, true)
 
+@(test)
+alternation_binding_lowers_to_explicit_program_metadata :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, parsed, lowered := parse_and_lower(t, `. as [1] ?// [2] | .`, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	root := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+	testing.expect_value(t, root.opcode, program.Opcode.Alternation)
+	// Producer, body, and each linked branch descriptor are retained as
+	// instruction operands; no textual fallback is involved.
+	testing.expect_value(t, root.operands_count, program.Count(4))
+	testing.expect_value(t, instruction_child(&compiled, root, 2).opcode, program.Opcode.Alternation_Branch)
+	testing.expect_value(t, instruction_child(&compiled, root, 3).opcode, program.Opcode.Alternation_Branch)
+	expect_cleanup(t, &parser, &compiled)
+}
+
 @(private="package")
 parse_and_lower :: proc(
 	t: ^testing.T,

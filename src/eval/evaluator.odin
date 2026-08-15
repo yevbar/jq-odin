@@ -8716,6 +8716,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					continue
 				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
+				case .Alternation, .Alternation_Branch:
+					// Structural ABI only; branch activation requires transactional
+					// pattern bindings and remains a follow-up evaluator phase.
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				case .Parameter_Identity_Update:
 					if instruction.operands_count != 0 || frame.parent < 0 {
 						return begin_terminal_misuse(storage, .Malformed_Program)

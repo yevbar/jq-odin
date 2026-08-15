@@ -7,6 +7,28 @@ import "core:strings"
 import "core:testing"
 
 @(test)
+alternation_binding_retains_producer_and_branch_list :: proc(t: ^testing.T) {
+	parser: Parser
+	_, outcome := parse_test_filter(t, &parser, `. as [1] ?// [2] | .`)
+	expect_parse_success(t, &parser, outcome)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Alternation)
+	testing.expect(t, root.has_value && root.left >= 0 && root.right >= 0)
+	testing.expect_value(t, parser.nodes.storage[int(root.left)].kind, Node_Kind.Identity)
+	branch_count := 0
+	branch := root.value
+	for branch >= 0 {
+		branch_node := parser.nodes.storage[int(branch)]
+		testing.expect_value(t, branch_node.kind, Node_Kind.Alternation_Branch)
+		testing.expect(t, branch_node.has_child && branch_node.child >= 0)
+		branch_count += 1
+		branch = branch_node.next if branch_node.has_next else Node_Id(-1)
+	}
+	testing.expect_value(t, branch_count, 2)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_select_lowers_to_existing_if_shape :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<select>", "select(. > 1)")
