@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `49485252`, the authoritative selected catalog measurement
-is **504/522 passed, 18 failed, 0 harness errors**
-(`/tmp/coverage-empty-pattern.json`). The bounded same-name destructuring alternation
+At integration head `d8ccf4d6`, the authoritative selected catalog measurement
+is **505/522 passed, 17 failed, 0 harness errors**
+(`/tmp/coverage-modulo.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
@@ -997,3 +997,11 @@ literal patterns, generators, and general multi-output rollback remain
 deferred under the branch-scope ABI decision. The repeated same-name
 object-pattern form `{a:$a} ?// {a:$a} ?// {a:$a}` is also covered, including
 generator-fed inputs; the focused alternation shard is 15/15.
+## Leading modulo diagnostic follow-up (2026-08-15)
+
+The reviewed integration head (`d8ccf4d6`) measures **505/522 passed, 17
+failed, 0 harness errors** against the pinned jq 1.8.1 catalog. A narrowly
+gated CLI formatter now matches jq for leading modulo syntax (`%`, `%foo`,
+`%::wat`, and doubled/multiline variants) while preserving valid infix modulo
+evaluation. Remaining failures are documented ABI or module-diagnostic
+boundaries; no broad parser/evaluator behavior is claimed by this slice.
