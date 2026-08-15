@@ -1167,6 +1167,9 @@ lower_filter :: proc(
 			return Lower_Outcome{kind = .Invalid_AST}
 		}
 	}
+	// Reserve two leading slots for the first unresolved variable's spans. The
+	// lexical walk starts at depth 2, so all ordinary bindings retain the same
+	// lookup semantics while recursive calls share these diagnostic slots.
 	if !validate_binding_scopes(nodes, root, source, scope_stack[:1022], 2, len(nodes)+1) {
 		if scope_stack[1].end > scope_stack[1].start {
 			return Lower_Outcome{kind = .Unresolved_Variable, error_span = scope_stack[0], error_name_span = scope_stack[1]}
