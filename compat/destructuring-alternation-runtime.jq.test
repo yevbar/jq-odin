@@ -1,0 +1,14 @@
+# Bounded valid jq destructuring alternation: branch candidates preserve the
+# original array input while a failed candidate does not consume it.
+. as [$a] ?// [$b] | .
+[1]
+[1]
+
+[]
+[]
+
+[1,2]
+[1,2]
+
+null
+null

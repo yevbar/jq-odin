@@ -183,6 +183,7 @@ frame_phase :: enum u8 {
 	Binding_Start_Left,
 	Binding_Left_Active,
 	Binding_Body_Active,
+	Alternation_Body_Active,
 	Constructor_Start,
 	Constructor_Child_Active,
 	Constructor_Emit,
@@ -257,6 +258,9 @@ eval_frame :: struct {
 	pending_object_error: value.Object_Operation_Error,
 	constructor_pending_failure: bool,
 	binding_value: value.Value,
+	// Alternation retains the producer's original input while a matching
+	// variable branch runs. Branch candidates never mutate this owned value.
+	alternation_original: value.Value,
 	// Binary operators retain the left result while the right generator runs.
 	binary_left: value.Value,
 	// Tracks whether a defined result was emitted by a defined-or left stream.
@@ -713,6 +717,8 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	free_error = value.destroy_value(&frame.constructor_current)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.binding_value)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.alternation_original)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.reduce_accumulator)
 	if free_error != nil do return free_error
@@ -1659,6 +1665,42 @@ literal_value :: proc(
 	return {}, .Invalid_Number_Literal, nil
 }
 
+// alternation_array_branch_match is the deliberately narrow runtime seam:
+// a branch descriptor must wrap a one-slot array pattern containing a single
+// variable. The variable capture is intentionally deferred until the body
+// binding ABI lands; this phase still preserves the original input and branch
+// rollback while proving valid jq syntax and ownership.
+@(private)
+alternation_array_branch_match :: proc(
+	storage: ^evaluator_storage,
+	branch: program.Instruction_Index,
+	input: ^value.Value,
+) -> (matched, shape_ok: bool) {
+	branch_instruction, branch_ok := program.program_instruction(storage.compiled, branch)
+	if !branch_ok || branch_instruction.opcode != .Alternation_Branch || branch_instruction.operands_count != 1 {
+		return false, false
+	}
+	pattern_index, pattern_ok := child_instruction(storage, branch_instruction, 0)
+	pattern, pattern_valid := program.program_instruction(storage.compiled, pattern_index)
+	if !pattern_ok || !pattern_valid || pattern.opcode != .Array || pattern.operands_count != 1 {
+		return false, false
+	}
+	literal_index, literal_ok := child_instruction(storage, pattern, 0)
+	literal_instruction, literal_valid := program.program_instruction(storage.compiled, literal_index)
+	if !literal_ok || !literal_valid || literal_instruction.opcode != .Variable {
+		return false, false
+	}
+	input_kind := value.kind_of(input)
+	if input_kind == .Null {
+		return true, true
+	}
+	if input_kind != .Array {
+		return false, true
+	}
+	_, length_ok := value.array_length(input)
+	return length_ok, length_ok
+}
+
 // foreach_seed_values materializes the literal seed stream used by the
 // bounded foreach evaluator. Comma filters are lowered to Fork/Sequence;
 // retaining both branches preserves jq's left-to-right seed ordering before
@@ -2067,6 +2109,12 @@ capture_composite_instruction :: proc(
 		if !child_ok do return false
 	case .Call:
 		if instruction.operands_count != 1 && instruction.operands_count != 2 do return false
+		for offset in 0..<int(instruction.operands_count) {
+			_, child_ok := child_instruction(storage, instruction, u32(offset))
+			if !child_ok do return false
+		}
+	case .Alternation:
+		if instruction.operands_count < 3 do return false
 		for offset in 0..<int(instruction.operands_count) {
 			_, child_ok := child_instruction(storage, instruction, u32(offset))
 			if !child_ok do return false
@@ -3777,6 +3825,8 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		// A two-edge call resumes its argument generator after each callee
 		// activation; legacy one-edge calls complete after their body stream.
 		frame.phase = .Complete if frame.call_path_active else (.Call_Argument_Active if instruction.operands_count == 2 else .Complete)
+	case .Alternation_Body_Active:
+		frame.phase = .Complete
 	case .Field_Child_Active:
 		frame.phase = .Complete
 	case .Field_Result_Active:
@@ -4481,6 +4531,10 @@ propagate_output :: proc(
 		case .Call_Active:
 			// A call forwards each value from its definition body to the caller;
 			// notify_exhausted completes this frame after the body stream ends.
+			current = parent
+		case .Alternation_Body_Active:
+			// A matched branch forwards body outputs; the retained original is
+			// released when the alternation frame completes.
 			current = parent
 		case .Recurse_Children:
 			current = parent
@@ -8716,10 +8770,68 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					continue
 				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
-				case .Alternation, .Alternation_Branch:
-					// Structural ABI only; branch activation requires transactional
-					// pattern bindings and remains a follow-up evaluator phase.
-					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				case .Alternation:
+					if instruction.operands_count < 3 || !capture_composite_instruction(storage, frame, instruction) {
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					producer, producer_ok := child_instruction(storage, instruction, 0)
+					producer_instruction, producer_valid := program.program_instruction(storage.compiled, producer)
+					body, body_ok := child_instruction(storage, instruction, 1)
+					_, body_valid := program.program_instruction(storage.compiled, body)
+					// This first runtime slice intentionally handles only an identity
+					// producer and one-variable array branch patterns.
+					if !producer_ok || !producer_valid || producer_instruction.opcode != .Identity || producer_instruction.has_literal ||
+					   !body_ok || !body_valid {
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					original := value.clone_value(&frame.input)
+					if value.kind_of(&original) == .Invalid {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &original)
+					}
+					frame.alternation_original = value.take_value(&original)
+					matched := false
+					for offset in 2..<int(instruction.operands_count) {
+						branch, branch_ok := child_instruction(storage, instruction, u32(offset))
+						if !branch_ok {
+							_ = value.destroy_value(&frame.alternation_original)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						candidate, shape_ok := alternation_array_branch_match(storage, branch, &frame.alternation_original)
+						if !shape_ok {
+							_ = value.destroy_value(&frame.alternation_original)
+							return begin_terminal_misuse(storage, .Unsupported_Opcode)
+						}
+						if candidate {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						if value.kind_of(&frame.alternation_original) != .Array && value.kind_of(&frame.alternation_original) != .Null {
+							input_kind := value.kind_of(&frame.alternation_original)
+							_ = value.destroy_value(&frame.alternation_original)
+							message := "Cannot index number with number"
+							switch input_kind {
+							case .Boolean: message = "Cannot index boolean with number"
+							case .String: message = "Cannot index string with number"
+							case .Object: message = "Cannot index object with number"
+							case .Invalid, .Null, .Number, .Array:
+							}
+							result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=message})
+							if ready do return result
+							continue
+						}
+						_ = value.destroy_value(&frame.alternation_original)
+						frame.phase = .Complete
+						continue
+					}
+					body_input := value.clone_value(&frame.alternation_original)
+					if value.kind_of(&body_input) == .Invalid || !push_frame(storage, body, index, &body_input) {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &body_input)
+					}
+					frame.phase = .Alternation_Body_Active
+				case .Alternation_Branch:
+					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Parameter_Identity_Update:
 					if instruction.operands_count != 0 || frame.parent < 0 {
 						return begin_terminal_misuse(storage, .Malformed_Program)
