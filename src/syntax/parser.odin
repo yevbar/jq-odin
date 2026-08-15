@@ -5300,7 +5300,16 @@ lower_static_del_paths :: proc(parser: ^Parser, node_id: Node_Id) -> (Node_Id, b
 			components, component_list_ok = append_node(parser, Node{kind=.Comma, span=span, left=base, right=component})
 			if !component_list_ok do return invalid, false
 		}
-	} else if node.kind != .Field || node.has_child || !node.has_name_span {
+	} else if node.kind == .Field {
+		if !node.has_name_span do return invalid, false
+		if node.has_child {
+			nested_components, nested_components_ok := lower_static_del_path_components(parser, node_id)
+			if !nested_components_ok do return invalid, false
+			inner, inner_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=nested_components, has_value=true})
+			if !inner_ok do return invalid, false
+			return append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=inner, has_value=true})
+		}
+	} else {
 		return invalid, false
 	}
 	inner, inner_ok := append_node(parser, Node{kind=.Identity, container_kind=.Array, span=node.span, value=components, has_value=true})
@@ -5324,7 +5333,23 @@ lower_static_del_path_components :: proc(parser: ^Parser, node_id: Node_Id) -> (
 	if int(node_id) < 0 || int(node_id) >= parser.nodes.count do return {}, false
 	node := parser.nodes.storage[int(node_id)]
 	if node.kind == .Parenthesized && node.has_child do return lower_static_del_path_components(parser, node.child)
-	if node.kind == .Field && !node.has_child && node.has_name_span do return node_id, true
+	if node.kind == .Field && node.has_name_span {
+		if !node.has_child do return node_id, true
+		base := parser.nodes.storage[int(node.child)]
+		if base.kind == .Identity && !base.has_child && !base.has_value do return node_id, true
+		prefix, prefix_ok := lower_static_del_path_components(parser, node.child)
+		if !prefix_ok do return {}, false
+		span, span_ok := spanning(parser, parser.nodes.storage[int(prefix)].span, node.span); assert(span_ok)
+		return append_node(parser, Node{kind=.Comma, span=span, left=prefix, right=node_id})
+	}
+	if node.kind == .Index && node.has_child && node.has_number_text {
+		base, base_ok := lower_static_del_path_components(parser, node.child)
+		if !base_ok do return {}, false
+		component, component_ok := append_node(parser, Node{kind=.Number, span=node.span, number_text=node.number_text, has_number_text=true})
+		if !component_ok do return {}, false
+		span, span_ok := spanning(parser, parser.nodes.storage[int(base)].span, node.span); assert(span_ok)
+		return append_node(parser, Node{kind=.Comma, span=span, left=base, right=component})
+	}
 	return {}, false
 }
 
