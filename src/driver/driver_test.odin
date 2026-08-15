@@ -884,6 +884,19 @@ module_data_import_prefix_routes_query_local_definitions :: proc(t: ^testing.T) 
 	), false)
 }
 
+@(test)
+module_directive_prefix_routes_query_local_code_definitions :: proc(t: ^testing.T) {
+	testing.expect_value(t, module_filter_has_module_directive(
+		`import "a" as foo; def fooa: foo::a; fooa`,
+	), true)
+	testing.expect_value(t, module_filter_has_module_directive(
+		`include "a"; def f: .; f`,
+	), true)
+	testing.expect_value(t, module_filter_has_module_directive(
+		`includefoo "a"; def f: .; f`,
+	), false)
+}
+
 module_expansion_rejects_wrong_arity :: proc(
 	t: ^testing.T,
 	definitions: [dynamic]module_definition,

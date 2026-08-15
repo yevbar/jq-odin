@@ -470,6 +470,35 @@ module_filter_has_data_import :: proc(bytes: string) -> bool {
 	}
 }
 
+// Query-local definitions after any valid leading import/include directive
+// must be expanded by the module loader as well. This is kept separate from
+// the data-binding helper so qualified code aliases and JSON data aliases
+// share the same lexical directive validation without routing malformed or
+// embedded text.
+module_filter_has_module_directive :: proc(bytes: string) -> bool {
+	i := 0
+	seen := false
+	for {
+		module_space(bytes, &i)
+		if i >= len(bytes) do return seen
+		if module_word(bytes, i, "import") {
+			_, _, _, next, ok, unsupported := parse_module_import(bytes, i)
+			if !ok || unsupported do return false
+			i = next
+			seen = true
+			continue
+		}
+		if module_word(bytes, i, "include") {
+			_, _, next, ok, unsupported := parse_module_include(bytes, i)
+			if !ok || unsupported do return false
+			i = next
+			seen = true
+			continue
+		}
+		return seen
+	}
+}
+
 // Data imports are jq's JSON-module stream wrapped in an array.  Keep the
 // complete structured literals, rather than looking up a field in raw text:
 // the compiler must perform ordinary JSON indexing so nested keys cannot

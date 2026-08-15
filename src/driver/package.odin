@@ -1251,12 +1251,12 @@ run_with_options :: proc(
 		// separately contracted.
 		parameterized_simple := parameterized_definition && parameterized_simple_definition(trimmed_filter, allocator)
 		parameterized_path_identity := parameterized_definition && parameterized_path_identity_definition(trimmed_filter, allocator)
-		data_import_prefix := module_filter_has_data_import(trimmed_filter)
+		module_directive_prefix := module_filter_has_module_directive(trimmed_filter)
 		// Keep malformed forms of the already-accepted identity spelling on the
 		// parser path so jq emits a filter diagnostic instead of a module-loader
 		// error; this is a routing guard, not source expansion.
 		parameterized_identity_syntax := strings.has_prefix(trimmed_filter, "def id(x): x; id(")
-		if has_definition && !data_import_prefix && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax || parameterized_path_identity) {
+		if has_definition && !module_directive_prefix && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax || parameterized_path_identity) {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
