@@ -28,3 +28,9 @@ The syntax, compiler, program, and evaluator packages are affected. This is a
 shared AST/program contract; consumers must add closure-frame activation before
 the opcode can be routed in production. Existing zero-argument calls and the
 legacy top-level parameterized path remain unchanged.
+
+Source anchors: the marker is declared in `src/syntax/parser.odin:317-320`,
+validated/lowered by `src/compiler/package.odin:215-218` and
+`src/compiler/package.odin:1697-1699`, stored as an append-only opcode in
+`src/program/package.odin:358-362`, and rejected explicitly by
+`src/eval/evaluator.odin:8865-8870`.
