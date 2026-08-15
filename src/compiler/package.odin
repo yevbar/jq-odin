@@ -368,7 +368,12 @@ constant_non_string_key :: proc(nodes: []syntax.Node, id: syntax.Node_Id) -> boo
 		if !node.has_child do return false
 		return constant_non_string_key(nodes, node.child)
 	}
-	return node.kind == .Number || node.kind == .Boolean || node.kind == .Null
+	if node.kind == .Number || node.kind == .Boolean || node.kind == .Null do return true
+	// Empty array/object literals are self-contained constant keys. Non-empty
+	// containers may contain generators or bindings and remain runtime-valued.
+	return node.kind == .Identity &&
+		(node.container_kind == .Array || node.container_kind == .Object) &&
+		!node.has_value
 }
 
 @(private="package")

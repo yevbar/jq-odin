@@ -494,6 +494,20 @@ invalid_constant_object_key_reports_inner_source_span :: proc(t: ^testing.T) {
 	testing.expect_value(t, err.compile_error_span.start, 15)
 	testing.expect_value(t, err.compile_error_span.end, 16)
 	destroy_result_test(t, &result)
+
+	err = run(&result, "{([]):1}", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Compile)
+	testing.expect_value(t, err.compile_kind, compiler.Lower_Error_Kind.Invalid_Object_Key)
+	testing.expect_value(t, err.compile_error_span.start, 2)
+	testing.expect_value(t, err.compile_error_span.end, 4)
+	destroy_result_test(t, &result)
+
+	err = run(&result, "{({}):1}", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Compile)
+	testing.expect_value(t, err.compile_kind, compiler.Lower_Error_Kind.Invalid_Object_Key)
+	testing.expect_value(t, err.compile_error_span.start, 2)
+	testing.expect_value(t, err.compile_error_span.end, 4)
+	destroy_result_test(t, &result)
 }
 
 @(test)
