@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `933ff545`, the authoritative selected catalog measurement
+At integration head `420b1bed`, the authoritative selected catalog measurement
 is **470/522 passed, 52 failed, 0 harness errors**
 (`/tmp/coverage-join.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
@@ -21,6 +21,10 @@ Static `group_by(.field)` keyed materialization is covered by
 `docs/decisions/0333-group-by-keyed-materialization.md`; the selected catalog
 total is unchanged because jq.test:1639 also contains deferred dynamic and
 multi-key grouping forms.
+The remaining recursive `walk(filter)` case at jq.test:2388 is explicitly
+deferred under decision `docs/decisions/0348-walk-filter-contract.md`; it needs
+post-order traversal and container-specific callback cardinality rather than a
+driver rewrite.
 Static deletion from a `null` base now preserves jq's no-op semantics for
 `.foo`, `.[0]`, and `.foo[0]`; the focused shard is
 `compat/static-del-null.jq.test` and the contract is recorded in
