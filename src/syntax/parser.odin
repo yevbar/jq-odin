@@ -306,6 +306,7 @@ Definition :: struct {
 	name_span: diagnostic.Span,
 	body:      Node_Id,
 	ordinal:   u32,
+	scope_depth: u32,
 }
 
 Node_Form :: enum u8 {
@@ -536,6 +537,7 @@ Parser :: struct {
 	definition_name: diagnostic.Span,
 	has_definition: bool,
 	definition_body: Node_Id,
+	definition_scope_depth: u32,
 	failed:              bool,
 	failure:             Parse_Outcome,
 }
@@ -764,6 +766,7 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 			name_span = name.span,
 			body = body,
 			ordinal = u32(parser.definitions.count),
+			scope_depth = parser.definition_scope_depth,
 		})
 		if definition_error != nil {
 			fail_resource(parser, definition_error)
@@ -1027,11 +1030,98 @@ visible_definition :: proc(parser: ^Parser, spelling: string) -> (Node_Id, bool)
 	for count := parser.definitions.count; count > 0; {
 		count -= 1
 		definition := parser.definitions.storage[count]
+		if definition.scope_depth > parser.definition_scope_depth do continue
 		if definition_name_matches(parser, definition.name_span, spelling) {
 			return definition.body, true
 		}
 	}
 	return {}, false
+}
+
+// parse_nested_definition handles jq's query-local zero-argument definitions.
+// The generated Call edges already carry immutable body roots, so this phase
+// only needs to maintain lexical visibility while parsing the declaration and
+// its following query. Nested declarations are recorded with their scope depth
+// and become invisible when the enclosing query resumes.
+@(private="package")
+parse_nested_definition :: proc(
+	parser: ^Parser,
+	closing: Token_Kind,
+	stop_at_comma: bool,
+	stop_at_catch: bool,
+	stop_at_binary: bool,
+	stop_at_pipe: bool,
+	stop_at_defined_or: bool,
+) -> (Node_Id, bool) {
+	if !token_is(parser, .Def) do return {}, false
+	advance(parser)
+	if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Identifier {
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	name := parser.lookahead.token
+	advance(parser)
+	if !token_is(parser, .Colon) {
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	advance(parser)
+
+	previous_name := parser.definition_name
+	previous_has := parser.has_definition
+	previous_body := parser.definition_body
+	previous_depth := parser.definition_scope_depth
+	parser.definition_scope_depth = previous_depth + 1
+	parser.definition_name = name.span
+	parser.has_definition = true
+	parser.definition_body = Node_Id(-1)
+	start_node := parser.nodes.count
+	body, body_ok := parse_pipe(parser, .Semicolon, false)
+	if !body_ok || !token_is(parser, .Semicolon) {
+		parser.definition_name = previous_name
+		parser.has_definition = previous_has
+		parser.definition_body = previous_body
+		parser.definition_scope_depth = previous_depth
+		if !body_ok { return {}, false }
+		fail_from_lookahead(parser, .Expression)
+		return {}, false
+	}
+	parser.definition_body = body
+	for i in start_node..<parser.nodes.count {
+		if parser.nodes.storage[i].kind == .Call && parser.nodes.storage[i].child < 0 {
+			parser.nodes.storage[i].child = body
+			parser.nodes.storage[i].has_child = true
+		}
+	}
+	definition_error := append_fallible_buffer(&parser.definitions, Definition{
+		name_span = name.span,
+		body = body,
+		ordinal = u32(parser.definitions.count),
+		scope_depth = parser.definition_scope_depth,
+	})
+	if definition_error != nil {
+		fail_resource(parser, definition_error)
+		parser.definition_name = previous_name
+		parser.has_definition = previous_has
+		parser.definition_body = previous_body
+		parser.definition_scope_depth = previous_depth
+		return {}, false
+	}
+	advance(parser)
+	continuation, continuation_ok := parse_pipe(
+		parser,
+		closing,
+		stop_at_comma,
+		stop_at_catch,
+		stop_at_binary,
+		stop_at_pipe,
+		stop_at_defined_or,
+	)
+	parser.definition_name = previous_name
+	parser.has_definition = previous_has
+	parser.definition_body = previous_body
+	parser.definition_scope_depth = previous_depth
+	return continuation, continuation_ok
 }
 
 // parse_pipe is an explicit-state precedence parser. Parenthesized state lives
@@ -1073,6 +1163,23 @@ parse_pipe :: proc(
 
 	for {
 		if !term_ready {
+			if token_is(parser, .Def) {
+				nested: Node_Id
+				nested_ok: bool
+				nested, nested_ok = parse_nested_definition(
+					parser,
+					closing,
+					stop_at_comma,
+					stop_at_catch,
+					stop_at_binary,
+					stop_at_pipe,
+					stop_at_defined_or,
+				)
+				if !nested_ok do return {}, false
+				term = nested
+				term_ready = nested != invalid_id
+				continue
+			}
 			if closing == .Else && token_is(parser, .End) && current != invalid_id {
 				return current, true
 			}

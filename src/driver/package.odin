@@ -982,6 +982,38 @@ copy_runtime_key :: proc(result: ^Run_Result, text: string) -> runtime.Allocator
 	return nil
 }
 
+@(private)
+filter_definition_shape :: proc(source: string) -> (has_definition: bool, has_parameterized: bool) {
+	in_string := false
+	escaped := false
+	in_comment := false
+	is_ident := proc(c: byte) -> bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' }
+	for i := 0; i < len(source); i += 1 {
+		c := source[i]
+		if in_comment {
+			if c == '\n' do in_comment = false
+			continue
+		}
+		if in_string {
+			if escaped { escaped = false; continue }
+			if c == '\\' { escaped = true; continue }
+			if c == '"' do in_string = false
+			continue
+		}
+		if c == '"' { in_string = true; continue }
+		if c == '#' { in_comment = true; continue }
+		if c != 'd' || i+4 > len(source) || source[i:i+4] != "def " do continue
+		if i > 0 && is_ident(source[i-1]) do continue
+		has_definition = true
+		j := i + 4
+		for j < len(source) && source[j] != ':' && source[j] != ';' && source[j] != '\n' {
+			if source[j] == '(' { has_parameterized = true }
+			j += 1
+		}
+	}
+	return
+}
+
 // run_with_options parses one complete filter and a stream of JSON input
 // values, drains every evaluator output for each input in order, and produces
 // owned LF-delimited bytes in the requested formatting mode.
@@ -1080,17 +1112,13 @@ run_with_options :: proc(
 			if walk_error != nil do return allocation_error(result, walk_error)
 			if walk_rewritten { filter_memory = walk_rewrite; filter_source = transmute(string)filter_memory }
 		}
-		// The syntax/program vertical slice owns a single top-level definition.
-		// Leave that source intact so the parser can build its Call node. Multiple
-		// definitions go through the module expander, whose declaration indices
-		// preserve jq's lexical snapshots across redefinition.
+		// Zero-argument definitions are parsed as an immutable Call graph,
+		// including query-local declarations. Keep them in source form so lexical
+		// body snapshots survive into the evaluator; only parameterized definitions
+		// require the existing module expansion bridge.
 		trimmed_filter := strings.trim_space(filter)
 		first_definition_end := module_definition_end(trimmed_filter, 0)
-		next_definition := first_definition_end
-		if next_definition < 0 do next_definition = 0
-		module_space(trimmed_filter, &next_definition)
-		multiple_definitions := first_definition_end > 0 &&
-			module_word(trimmed_filter, next_definition, "def")
+		has_definition, nested_parameterized := filter_definition_shape(trimmed_filter)
 		// The syntax/Program slice currently owns only zero-argument calls. A
 		// parameterized single definition must still pass through the mature
 		// module expansion bridge, which substitutes filter arguments and keeps
@@ -1103,7 +1131,8 @@ run_with_options :: proc(
 				at += 1
 			}
 		}
-		if strings.has_prefix(trimmed_filter, "def ") && !multiple_definitions && !parameterized_definition {
+		parameterized_definition = parameterized_definition || nested_parameterized
+		if has_definition && !parameterized_definition {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
