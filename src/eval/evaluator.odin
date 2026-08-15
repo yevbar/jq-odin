@@ -361,7 +361,6 @@ seal_program :: proc(compiled: ^program.Program) -> (program_seal, bool) {
 		seal_mix_u64(&seal, 1 if instruction.literal_boolean else 0)
 		seal_mix_u64(&seal, u64(instruction.operands_start))
 		seal_mix_u64(&seal, u64(instruction.operands_count))
-		seal_mix_u64(&seal, u64(instruction.iterator_compound_operator))
 		seal_mix_u64(&seal, u64(instruction.span.start))
 		seal_mix_u64(&seal, u64(instruction.span.end))
 		seal_mix_u64(&seal, 1 if instruction.has_operator_span else 0)
@@ -8310,10 +8309,6 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			case .Static_Iterator_Update:
 				if instruction.operands_count != 1 do return begin_terminal_misuse(storage, .Malformed_Program)
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
-				if instruction.iterator_compound_operator == 255 {
-					frame.dynamic_index_base = value.clone_value(&frame.input)
-					if value.kind_of(&frame.dynamic_index_base) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
-				}
 				input_kind := value.kind_of(&frame.input)
 				if input_kind != .Array && input_kind != .Object {
 					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Iterate, input_kind=input_kind, span=instruction.span})
@@ -10542,27 +10537,14 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			}
 			if !child_ok || value.kind_of(&item) == .Invalid do return begin_terminal_misuse(storage, .Malformed_Program)
 			frame.iterator_cursor += 1
-			if instruction.iterator_compound_operator == 255 {
-				truthy := value.kind_of(&item) != .Null
-				if value.kind_of(&item) == .Boolean { truthy, _ = value.boolean_value_get(&item) }
-				if truthy {
-					_ = value.destroy_value(&item)
-					continue
-				}
-			}
 			frame.iterator_update_seen = false
 			if storage.frame_count == len(storage.frames) {
 				capacity_error := grow_frames(storage)
 				if capacity_error != nil { _ = value.destroy_value(&item); return resource_step(capacity_error) }
 				frame = &storage.frames[index]
 			}
-			child_input := item
-			if instruction.iterator_compound_operator == 255 {
-				_ = value.destroy_value(&child_input)
-				child_input = value.clone_value(&frame.dynamic_index_base)
-			}
-			if !push_frame(storage, child, index, &child_input) {
-				_ = value.destroy_value(&child_input)
+			if !push_frame(storage, child, index, &item) {
+				_ = value.destroy_value(&item)
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}
 			storage.frames[index].phase = .Iterator_Update_Child_Active

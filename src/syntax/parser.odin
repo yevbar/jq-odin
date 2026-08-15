@@ -2653,28 +2653,6 @@ parse_pipe :: proc(
 			}
 			return parse_static_field_set_number(parser, left, pipe_root, pipe_tail, closing)
 		}
-		if token_is(parser, .Assign_Defined_Or) {
-			left := current if pipe_root != invalid_id else result
-			if left >= 0 {
-				left_node := parser.nodes.storage[int(left)]
-				if left_node.form == .Kinded && left_node.kind == .Field && left_node.has_child && left_node.has_name_span {
-					name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, left_node.name_span)
-					child := parser.nodes.storage[int(left_node.child)]
-					if name_ok && name_start == name_end && child.kind == .Identity && !child.has_child && !child.has_value {
-						advance(parser)
-						right, right_ok := parse_pipe(parser, closing, true, false, false, true)
-						if !right_ok do return {}, false
-						span, span_ok := spanning(parser, left_node.span, parser.nodes.storage[int(right)].span); assert(span_ok)
-						update, update_ok := append_node(parser, Node{kind=.Static_Iterator_Update, span=span, right=right, binary_operator=.Defined_Or, iterator_compound=true})
-						if !update_ok do return {}, false
-						if int(pipe_root) < 0 do return update, true
-						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
-						return pipe_root, true
-					}
-				}
-			}
-			return parse_static_field_set_number(parser, current if pipe_root != invalid_id else result, pipe_root, pipe_tail, closing)
-		}
 
 		// jq's `expr as $name | body` is a low-precedence lexical binding.
 		// Parse the body with a fresh precedence state so the binding covers
