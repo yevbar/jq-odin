@@ -7,7 +7,48 @@
 [4,"number",4]
 [null,"null",null]
 
+# Exact upstream permutation jq.test:980.
+.[] | . as {a:$a} ?// $a ?// {a:$a} | $a
+[[3],[4],[5],6]
+[3]
+[4]
+[5]
+6
+
+# Exact upstream permutation jq.test:987.
+.[] as {a:$a} ?// $a ?// {a:$a} | $a
+[[3],[4],[5],6]
+[3]
+[4]
+[5]
+6
+
+# Exact upstream permutation jq.test:994.
+[[3],[4],[5],6][] | . as {a:$a} ?// $a ?// {a:$a} | $a
+null
+[3]
+[4]
+[5]
+6
+
+# Exact upstream permutation jq.test:1001.
+[[3],[4],[5],6] | .[] as {a:$a} ?// $a ?// {a:$a} | $a
+null
+[3]
+[4]
+[5]
+6
+
 # Pattern mismatch errors are caught before the shared body runs.
 . as {a:$a} ?// {a:$a} ?// $a | (1, error("body"))
 {"a":1}
 1
+
+# Object, scalar, object branch order, covering jq.test:980/987/994/1001.
+.[] | . as {a:$a} ?// $a ?// {a:$a} | [$a, type, .]
+[{"a":1}, [2], {"b":3}, 4, null]
+[1,"object",{"a":1}]
+[[2],"array",[2]]
+[null,"object",{"b":3}]
+[4,"number",4]
+[null,"null",null]

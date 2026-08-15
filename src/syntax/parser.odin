@@ -3553,6 +3553,65 @@ parse_pipe :: proc(
 						return {}, false
 					}
 					advance(parser)
+					// Permutation `{a:$a} ?// $a ?// {a:$a}`.
+					if parser.lookahead.kind == .Token && parser.lookahead.token.kind == .Binding {
+						middle_span := parser.lookahead.token.span
+						middle_name := parser.lookahead.token.value_span
+						middle_start, middle_end, middle_ok := diagnostic.span_offsets(parser.source, middle_name)
+						middle_text := diagnostic.source_bytes(parser.source)[middle_start:middle_end] if middle_ok else ""
+						if !middle_ok || middle_text != first_name { fail_from_lookahead(parser, .Expression); return {}, false }
+						advance(parser)
+						if !token_is(parser, .Alternation) { fail_from_lookahead(parser, .Expression); return {}, false }
+						advance(parser)
+						if !token_is(parser, .Open_Brace) { fail_from_lookahead(parser, .Expression); return {}, false }
+						third_pattern, third_ok := parse_container(parser, .Open_Brace)
+						if !third_ok do return {}, false
+						third_node := parser.nodes.storage[int(third_pattern)]
+						if third_node.container_kind != .Object || !third_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+						third_entry := parser.nodes.storage[int(third_node.value)]
+						if third_entry.kind != .Field || third_entry.container_kind != .Object_Entry || !third_entry.has_key || !third_entry.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+						third_key := parser.nodes.storage[int(third_entry.key)]
+						third_variable := parser.nodes.storage[int(third_entry.value)]
+						third_key_start, third_key_end, third_key_ok := diagnostic.span_offsets(parser.source, third_key.name_span)
+						third_var_start, third_var_end, third_var_ok := diagnostic.span_offsets(parser.source, third_variable.name_span)
+						third_key_name := diagnostic.source_bytes(parser.source)[third_key_start:third_key_end] if third_key_ok else ""
+						third_var_name := diagnostic.source_bytes(parser.source)[third_var_start:third_var_end] if third_var_ok else ""
+						if third_key.kind != .Field || !third_key.has_name_span || third_variable.kind != .Variable || !third_variable.has_name_span ||
+							!third_key_ok || !third_var_ok || third_key_name != "a" || third_var_name != first_name { fail_from_lookahead(parser, .Expression); return {}, false }
+						if !token_is(parser, .Pipe) { fail_from_lookahead(parser, .Expression); return {}, false }
+						advance(parser)
+						body, body_ok := parse_pipe(parser, closing, stop_at_comma)
+						if !body_ok do return {}, false
+						// Build object and scalar branches. Each branch pipes the captured
+						// original value into BODY so a prior branch's caught error cannot
+						// become BODY's input.
+						make_body_pipe :: proc(parser: ^Parser, variable: Node, body: Node_Id) -> (Node_Id, bool) {
+							input, input_ok := append_node(parser, Node{kind=.Variable, span=variable.span, name_span=variable.name_span, has_name_span=true})
+							if !input_ok do return {}, false
+							span, span_ok := spanning(parser, parser.nodes.storage[int(input)].span, parser.nodes.storage[int(body)].span); assert(span_ok)
+							return append_node(parser, Node{kind=.Pipe, span=span, left=input, right=body})
+						}
+						var_node := first
+						first_input, first_input_ok := append_node(parser, Node{kind=.Variable, span=var_node.span, name_span=var_node.name_span, has_name_span=true})
+						if !first_input_ok do return {}, false
+						first_field, first_field_ok := append_node(parser, Node{kind=.Field, span=first_key.span, child=first_input, has_child=true, name_span=first_key.name_span, has_name_span=true})
+						if !first_field_ok do return {}, false
+						first_branch, first_branch_ok := append_node(parser, Node{kind=.Binding, span=parser.nodes.storage[int(first_field)].span, left=first_field, right=body, name_span=var_node.name_span, has_name_span=true}); if !first_branch_ok do return {}, false
+						middle_left, middle_left_ok := append_node(parser, Node{kind=.Variable, span=var_node.span, name_span=var_node.name_span, has_name_span=true}); if !middle_left_ok do return {}, false
+						middle_body, middle_body_ok := make_body_pipe(parser, var_node, body); if !middle_body_ok do return {}, false
+						middle_branch, middle_branch_ok := append_node(parser, Node{kind=.Binding, span=middle_span, left=middle_left, right=middle_body, name_span=middle_name, has_name_span=true}); if !middle_branch_ok do return {}, false
+						third_input, third_input_ok := append_node(parser, Node{kind=.Variable, span=var_node.span, name_span=var_node.name_span, has_name_span=true}); if !third_input_ok do return {}, false
+						third_field, third_field_ok := append_node(parser, Node{kind=.Field, span=third_key.span, child=third_input, has_child=true, name_span=third_key.name_span, has_name_span=true}); if !third_field_ok do return {}, false
+						third_branch, third_branch_ok := append_node(parser, Node{kind=.Binding, span=parser.nodes.storage[int(third_field)].span, left=third_field, right=body, name_span=third_variable.name_span, has_name_span=true}); if !third_branch_ok do return {}, false
+						third_try_span, third_try_span_ok := spanning(parser, parser.nodes.storage[int(middle_branch)].span, parser.nodes.storage[int(third_branch)].span); assert(third_try_span_ok)
+						third_try, third_try_ok := append_node(parser, Node{kind=.Try, span=third_try_span, left=middle_branch, right=third_branch}); if !third_try_ok do return {}, false
+						try_span, try_span_ok := spanning(parser, parser.nodes.storage[int(first_branch)].span, parser.nodes.storage[int(third_try)].span); assert(try_span_ok)
+						try_node, try_ok := append_node(parser, Node{kind=.Try, span=try_span, left=first_branch, right=third_try}); if !try_ok do return {}, false
+						outer_span, outer_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(try_node)].span); assert(outer_span_ok)
+						outer, outer_ok := append_node(parser, Node{kind=.Binding, span=outer_span, left=left, right=try_node, name_span=var_node.name_span, has_name_span=true}); if !outer_ok do return {}, false
+						if pipe_root != invalid_id { tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = outer; tail.has_child = false; return pipe_root, true }
+						return outer, true
+					}
 					if !token_is(parser, .Open_Brace) {
 						fail_from_lookahead(parser, .Expression)
 						return {}, false
