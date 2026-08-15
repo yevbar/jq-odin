@@ -34,6 +34,18 @@ module_definition :: struct {
 	scope_end: int,
 }
 
+// module_callable_ref is a borrowed lookup result for a qualified callable.
+// The definition table owns the name/body/parameter strings; callers must not
+// retain this ref beyond that table's lifetime. It is intentionally source
+// metadata only until Program and evaluator definition tables can share a
+// compiled body graph.
+module_callable_ref :: struct {
+	definition_index: int,
+	namespace: string,
+	local_name: string,
+	arity: int,
+}
+
 module_data_import :: struct {
 	alias: string,
 	data: string,
@@ -1446,6 +1458,27 @@ module_definition_at :: proc(input: string, at: int, definitions: [dynamic]modul
 		}
 	}
 	return -2 if name_match else -1
+}
+
+// module_callable_lookup resolves one complete qualified spelling against the
+// collected definition table without expanding its body. The namespace and
+// local-name slices borrow the canonical definition name, making this the
+// narrow source-table seam for the future compiled callable ABI.
+module_callable_lookup :: proc(reference: string, definitions: [dynamic]module_definition) -> (module_callable_ref, bool) {
+	if len(reference) == 0 || len(definitions) == 0 do return {}, false
+	index := module_definition_at(reference, 0, definitions)
+	if index < 0 || index >= len(definitions) || definitions[index].name != reference do return {}, false
+	separator := -1
+	for at := 0; at+1 < len(reference); at += 1 {
+		if reference[at:at+2] == "::" do separator = at
+	}
+	if separator <= 0 || separator+2 >= len(reference) do return {}, false
+	return module_callable_ref{
+		definition_index = index,
+		namespace = definitions[index].name[:separator],
+		local_name = definitions[index].name[separator+2:],
+		arity = module_parameter_count(definitions[index].parameters),
+	}, true
 }
 
 module_trim :: proc(text: string) -> string {

@@ -1060,6 +1060,37 @@ qualified_parameterized_module_arguments_preserve_caller_environment :: proc(t: 
 }
 
 @(test)
+qualified_module_callable_lookup_preserves_namespace_and_arity :: proc(t: ^testing.T) {
+	definitions: [dynamic]module_definition
+	make_error: runtime.Allocator_Error
+	definitions, make_error = make([dynamic]module_definition, 0, 1, context.allocator)
+	testing.expect_value(t, make_error, runtime.Allocator_Error(nil))
+	name, name_error := strings.clone("foo::a", context.allocator)
+	parameters, parameters_error := strings.clone("", context.allocator)
+	body, body_error := strings.clone("\"a\"", context.allocator)
+	testing.expect_value(t, name_error, runtime.Allocator_Error(nil))
+	testing.expect_value(t, parameters_error, runtime.Allocator_Error(nil))
+	testing.expect_value(t, body_error, runtime.Allocator_Error(nil))
+	_, append_error := append(&definitions, module_definition{
+		name = name, parameters = parameters, body = body, active = true,
+	})
+	testing.expect_value(t, append_error, runtime.Allocator_Error(nil))
+	entry, found := module_callable_lookup("foo::a", definitions)
+	testing.expect(t, found)
+	testing.expect_value(t, entry.definition_index, 0)
+	testing.expect_value(t, entry.namespace, "foo")
+	testing.expect_value(t, entry.local_name, "a")
+	testing.expect_value(t, entry.arity, 0)
+	_, found = module_callable_lookup("a", definitions)
+	testing.expect(t, !found)
+	_, found = module_callable_lookup("bar::a", definitions)
+	testing.expect(t, !found)
+	_, found = module_callable_lookup("foo::", definitions)
+	testing.expect(t, !found)
+	destroy_module_definitions(&definitions, context.allocator)
+}
+
+@(test)
 module_expansion_preserves_object_shorthand :: proc(t: ^testing.T) {
 	definitions: [dynamic]module_definition
 	outcome := find_module_definitions("def x: 42;", &definitions, context.allocator)
