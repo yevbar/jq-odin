@@ -325,6 +325,11 @@ eval_frame :: struct {
 	call_argument: program.Instruction_Index,
 	has_call_argument: bool,
 	call_formal_reference: bool,
+	// Argument filters execute in the caller's lexical environment. The marker
+	// is set only on the retained argument frame so callee-local bindings do not
+	// shadow a caller variable such as `f($x)`.
+	call_argument_scope_parent: int,
+	call_argument_scope_active: bool,
 	// True when the path stream was evaluated dynamically rather than
 	// materialized from literal field/index syntax. Generated paths use jq's
 	// result-bearing invalid-path diagnostic on failed assignment.
@@ -705,11 +710,22 @@ push_frame :: proc(
 		return false
 	}
 	index := storage.frame_count
+	call_argument: program.Instruction_Index
+	has_call_argument := false
+	if parent >= 0 && parent < storage.frame_count {
+		parent_frame := &storage.frames[parent]
+		if parent_frame.has_call_argument {
+			call_argument = parent_frame.call_argument
+			has_call_argument = true
+		}
+	}
 	storage.frames[index] = eval_frame{
 		instruction = instruction,
 		parent = parent,
 		mode = mode,
 		input = value.take_value(input),
+		call_argument = call_argument,
+		has_call_argument = has_call_argument,
 	}
 	storage.frame_count += 1
 	return true
@@ -1055,6 +1071,29 @@ child_instruction :: proc(
 }
 
 @(private)
+instruction_contains_parameter_reference :: proc(
+	storage: ^evaluator_storage,
+	index: program.Instruction_Index,
+	depth: u32,
+) -> bool {
+	// Definition bodies may wrap a bare formal in ordinary Binding/Binary/
+	// constructor nodes. Keep the scan bounded and do not follow Call edges,
+	// which can be recursive; the call frame itself owns the retained argument.
+	if depth > 64 do return false
+	instruction, ok := program.program_instruction(storage.compiled, index)
+	if !ok do return false
+	if instruction.opcode == .Parameter_Reference do return true
+	if instruction.opcode == .Call || instruction.opcode == .Variable do return false
+	for offset in 0..<u32(instruction.operands_count) {
+		operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+offset))
+		if operand_ok && operand.kind == .Instruction && instruction_contains_parameter_reference(storage, operand.instruction, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+@(private)
 callable_field_argument_key :: proc(storage: ^evaluator_storage, argument: program.Instruction_Index) -> (string, bool) {
 	instruction, instruction_ok := program.program_instruction(storage.compiled, argument)
 	if !instruction_ok || instruction.opcode != .Field || (instruction.operands_count != 1 && instruction.operands_count != 2) do return "", false
@@ -1094,6 +1133,9 @@ variable_result :: proc(storage: ^evaluator_storage, producer: int, instruction:
 	name, text_ok := program.operand_text(storage.compiled, name_operand)
 	if !text_ok do return {}, false
 	current := storage.frames[producer].parent
+	if storage.frames[producer].call_argument_scope_active {
+		current = storage.frames[producer].call_argument_scope_parent
+	}
 	for current >= 0 {
 		frame := &storage.frames[current]
 		bound_instruction, instruction_ok := program.program_instruction(storage.compiled, frame.instruction)
@@ -8903,6 +8945,20 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, argument, index, &input_copy) {
 						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
 					}
+					argument_frame := &storage.frames[storage.frame_count-1]
+					argument_frame.call_argument_scope_active = true
+					argument_frame.call_argument_scope_parent = -1
+					scope := frame.parent
+					for scope >= 0 {
+						if storage.frames[scope].call_formal_reference {
+							argument_frame.call_argument_scope_parent = scope
+							break
+						}
+						scope = storage.frames[scope].parent
+					}
+					if argument_frame.call_argument_scope_parent < 0 {
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
 					frame.phase = .Parameter_Argument_Active
 					continue
 				case .Alternation_Branch:
@@ -11827,7 +11883,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if instruction.operands_count == 2 {
 					argument, argument_ok := child_instruction(storage, instruction, 1)
 					body_instruction, body_ok := program.program_instruction(storage.compiled, child)
-					if body_ok && body_instruction.opcode == .Parameter_Reference {
+					if body_ok && instruction_contains_parameter_reference(storage, child, 0) {
 						if !argument_ok || !push_frame(storage, child, index, &input_copy) {
 							return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
 						}

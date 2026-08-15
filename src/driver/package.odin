@@ -1046,6 +1046,15 @@ simple_callable_term :: proc(
 			simple_callable_term(nodes, source, parameter, node.right, seen_parameter)
 	}
 	if node.form != .Kinded || node.container_kind != .None || node.has_child || node.has_value do return false
+	if node.kind == .Binding {
+		// A single literal binding around a formal is the first nested closure
+		// shape owned by the evaluator. Other binding producers remain on the
+		// mature module path until their rollback/cardinality contract is explicit.
+		if node.left < 0 || node.right < 0 || !node.has_name_span do return false
+		bound := nodes[int(node.left)]
+		if bound.form != .Kinded || bound.kind != .Number || !bound.has_number_text || bound.has_child || bound.has_value do return false
+		return simple_callable_term(nodes, source, parameter, node.right, seen_parameter)
+	}
 	if node.kind == .Number {
 		return node.has_number_text
 	}

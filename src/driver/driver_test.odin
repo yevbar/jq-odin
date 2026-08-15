@@ -585,6 +585,11 @@ parameterized_identity_uses_evaluator_argument_frame :: proc(t: ^testing.T) {
 	// This exact fixture bypasses module/text expansion and exercises the
 	// parser -> compiler -> evaluator two-edge Call contract.
 	expect_run(t, "def id(x): x; id(1)", "null", "1\n")
+	// A bare formal is a filter evaluated against the callee argument. The
+	// inner `$x` binding does not replace that filter input.
+	expect_run(t, "2000 as $x | def f(x): 1 as $x | x; f($x)", "null", "2000\n")
+	// Lexical `$x` remains distinct and resolves to the ordinary binding.
+	expect_run(t, "2000 as $x | def f(x): 1 as $x | $x; f($x)", "null", "1\n")
 	// Comma is a generator inside the single filter-valued argument.
 	expect_run(t, "def id(x): x; id(1,2)", "null", "1\n2\n")
 	expect_run(t, "def id(x): x; id(1;2)", "null", "", .Filter_Parse)
