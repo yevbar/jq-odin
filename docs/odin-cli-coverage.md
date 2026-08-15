@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `8065ec24`, the authoritative selected catalog measurement
+At integration head `56aac415`, the authoritative selected catalog measurement
 is **516/522 passed, 6 failed, 0 harness errors**
 (`/tmp/coverage-callable-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
@@ -25,8 +25,8 @@ and generator-valued callable bodies remain deferred under decisions 0385 and
 0386.
 Binding-aware assignment, generated map/select assignment, and recursive
 post-order updates now have exact oracle seam records in decisions 0387, 0388,
-0389, and 0391; these remain parser/evaluator continuation work rather than
-routed fallbacks.
+0389, 0391, and 0392; nested-call parser/compiler shape tests now pin the
+definition/ordinal structure, while runtime continuation remains deferred.
 Undefined-variable compile diagnostics now include jq-compatible source/name spans
 and carets (jq.test:560); boolean object-key diagnostics remain deferred.
 Invalid string escapes now preserve the lexical message and offending-line caret
