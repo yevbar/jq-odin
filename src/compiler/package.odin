@@ -205,6 +205,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Index_Assign:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && node.has_reduce_update && node.reduce_update >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Parameter_Identity_Update:
+		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right == 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Field_Set:
 		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right >= 0 &&
 			node.has_name_span && no_container_links && !node.has_value &&
@@ -511,6 +513,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Dynamic_Index_Assign:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.reduce_update, source, scopes, depth, next_budget)
+	case .Parameter_Identity_Update:
+		return true
 	case .Dynamic_Field_Set:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Call:
@@ -841,6 +845,9 @@ lower_filter :: proc(
 			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !node_reference_valid(node.reduce_update, len(nodes)) || !checked_count_add(&operand_count, 3) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
+		case .Parameter_Identity_Update:
+			// The callable parameter and identity RHS are represented by the
+			// node marker; the caller supplies the literal field path.
 		case .Dynamic_Field_Set:
 			if !node_reference_valid(node.right, len(nodes)) do return Lower_Outcome{kind = .Invalid_AST}
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
@@ -1485,6 +1492,9 @@ lower_filter :: proc(
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)})); operand_at += 1
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.reduce_update)})); operand_at += 1
 			instruction.operands_count = 3
+		case .Parameter_Identity_Update:
+			instruction.opcode = .Parameter_Identity_Update
+			instruction.operands_count = 0
 		case .Dynamic_Field_Set:
 			instruction.opcode = .Dynamic_Field_Set
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

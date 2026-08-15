@@ -456,6 +456,7 @@ every_parser_node_kind_has_an_exact_completed_payload_shape :: proc(t: ^testing.
 	seen[syntax.Node_Kind.Setpath] = true
 	seen[syntax.Node_Kind.Delpaths] = true
 	seen[syntax.Node_Kind.Builtins] = true
+	seen[syntax.Node_Kind.Parameter_Identity_Update] = true
 	transpose_parser: syntax.Parser
 	transpose_source := diagnostic.borrow_source("<transpose-shape>", `transpose`)
 	testing.expect(t, syntax.init_parser(&transpose_parser, transpose_source, context.allocator))

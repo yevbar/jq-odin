@@ -301,6 +301,10 @@ eval_frame :: struct {
 	dynamic_index_assign_keys: value.Value,
 	dynamic_index_assign_rhs: value.Value,
 	dynamic_index_assign_rhs_cursor: int,
+	// Bounded filter-valued callable path update state. The key borrows the
+	// sealed Program text and is valid for the evaluator lifetime.
+	call_path_key: string,
+	call_path_active: bool,
 	// True when the path stream was evaluated dynamically rather than
 	// materialized from literal field/index syntax. Generated paths use jq's
 	// result-bearing invalid-path diagnostic on failed assignment.
@@ -1022,6 +1026,21 @@ child_instruction :: proc(
 	)
 	if !ok || operand.kind != .Instruction do return {}, false
 	return operand.instruction, true
+}
+
+@(private)
+callable_field_argument_key :: proc(storage: ^evaluator_storage, argument: program.Instruction_Index) -> (string, bool) {
+	instruction, instruction_ok := program.program_instruction(storage.compiled, argument)
+	if !instruction_ok || instruction.opcode != .Field || (instruction.operands_count != 1 && instruction.operands_count != 2) do return "", false
+	if instruction.operands_count == 2 {
+		base_operand, base_ok := program.program_operand(storage.compiled, instruction.operands_start)
+		if !base_ok || base_operand.kind != .Instruction do return "", false
+		base, base_instruction_ok := program.program_instruction(storage.compiled, base_operand.instruction)
+		if !base_instruction_ok || base.opcode != .Identity || base.operands_count != 0 do return "", false
+	}
+	key_operand, key_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+u32(instruction.operands_count-1)))
+	if !key_ok || key_operand.kind != .Text do return "", false
+	return program.operand_text(storage.compiled, key_operand)
 }
 
 @(private)
@@ -3757,7 +3776,7 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .Call_Active:
 		// A two-edge call resumes its argument generator after each callee
 		// activation; legacy one-edge calls complete after their body stream.
-		frame.phase = .Call_Argument_Active if instruction.operands_count == 2 else .Complete
+		frame.phase = .Complete if frame.call_path_active else (.Call_Argument_Active if instruction.operands_count == 2 else .Complete)
 	case .Field_Child_Active:
 		frame.phase = .Complete
 	case .Field_Result_Active:
@@ -8697,6 +8716,69 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					continue
 				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
+				case .Parameter_Identity_Update:
+					if instruction.operands_count != 0 || frame.parent < 0 {
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+					caller := &storage.frames[frame.parent]
+					if !caller.call_path_active || caller.call_path_key == "" {
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					input_kind := value.kind_of(&frame.input)
+					if input_kind != .Object && input_kind != .Null {
+						result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=caller.call_path_key})
+						if ready do return result
+						continue
+					}
+					if input_kind == .Null {
+						empty_object, object_error := value.object_value(storage.allocator)
+						if value.object_error_kind(&object_error) != .None {
+							_ = value.destroy_object_error(&object_error)
+							return resource_step(.Out_Of_Memory)
+						}
+						_ = value.destroy_value(&frame.input)
+						frame.input = empty_object
+						key_value, key_error := value.string_value(caller.call_path_key, storage.allocator)
+						if value.constructor_error_kind(&key_error) != .None {
+							_ = value.destroy_constructor_error(&key_error)
+							return resource_step(.Out_Of_Memory)
+						}
+						null_value := value.null_value()
+						_, displaced, set_error := value.object_set_take(&frame.input, &key_value, &null_value)
+						_ = value.destroy_value(&displaced)
+						if value.object_error_kind(&set_error) != .None {
+							_ = value.destroy_value(&key_value)
+							_ = value.destroy_value(&null_value)
+							_ = value.destroy_object_error(&set_error)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+					}
+					if input_kind == .Object {
+						existing, found := value.object_get_copy(&frame.input, caller.call_path_key)
+						_ = value.destroy_value(&existing)
+						if !found {
+							key_value, key_error := value.string_value(caller.call_path_key, storage.allocator)
+							if value.constructor_error_kind(&key_error) != .None {
+								_ = value.destroy_constructor_error(&key_error)
+								return resource_step(.Out_Of_Memory)
+							}
+							null_value := value.null_value()
+							_, displaced, set_error := value.object_set_take(&frame.input, &key_value, &null_value)
+							_ = value.destroy_value(&displaced)
+							if value.object_error_kind(&set_error) != .None {
+								_ = value.destroy_value(&key_value)
+								_ = value.destroy_value(&null_value)
+								_ = value.destroy_object_error(&set_error)
+								return begin_terminal_misuse(storage, .Malformed_Program)
+							}
+						}
+					}
+					output := value.clone_value(&frame.input)
+					if value.kind_of(&output) == .Invalid do return resource_step(.Out_Of_Memory)
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &output)
+					if ready do return result
+					continue
 			case .Identity:
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
@@ -11424,6 +11506,22 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				if instruction.operands_count == 2 {
 					argument, argument_ok := child_instruction(storage, instruction, 1)
+					body_instruction, body_ok := program.program_instruction(storage.compiled, child)
+					if body_ok && body_instruction.opcode == .Parameter_Identity_Update {
+						key, key_ok := callable_field_argument_key(storage, argument)
+						if !argument_ok || !key_ok {
+							_ = value.destroy_value(&input_copy)
+							return begin_terminal_misuse(storage, .Unsupported_Opcode)
+						}
+						frame.call_path_key = key
+						frame.call_path_active = true
+						if !push_frame(storage, child, index, &input_copy) {
+							_ = value.destroy_value(&input_copy)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						storage.frames[index].phase = .Call_Active
+						continue
+					}
 					if !argument_ok || !push_frame(storage, argument, index, &input_copy) {
 						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
 					}

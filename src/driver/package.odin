@@ -1085,6 +1085,43 @@ parameterized_simple_definition :: proc(source: string, allocator: runtime.Alloc
 	return supported
 }
 
+// parameterized_path_identity_definition validates the one bounded
+// filter-valued callable shape implemented by the real VM ABI:
+// `def id(x): x |= .; id(.field)`. It rejects dynamic, generator, and scalar
+// arguments so unsupported forms remain on the established module path.
+parameterized_path_identity_definition :: proc(source: string, allocator: runtime.Allocator) -> bool {
+	parser: syntax.Parser
+	borrowed := diagnostic.borrow_source("<call-routing>", source)
+	if !syntax.init_parser(&parser, borrowed, allocator) do return false
+	outcome := syntax.parse_filter(&parser)
+	supported := false
+	definitions := syntax.parser_definitions(&parser)
+	nodes := syntax.parser_nodes(&parser)
+	if outcome.kind == .Success && len(definitions) == 1 && definitions[0].has_parameter &&
+		definitions[0].body >= 0 && int(definitions[0].body) < len(nodes) &&
+		nodes[int(definitions[0].body)].kind == .Parameter_Identity_Update && outcome.root >= 0 && int(outcome.root) < len(nodes) {
+		root := nodes[int(outcome.root)]
+		call := root
+		if root.form == .Kinded && root.kind == .Try && root.left >= 0 && int(root.left) < len(nodes) {
+			call = nodes[int(root.left)]
+		}
+		if call.form == .Kinded && call.kind == .Call && call.has_call_argument && call.child == definitions[0].body &&
+			call.call_argument >= 0 && int(call.call_argument) < len(nodes) {
+			argument := nodes[int(call.call_argument)]
+			if argument.form == .Kinded && argument.kind == .Field && argument.has_name_span && !argument.has_value {
+				if !argument.has_child {
+					supported = true
+				} else if argument.child >= 0 && int(argument.child) < len(nodes) {
+					base := nodes[int(argument.child)]
+					supported = base.form == .Kinded && base.kind == .Identity && !base.has_child && !base.has_value
+				}
+			}
+		}
+	}
+	_ = syntax.destroy_parser(&parser)
+	return supported
+}
+
 // run_with_options parses one complete filter and a stream of JSON input
 // values, drains every evaluator output for each input in order, and produces
 // owned LF-delimited bytes in the requested formatting mode.
@@ -1208,11 +1245,12 @@ run_with_options :: proc(
 		// on the mature module bridge until their lexical binding semantics are
 		// separately contracted.
 		parameterized_simple := parameterized_definition && parameterized_simple_definition(trimmed_filter, allocator)
+		parameterized_path_identity := parameterized_definition && parameterized_path_identity_definition(trimmed_filter, allocator)
 		// Keep malformed forms of the already-accepted identity spelling on the
 		// parser path so jq emits a filter diagnostic instead of a module-loader
 		// error; this is a routing guard, not source expansion.
 		parameterized_identity_syntax := strings.has_prefix(trimmed_filter, "def id(x): x; id(")
-		if has_definition && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax) {
+		if has_definition && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax || parameterized_path_identity) {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)

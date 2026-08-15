@@ -1,0 +1,26 @@
+# A bounded filter-valued callable keeps the caller root while updating a
+# literal field path selected by its argument filter.
+def id(x): x |= .; id(.a)
+{"a":1,"b":2}
+{"a":1,"b":2}
+
+def id(x): x |= .; id(.a)
+{}
+{}
+
+def id(x): x |= .; id(.a)
+null
+{"a":null}
+
+def id(x): x |= .; id(.a)
+{"a":null}
+{"a":null}
+
+# Non-object roots retain jq's typed field-index diagnostics.
+def id(x): x |= .; try id(.a) catch .
+[]
+"Cannot index array with string \"a\""
+
+def id(x): x |= .; try id(.a) catch .
+1
+"Cannot index number with string \"a\""

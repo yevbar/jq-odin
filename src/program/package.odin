@@ -342,6 +342,8 @@ Opcode :: enum u8 {
 	Static_Iterator_Update,
 	// Dynamic_Index_Assign captures one root instruction-valued index key.
 	Dynamic_Index_Assign,
+	// Parameter_Identity_Update is the bounded callable `x |= .` body.
+	Parameter_Identity_Update,
 }
 
 Operand_Kind :: enum u8 {
@@ -610,6 +612,8 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 		return false
 	case .Dynamic_Index_Assign:
 		return false
+	case .Parameter_Identity_Update:
+		return false
 	case .Pow, .Identity, .If, .While, .Until, .Label, .Break, .Static_Iterator_Delete, .Static_Iterator_Update, .Static_Field_Add_Field, .Static_Field_Optional_Identity, .Static_Field_Delete, .Static_Field_Update, .Static_Field_Index_Update, .Static_Index_Field_Update, .Static_Field_Index_Field_Update, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Iterator_Set_Number, .Static_Index_Set_Number, .Static_Slice_Set_Number, .Dynamic_Field_Set, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 		     .In, .Inside, .Setpath, .Delpaths,
 	     .Array, .Object, .Variable, .Binding, .Reduce, .Foreach, .Call, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Debug, .Input, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Sort_By_Key, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Paths:
@@ -713,6 +717,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if count != 2 { return false }; expected_count = 2
 	case .Dynamic_Index_Assign:
 		if count != 3 { return false }; expected_count = 3
+	case .Parameter_Identity_Update:
+		if count != 0 { return false }; expected_count = 0
 	case .Static_Slice_Set_Number:
 		if count != 3 { return false }; expected_count = 3
 	case .Dynamic_Field_Set:
@@ -890,6 +896,8 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return 2
 	case .Dynamic_Index_Assign:
 		return 3
+	case .Parameter_Identity_Update:
+		return 0
 	case .Path, .Getpath, .Delpaths:
 		return 1
 	case .Setpath:

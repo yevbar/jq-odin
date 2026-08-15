@@ -303,6 +303,8 @@ Node_Kind :: enum {
 	Static_Iterator_Update,
 	// Dynamic_Index_Assign captures one root instruction-valued index key.
 	Dynamic_Index_Assign,
+	// Parameter_Identity_Update is the bounded `x |= .` callable body.
+	Parameter_Identity_Update,
 }
 
 Node_Id :: distinct int
@@ -3055,6 +3057,34 @@ parse_pipe :: proc(
 					if pipe_root == invalid_id do return update, true
 					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
 					return pipe_root, true
+				}
+				// A filter-valued callable parameter is parsed as Identity while its
+				// declaration is active. Preserve the update operator as a dedicated
+				// node instead of confusing it with a root identity assignment.
+				if parser.has_definition_parameter && left_node.form == .Kinded && left_node.kind == .Identity &&
+					!left_node.has_child && !left_node.has_value {
+					left_start, left_end, left_ok := diagnostic.span_offsets(parser.source, left_node.span)
+					param_start, param_end, param_ok := diagnostic.span_offsets(parser.source, parser.definition_parameter)
+					bytes := diagnostic.source_bytes(parser.source)
+					if left_ok && param_ok && left_end-left_start == param_end-param_start && bytes[left_start:left_end] == bytes[param_start:param_end] {
+						advance(parser)
+						right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+						if !right_ok do return {}, false
+						for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+							right = parser.nodes.storage[int(right)].child
+						}
+						rhs := parser.nodes.storage[int(right)]
+						if rhs.form != .Kinded || rhs.kind != .Identity || rhs.has_child || rhs.has_value {
+							fail_from_lookahead(parser, .Expression)
+							return {}, false
+						}
+						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+						update, update_ok := append_node(parser, Node{kind=.Parameter_Identity_Update, span=span})
+						if !update_ok do return {}, false
+						if pipe_root == invalid_id do return update, true
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+						return pipe_root, true
+					}
 				}
 			}
 			// Root `.[] |= empty` has jq's deletion semantics: every array
