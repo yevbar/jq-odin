@@ -1677,7 +1677,7 @@ parse_pipe :: proc(
 					kind = .Label
 				} else if spelling == "break" {
 					kind = .Break
-				} else if spelling != "null" {
+				} else if spelling != "null" && spelling != "JOIN" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
@@ -1912,7 +1912,7 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Nth, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term
-				} else if (spelling == "add" || spelling == "pow" || spelling == "join" || spelling == "contains" || spelling == "inside" || spelling == "in" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "add" || spelling == "pow" || spelling == "join" || spelling == "JOIN" || spelling == "contains" || spelling == "inside" || spelling == "in" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					if spelling == "pow" {
 						left, left_ok := parse_pipe(parser, .Semicolon, false)
@@ -2011,6 +2011,48 @@ parse_pipe :: proc(
 						new_term, ok := append_node(parser, Node{kind=.In, span=span, child=first, has_child=true})
 						if !ok { return {}, false }
 						term = new_term
+						term_ready = true
+						continue
+					}
+					if spelling == "JOIN" {
+						// Bounded JOIN($idx; idx_expr): lower the jq
+						// definition `[.[] | [., $idx[idx_expr]]]` into
+						// existing Map/Index/array instructions.  The
+						// object index and key filter are intentionally limited
+						// to this two-argument form; JOIN/3 and JOIN/4 need
+						// resumable stream contracts of their own.
+						idx, idx_ok := parse_pipe(parser, .Semicolon, false)
+						if !idx_ok || !token_is(parser, .Semicolon) {
+							fail_from_lookahead(parser, .Expression)
+							return {}, false
+						}
+						advance(parser)
+						idx_expr, expr_ok := parse_pipe(parser, .Close_Paren, false)
+						if !expr_ok || !token_is(parser, .Close_Paren) {
+							fail_from_lookahead(parser, .Close_Paren)
+							return {}, false
+						}
+						close := parser.lookahead.token
+						advance(parser)
+						idx_node := parser.nodes.storage[int(idx)]
+						if idx_node.kind != .Identity || idx_node.container_kind != .Object || !idx_node.has_value || idx_node.has_child {
+							fail_from_lookahead(parser, .Expression)
+							return {}, false
+						}
+						identity := Node{kind=.Identity, span=idx_node.span}
+						row, row_ok := append_node(parser, identity)
+						if !row_ok do return {}, false
+						lookup, lookup_ok := append_node(parser, Node{kind=.Index, span=idx_node.span, child=idx, has_child=true, index_key=idx_expr, has_index_key=true})
+						if !lookup_ok do return {}, false
+						pair_value, pair_value_ok := append_node(parser, Node{kind=.Comma, span=idx_node.span, left=row, right=lookup})
+						if !pair_value_ok do return {}, false
+						pair, pair_ok := append_node(parser, Node{kind=.Identity, span=idx_node.span, container_kind=.Array, value=pair_value, has_value=true})
+						if !pair_ok do return {}, false
+						mapped_span, mapped_span_ok := spanning(parser, idx_node.span, close.span)
+						assert(mapped_span_ok)
+						mapped, mapped_ok := append_node(parser, Node{kind=.Map, span=mapped_span, child=pair, has_child=true})
+						if !mapped_ok do return {}, false
+						term = mapped
 						term_ready = true
 						continue
 					}
