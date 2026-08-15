@@ -206,7 +206,10 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 			node.has_name_span && no_container_links && !node.has_value &&
 			!node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Call:
-		return node.container_kind == .None && node.has_child && node.child >= 0 && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+		return node.container_kind == .None && node.has_child && node.child >= 0 &&
+		       (!node.has_call_argument || node.call_argument >= 0) && no_edges && no_name &&
+		       no_container_links && !node.has_value && !node.boolean_value && no_number &&
+		       !node.has_string_text && string_header_absent(node.string_text)
 	case .Path, .Getpath, .Delpaths:
 		return node.container_kind == .None && node.has_child && node.child >= 0 && no_edges && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Setpath:
@@ -830,7 +833,8 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Call:
-			if !node_reference_valid(node.child, len(nodes)) || !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind=.Invalid_AST} }
+			if !node_reference_valid(node.child, len(nodes)) || (node.has_call_argument && !node_reference_valid(node.call_argument, len(nodes))) ||
+			   !checked_count_add(&operand_count, 1 + u64(node.has_call_argument)) { return Lower_Outcome{kind=.Invalid_AST} }
 		case .Path, .Getpath, .Delpaths:
 			if !checked_count_add(&operand_count, 1) { return Lower_Outcome{kind = .Size_Overflow} }
 		case .Setpath:
@@ -1183,9 +1187,13 @@ lower_filter :: proc(
 			instruction.operands_count = program.Count(1 + u32(node.has_child))
 		case .Call:
 			instruction.opcode = .Call
-			instruction.operands_count = 1
+			instruction.operands_count = program.Count(1 + u32(node.has_call_argument))
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.child)}))
 			operand_at += 1
+			if node.has_call_argument {
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.call_argument)}))
+				operand_at += 1
+			}
 		case .Index:
 			instruction.opcode = .Index
 			instruction.operands_count = 2

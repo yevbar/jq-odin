@@ -4110,6 +4110,43 @@ foreach_parses_with_reduce_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+parameterized_identity_definition_records_argument_root :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<parameterized-id>", `def id(x): x; id(1)`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	definitions := parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 1)
+	testing.expect(t, definitions[0].has_parameter)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Call)
+	testing.expect(t, root.has_child && root.has_call_argument)
+	testing.expect_value(t, parser.nodes.storage[int(root.call_argument)].kind, Node_Kind.Number)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+parameterized_definition_rejects_extra_positional_argument :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<parameterized-arity>", `def id(x): x; id(1,2)`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
+zero_argument_definition_rejects_parenthesized_call :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<zero-arity>", `def zero: 1; zero(2)`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 top_level_definition_table_preserves_order_and_resolves_calls :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<multiple-defs>", `def one: 1; def two: one; two`)

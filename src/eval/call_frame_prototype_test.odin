@@ -65,3 +65,21 @@ call_frame_prototype_rejects_stack_overflow_and_underflow :: proc(t: ^testing.T)
 	_, underflow_ok := call_frame_return_prototype(&stack)
 	testing.expect(t, !underflow_ok)
 }
+
+call_frame_prototype_preserves_parameter_argument_edge :: proc(t: ^testing.T) {
+	stack: Call_Frame_Stack_Prototype
+	frame := Call_Frame_Prototype{
+		return_instruction = program.Instruction_Index(9),
+		entry_instruction = program.Instruction_Index(21),
+		definition_id = 3,
+		argument_instruction = program.Instruction_Index(34),
+		has_argument = true,
+	}
+	testing.expect(t, call_frame_push_prototype(&stack, frame))
+	selected, ok := call_frame_peek_prototype(&stack)
+	testing.expect(t, ok && selected.has_argument)
+	testing.expect_value(t, selected.argument_instruction, frame.argument_instruction)
+	returned, returned_ok := call_frame_return_prototype(&stack)
+	testing.expect(t, returned_ok)
+	testing.expect_value(t, returned.argument_instruction, frame.argument_instruction)
+}

@@ -249,6 +249,20 @@ multiple_top_level_definitions_lower_to_direct_call_edges :: proc(t: ^testing.T)
 }
 
 @(test)
+parameterized_identity_call_lowers_argument_edge :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, parsed, lowered := parse_and_lower(t, `def id(x): x; id(1)`, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	root := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+	testing.expect_value(t, root.opcode, program.Opcode.Call)
+	testing.expect_value(t, root.operands_count, program.Count(2))
+	testing.expect_value(t, instruction_child(&compiled, root, 0).opcode, program.Opcode.Identity)
+	testing.expect_value(t, instruction_child(&compiled, root, 1).opcode, program.Opcode.Identity)
+	expect_cleanup(t, &parser, &compiled)
+}
+
+@(test)
 mktime_lowers_to_append_only_builtin_opcode :: proc(t: ^testing.T) {
 	parser: syntax.Parser
 	compiled: program.Program

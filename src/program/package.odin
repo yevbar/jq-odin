@@ -11,6 +11,18 @@ Byte_Offset :: distinct u32
 Count :: distinct u32
 Source_Offset :: distinct u32
 Storage_Count :: distinct u32
+Definition_Ordinal :: distinct u32
+Callable_Arity :: distinct u16
+
+// Callable_Entry is the immutable metadata selected by a parameterized Call.
+// The compiler/evaluator bridge owns the actual definition table; this value
+// deliberately contains only fixed-width identity and entry information so it
+// can be copied into an evaluator call frame without borrowing syntax storage.
+Callable_Entry :: struct {
+	ordinal: Definition_Ordinal,
+	arity: Callable_Arity,
+	body: Instruction_Index,
+}
 
 Source_Span :: struct {
 	start: Source_Offset,
@@ -694,7 +706,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Dynamic_Field_Set:
 		if count != 2 { return false }; expected_count = 2
 	case .Call:
-		if count != 1 { return false }; expected_count = 1
+		if count != 1 && count != 2 { return false }; expected_count = count
 	case .Path, .Getpath, .Delpaths:
 		if count != 1 { return false }; expected_count = 1
 	case .Setpath:

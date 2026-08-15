@@ -16,6 +16,11 @@ Call_Frame_Prototype :: struct {
 	// Definition snapshot selected at call activation.  A later redefinition
 	// must not mutate this frame's selected body.
 	definition_id:      u32,
+	// The argument root is retained as an immutable program edge until the
+	// callee frame takes ownership of its evaluated value. has_argument keeps
+	// zero-argument calls ABI-compatible with the existing prototype.
+	argument_instruction: program.Instruction_Index,
+	has_argument:         bool,
 }
 
 Call_Frame_Stack_Prototype :: struct {

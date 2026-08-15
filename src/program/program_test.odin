@@ -673,3 +673,15 @@ program_allocation_has_no_bad_memory :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(tracker.allocation_map), 0)
 	testing.expect_value(t, len(tracker.bad_free_array), 0)
 }
+
+@(test)
+callable_entry_snapshots_ordinal_arity_and_body :: proc(t: ^testing.T) {
+	entry := Callable_Entry{
+		ordinal = Definition_Ordinal(7),
+		arity = Callable_Arity(1),
+		body = Instruction_Index(9),
+	}
+	testing.expect_value(t, entry.ordinal, Definition_Ordinal(7))
+	testing.expect_value(t, entry.arity, Callable_Arity(1))
+	testing.expect_value(t, entry.body, Instruction_Index(9))
+}

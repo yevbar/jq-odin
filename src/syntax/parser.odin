@@ -311,6 +311,8 @@ Definition :: struct {
 	body:      Node_Id,
 	ordinal:   u32,
 	scope_depth: u32,
+	parameter_span: diagnostic.Span,
+	has_parameter: bool,
 }
 
 Node_Form :: enum u8 {
@@ -412,6 +414,8 @@ Node :: struct {
 	iterator_compound: bool,
 	call_name_span: diagnostic.Span,
 	has_call_name: bool,
+	call_argument: Node_Id,
+	has_call_argument: bool,
 	// Parameterized any/all retain generator and predicate filters as separate
 	// source children. The flag distinguishes this two-child form from the
 	// existing operand-free builtins and any(not)/all(not) markers.
@@ -544,6 +548,8 @@ Parser :: struct {
 	has_definition: bool,
 	definition_body: Node_Id,
 	definition_scope_depth: u32,
+	definition_parameter: diagnostic.Span,
+	has_definition_parameter: bool,
 	failed:              bool,
 	failure:             Parse_Outcome,
 }
@@ -749,6 +755,19 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 		}
 		name := parser.lookahead.token
 		advance(parser)
+		parameter := diagnostic.Span{}
+		has_parameter := false
+		if token_is(parser, .Open_Paren) {
+			advance(parser)
+			if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Identifier {
+				fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure
+			}
+			parameter = parser.lookahead.token.span
+			has_parameter = true
+			advance(parser)
+			if !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); parser.state = .Finished; return parser.failure }
+			advance(parser)
+		}
 		if !token_is(parser, .Colon) { fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure }
 		advance(parser)
 		// Make the definition name visible while parsing its body.  A recursive
@@ -759,6 +778,8 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 		parser.definition_name = name.span
 		parser.has_definition = true
 		parser.definition_body = Node_Id(-1)
+		parser.definition_parameter = parameter
+		parser.has_definition_parameter = has_parameter
 		body, body_ok := parse_pipe(parser, .Semicolon, false)
 		if !body_ok || !token_is(parser, .Semicolon) { fail_from_lookahead(parser, .Expression); parser.state = .Finished; return parser.failure }
 		parser.definition_body = body
@@ -773,6 +794,8 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 			body = body,
 			ordinal = u32(parser.definitions.count),
 			scope_depth = parser.definition_scope_depth,
+			parameter_span = parameter,
+			has_parameter = has_parameter,
 		})
 		if definition_error != nil {
 			fail_resource(parser, definition_error)
@@ -1028,20 +1051,20 @@ definition_name_matches :: proc(parser: ^Parser, span: diagnostic.Span, spelling
 // current source position. A declaration being parsed is represented by an
 // unresolved body edge so recursive calls can be patched after its body root
 // is known; forward references therefore remain ordinary unknown identifiers.
-visible_definition :: proc(parser: ^Parser, spelling: string) -> (Node_Id, bool) {
+visible_definition :: proc(parser: ^Parser, spelling: string) -> (Node_Id, bool, bool) {
 	if parser.has_definition && parser.definition_body < 0 &&
 	   definition_name_matches(parser, parser.definition_name, spelling) {
-		return Node_Id(-1), true
+		return Node_Id(-1), true, parser.has_definition_parameter
 	}
 	for count := parser.definitions.count; count > 0; {
 		count -= 1
 		definition := parser.definitions.storage[count]
 		if definition.scope_depth > parser.definition_scope_depth do continue
 		if definition_name_matches(parser, definition.name_span, spelling) {
-			return definition.body, true
+			return definition.body, true, definition.has_parameter
 		}
 	}
-	return {}, false
+	return {}, false, false
 }
 
 // parse_nested_definition handles jq's query-local zero-argument definitions.
@@ -1067,6 +1090,17 @@ parse_nested_definition :: proc(
 	}
 	name := parser.lookahead.token
 	advance(parser)
+	parameter := diagnostic.Span{}
+	has_parameter := false
+	if token_is(parser, .Open_Paren) {
+		advance(parser)
+		if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Identifier { fail_from_lookahead(parser, .Expression); return {}, false }
+		parameter = parser.lookahead.token.span
+		has_parameter = true
+		advance(parser)
+		if !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+		advance(parser)
+	}
 	if !token_is(parser, .Colon) {
 		fail_from_lookahead(parser, .Expression)
 		return {}, false
@@ -1077,10 +1111,14 @@ parse_nested_definition :: proc(
 	previous_has := parser.has_definition
 	previous_body := parser.definition_body
 	previous_depth := parser.definition_scope_depth
+	previous_parameter := parser.definition_parameter
+	previous_has_parameter := parser.has_definition_parameter
 	parser.definition_scope_depth = previous_depth + 1
 	parser.definition_name = name.span
 	parser.has_definition = true
 	parser.definition_body = Node_Id(-1)
+	parser.definition_parameter = parameter
+	parser.has_definition_parameter = has_parameter
 	start_node := parser.nodes.count
 	body, body_ok := parse_pipe(parser, .Semicolon, false)
 	if !body_ok || !token_is(parser, .Semicolon) {
@@ -1088,6 +1126,8 @@ parse_nested_definition :: proc(
 		parser.has_definition = previous_has
 		parser.definition_body = previous_body
 		parser.definition_scope_depth = previous_depth
+		parser.definition_parameter = previous_parameter
+		parser.has_definition_parameter = previous_has_parameter
 		if !body_ok { return {}, false }
 		fail_from_lookahead(parser, .Expression)
 		return {}, false
@@ -1104,6 +1144,8 @@ parse_nested_definition :: proc(
 		body = body,
 		ordinal = u32(parser.definitions.count),
 		scope_depth = parser.definition_scope_depth,
+		parameter_span = parameter,
+		has_parameter = has_parameter,
 	})
 	if definition_error != nil {
 		fail_resource(parser, definition_error)
@@ -1127,6 +1169,8 @@ parse_nested_definition :: proc(
 	parser.has_definition = previous_has
 	parser.definition_body = previous_body
 	parser.definition_scope_depth = previous_depth
+	parser.definition_parameter = previous_parameter
+	parser.has_definition_parameter = previous_has_parameter
 	return continuation, continuation_ok
 }
 
@@ -1485,14 +1529,45 @@ parse_pipe :: proc(
 				// normalize its spelling before the regular call dispatch.
 				uppercase_in := spelling == "IN"
 				if uppercase_in do spelling = "in"
-				call_body, is_definition_call := visible_definition(parser, spelling)
-				if is_definition_call && !token_is(parser, .Open_Paren) {
+				if parser.has_definition_parameter && definition_name_matches(parser, parser.definition_parameter, spelling) && !token_is(parser, .Open_Paren) {
 					advance(parser)
-					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true})
+					new_term, parameter_ok := append_node(parser, Node{kind=.Identity, span=token.span})
+					if !parameter_ok { return {}, false }
+					term = new_term
+					term_ready = true
+					continue
+				}
+				call_body, is_definition_call, call_has_parameter := visible_definition(parser, spelling)
+				if is_definition_call {
+					advance(parser)
+					if token_is(parser, .Open_Paren) {
+						if !call_has_parameter {
+							fail_at_current(parser, .Unexpected_Token, .Expression)
+							return {}, false
+						}
+					advance(parser)
+					// Parameterized definitions currently expose exactly one filter
+					// argument. Stop at a comma so an extra positional argument is
+					// rejected here instead of being silently folded into a Comma
+					// filter node and lowered as one value.
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
+					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+					advance(parser)
+					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true, call_argument=argument, has_call_argument=true})
 					if !call_ok { return {}, false }
 					term = new_term
 					term_ready = true
 					continue
+					}
+					if !call_has_parameter {
+						new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true})
+						if !call_ok { return {}, false }
+						term = new_term
+						term_ready = true
+						continue
+					}
+					fail_at_current(parser, .Unexpected_Token, .Expression)
+					return {}, false
 				}
 				if spelling == "sort_by" || spelling == "group_by" {
 					advance(parser)
