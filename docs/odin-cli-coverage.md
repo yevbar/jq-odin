@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `a4a4f04d`, the authoritative selected catalog measurement
+At integration head `f70b6e88`, the authoritative selected catalog measurement
 is **464/522 passed, 58 failed, 0 harness errors**
-(`/tmp/coverage-e713.json`). Persistent `input` stream behavior is covered by
+(`/tmp/coverage-66699.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -33,6 +33,12 @@ iterator-update contract; the focused shard is
 the upstream iterator defined-or case at jq.test:1357. Direct diagnostics for
 some pre-existing dynamic child errors remain tracked separately from this
 slice; caught payloads and update cardinality match jq.
+Root static-field filter updates (`.name |= FILTER`) now use a child-bearing
+resumable opcode; the focused 10-case shard is
+`compat/static-field-filter-update.jq.test` and the contract is recorded in
+`docs/decisions/0337-static-field-filter-update.md`. Nested index/path updates
+remain deferred under
+`docs/decisions/0338-nested-static-index-filter-update-boundary.md`.
 Static field compound addition is covered by
 `compat/field-compound-add.jq.test`, and comma composition of root iterator
 compound updates is covered by `compat/iterator-compound-sequence.jq.test`.
