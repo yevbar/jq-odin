@@ -1,0 +1,15 @@
+# Object-pattern alternation dispatch remains on the existing specialized
+# lowering path (jq.test:952/959/980/987 family).
+.[] | . as {a:$a} ?// {a:$a} ?// $a | $a
+[[3],[4],[5],6]
+[3]
+[4]
+[5]
+6
+
+.[] | . as {a:$a} ?// $a ?// {a:$a} | $a
+[[3],[4],[5],6]
+[3]
+[4]
+[5]
+6

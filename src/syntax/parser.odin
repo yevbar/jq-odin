@@ -3695,9 +3695,6 @@ parse_pipe :: proc(
 					fail_from_lookahead(parser, .Expression)
 					return {}, false
 				}
-				if token_is(parser, .Alternation) {
-					return parse_alternation_binding(parser, left, pattern, closing, stop_at_comma)
-				}
 				ordinary, ordinary_ok := try_parse_ordinary_pattern_binding(parser, left, pattern, pipe_root, pipe_tail, closing, stop_at_comma)
 				if ordinary_ok do return ordinary, true
 				entry_id := pattern_node.value
