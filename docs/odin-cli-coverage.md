@@ -81,7 +81,8 @@ under `docs/decisions/0358-binding-aware-path-assignment-boundary.md`. The
 structural phase now preserves `(.a as $x | .b) = "b"` as an append-only
 `Binding_Path_Assign` opcode and reaches an explicit unsupported boundary;
 caller-root capture, binding scope, path cardinality, and copy-on-write
-continuation are not yet unified (`docs/decisions/0393-binding-path-assign-structural-phase.md`).
+continuation are not yet unified (`docs/decisions/0393-binding-path-assign-structural-phase.md`;
+the focused runtime shortcut was rejected under `docs/decisions/0394-binding-path-assign-runtime-boundary.md`).
 Static deletion from a `null` base now preserves jq's no-op semantics for
 `.foo`, `.[0]`, and `.foo[0]`; the focused shard is
 `compat/static-del-null.jq.test` and the contract is recorded in
