@@ -682,8 +682,15 @@ validate_label_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source: 
 		return validate_label_scopes(nodes, node.child, source, labels, depth+1, next)
 	}
 	if node.kind == .Call {
-		// Definition call bodies may be recursive cycles; label resolution is
-		// structural at the call site and does not descend through the body edge.
+		// Definition bodies are validated separately from every Call edge below;
+		// skipping the body here avoids recursive cycles and keeps caller labels
+		// out of the callee's lexical scope. A call argument remains in the
+		// caller's scope and must still be checked here.
+		if node.has_call_argument {
+			if !node_reference_valid(node.call_argument, len(nodes)) do return false, {}, {}
+			ok, span, name := validate_label_scopes(nodes, node.call_argument, source, labels, depth, next)
+			if !ok do return false, span, name
+		}
 		return true, {}, {}
 	}
 	if node.form == .Binary {
@@ -1142,6 +1149,18 @@ lower_filter :: proc(
 	labels_ok, label_span, label_name_span := validate_label_scopes(nodes, root, source, label_stack[:], 0, len(nodes)+1)
 	if !labels_ok {
 		return Lower_Outcome{kind = .Unresolved_Label, error_span = label_span, error_name_span = label_name_span}
+	}
+	// Calls point at definition bodies, including bodies that are recursive or
+	// only reachable indirectly. Validate each body as a fresh lexical scope;
+	// validate_label_scopes deliberately skips nested Call body edges, so this
+	// pass terminates without expanding recursive definitions.
+	for node in nodes {
+		if node.kind != .Call || !node.has_child || !node_reference_valid(node.child, len(nodes)) do continue
+		call_label_stack: [1024]diagnostic.Span
+		call_ok, call_span, call_name_span := validate_label_scopes(nodes, node.child, source, call_label_stack[:], 0, len(nodes)+1)
+		if !call_ok {
+			return Lower_Outcome{kind = .Unresolved_Label, error_span = call_span, error_name_span = call_name_span}
+		}
 	}
 	if has_unlowered_node {
 		return Lower_Outcome{kind = .Invalid_AST}

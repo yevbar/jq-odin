@@ -3,6 +3,7 @@ package driver
 import "base:runtime"
 import "core:testing"
 import "core:strings"
+import compiler "jq:compiler"
 import eval "jq:eval"
 import json "jq:json"
 import program "jq:program"
@@ -437,6 +438,29 @@ recursive_zero_argument_calls_are_bounded_and_catchable :: proc(t: ^testing.T) {
 		"1",
 		"\"recursion depth exceeded\"\n",
 	)
+}
+
+@(test)
+unresolved_break_label_in_called_definition_is_compile_error :: proc(t: ^testing.T) {
+	result: Run_Result
+	err := run(&result, "def f: break $x; f", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Compile)
+	testing.expect_value(t, err.compile_kind, compiler.Lower_Error_Kind.Unresolved_Label)
+	// The compile span covers `break $x`; the name span covers `$x` for the
+	// CLI's jq-compatible `$*label-x` diagnostic.
+	testing.expect_value(t, err.compile_error_span.start, 7)
+	testing.expect_value(t, err.compile_error_span.end, 15)
+	testing.expect_value(t, err.compile_error_name_span.start, 14)
+	testing.expect_value(t, err.compile_error_name_span.end, 15)
+	destroy_result_test(t, &result)
+}
+
+@(test)
+recursive_definition_with_local_break_label_remains_valid :: proc(t: ^testing.T) {
+	// The callee's label scope is lexical and survives its recursive call edge;
+	// validating definition bodies separately must not mistake that cycle for
+	// an unresolved label or recurse indefinitely.
+	expect_run(t, "def f: label $x | break $x; f", "null", "")
 }
 
 @(test)
