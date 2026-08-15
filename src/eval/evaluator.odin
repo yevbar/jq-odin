@@ -3152,6 +3152,58 @@ set_path_value :: proc(input, path: ^value.Value, offset: int, replacement: ^val
 	_ = value.destroy_value(&component); return {}, false
 }
 
+// set_path_runtime_error classifies the typed failure that set_path_value
+// reports as a boolean.  Literal getpath-assignment lowering uses this before
+// falling back to malformed-program handling so try/catch receives jq's
+// user-facing index diagnostic.
+set_path_runtime_error :: proc(input, path: ^value.Value, offset: int, span: program.Source_Span, allocator: runtime.Allocator) -> (Runtime_Error, bool) {
+	current := value.clone_value(input)
+	if value.kind_of(&current) == .Invalid do return {}, false
+	length, length_ok := value.array_length(path)
+	if !length_ok { _ = value.destroy_value(&current); return {}, false }
+	cursor := offset
+	for cursor < length {
+		component, component_ok := value.array_element_copy(path, cursor)
+		if !component_ok { _ = value.destroy_value(&current); return {}, false }
+		current_kind := value.kind_of(&current)
+		if value.kind_of(&component) == .String {
+			key, key_ok := value.string_borrowed(&component)
+			if !key_ok { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, false }
+			if current_kind != .Object && current_kind != .Null {
+				message := strings.concatenate([]string{"Cannot index ", runtime_value_kind_name(current_kind), " with string \"", key, "\""}, allocator)
+				_ = value.destroy_value(&component); _ = value.destroy_value(&current)
+				return Runtime_Error{kind=.User_Error, input_kind=current_kind, span=span, key=message}, true
+			}
+			if current_kind == .Null { _ = value.destroy_value(&component); current = value.null_value(); cursor += 1; continue }
+			child, found := value.object_get_copy(&current, key)
+			_ = value.destroy_value(&component); _ = value.destroy_value(&current)
+			current = child if found else value.null_value()
+		} else if value.kind_of(&component) == .Number {
+			if current_kind != .Array && current_kind != .Null {
+				message := strings.concatenate([]string{"Cannot index ", runtime_value_kind_name(current_kind), " with number"}, allocator)
+				_ = value.destroy_value(&component); _ = value.destroy_value(&current)
+				return Runtime_Error{kind=.User_Error, input_kind=current_kind, span=span, key=message}, true
+			}
+			if current_kind == .Null { _ = value.destroy_value(&component); current = value.null_value(); cursor += 1; continue }
+			n, number_ok := value.number_value_get(&component)
+			if !number_ok || math.floor(n) != n { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, false }
+			idx := int(n); count, count_ok := value.array_length(&current)
+			if !count_ok { _ = value.destroy_value(&component); _ = value.destroy_value(&current); return {}, false }
+			if idx < 0 do idx += count
+			child: value.Value
+			if idx < 0 || idx >= count { child = value.null_value() } else { child, _ = value.array_element_copy(&current, idx) }
+			_ = value.destroy_value(&component); _ = value.destroy_value(&current); current = child
+		} else {
+			message := strings.concatenate([]string{"Cannot index ", runtime_value_kind_name(current_kind), " with ", runtime_value_kind_name(value.kind_of(&component))}, allocator)
+			_ = value.destroy_value(&component); _ = value.destroy_value(&current)
+			return Runtime_Error{kind=.User_Error, input_kind=current_kind, span=span, key=message}, true
+		}
+		cursor += 1
+	}
+	_ = value.destroy_value(&current)
+	return {}, false
+}
+
 // delete_path_value removes one literal path using jq's copy-on-write value
 // semantics. Missing object keys and out-of-range array indexes are no-ops.
 @(private)
@@ -8018,6 +8070,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				}
 				updated, updated_ok := set_path_value(&frame.input, &path, 0, &replacement, storage.allocator)
 				if !updated_ok {
+					runtime_error, runtime_error_ok := set_path_runtime_error(&frame.input, &path, 0, instruction.span, storage.allocator)
+					if runtime_error_ok {
+						_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
+						result, ready := raise_runtime(storage, index, runtime_error)
+						if len(runtime_error.key) > 0 {
+							free_error := runtime.mem_free_bytes(transmute([]byte)runtime_error.key, storage.allocator)
+							if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+						}
+						if ready do return result
+						continue
+					}
 					// A negative index below a missing/null field is still a jq
 					// runtime bounds error (the field is materialized as an empty
 					// array before applying the index), not an invalid program.

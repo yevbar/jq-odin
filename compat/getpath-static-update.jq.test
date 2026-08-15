@@ -1,0 +1,16 @@
+# Literal getpath paths can be used as assignment l-values.  This is the
+# bounded scalar-RHS bridge for jq.test:1241.
+ .[] | try (getpath(["a",0,"b"]) |= 5) catch .
+[null,{"b":0},{"a":0},{"a":null},{"a":[0,1]},{"a":{"b":1}},{"a":[{}]},{"a":[{"c":3}]}]
+{"a":[{"b":5}]}
+{"b":0,"a":[{"b":5}]}
+"Cannot index number with number"
+{"a":[{"b":5}]}
+"Cannot index number with string \"b\""
+"Cannot index object with number"
+{"a":[{"b":5}]}
+{"a":[{"c":3,"b":5}]}
+
+getpath(["a",0,"b"]) |= 5
+{"a":[{"b":1}]}
+{"a":[{"b":5}]}

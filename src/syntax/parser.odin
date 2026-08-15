@@ -2428,6 +2428,44 @@ parse_pipe :: proc(
 			optional_left := current if pipe_root != invalid_id else result
 			if optional_left >= 0 {
 				left_node := parser.nodes.storage[int(optional_left)]
+				// A bounded bridge for jq's literal-path `getpath(...) |= scalar`
+				// form.  The existing Setpath evaluator already owns copy-on-write
+				// path updates; lower only literal string/number path arrays so
+				// dynamic path filters do not get mistaken for this contract.
+				if left_node.form == .Kinded && left_node.kind == .Getpath && left_node.has_child {
+					path_node := parser.nodes.storage[int(left_node.child)]
+					static_path_item :: proc(parser: ^Parser, node_id: Node_Id) -> bool {
+						if node_id < 0 || int(node_id) >= len(parser.nodes.storage) do return false
+						n := parser.nodes.storage[int(node_id)]
+						if n.kind == .Parenthesized && n.has_child do return static_path_item(parser, n.child)
+						if n.kind == .Comma && n.left >= 0 && n.right >= 0 {
+							return static_path_item(parser, n.left) && static_path_item(parser, n.right)
+						}
+						return n.form == .Kinded && (n.kind == .Number || n.kind == .String) &&
+							!n.has_child && !n.has_value
+					}
+					path_is_static := path_node.form == .Kinded && path_node.kind == .Identity &&
+						path_node.container_kind == .Array && path_node.has_value &&
+						(path_node.value < 0 || static_path_item(parser, path_node.value))
+					if path_is_static {
+						advance(parser)
+						right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+						if !right_ok do return {}, false
+						for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+							right = parser.nodes.storage[int(right)].child
+						}
+						rhs := parser.nodes.storage[int(right)]
+						if rhs.form != .Kinded || (rhs.kind != .Number && rhs.kind != .Boolean && rhs.kind != .Null && rhs.kind != .String) || rhs.has_child || rhs.has_value {
+							fail_from_lookahead(parser, .Expression); return {}, false
+						}
+						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+						setpath, setpath_ok := append_node(parser, Node{kind=.Setpath, span=span, left=left_node.child, right=right})
+						if !setpath_ok do return {}, false
+						if int(pipe_root) < 0 do return setpath, true
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = setpath; tail.has_child = false
+						return pipe_root, true
+					}
+				}
 				if left_node.form == .Kinded && left_node.kind == .Index && left_node.has_child && left_node.has_number_text {
 					base := parser.nodes.storage[int(left_node.child)]
 					if base.form == .Kinded && base.kind == .Field && !base.has_child && base.has_name_span {
