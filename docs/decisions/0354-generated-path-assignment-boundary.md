@@ -2,7 +2,8 @@
 
 ## Status
 
-Deferred pending a first-class generated-path assignment continuation.
+Superseded for the bounded `=` slice by Decision 0356. The broader generated
+path/update contract remains deferred.
 
 ## Evidence
 

@@ -268,6 +268,8 @@ Node_Kind :: enum {
 	Paths,
 	Getpath,
 	Setpath,
+	// Path_Assign updates every path emitted by a bounded path filter with a literal RHS.
+	Path_Assign,
 	Delpaths,
 	// Dynamic_Field_Set is the bounded filter-valued form `.name = FILTER`.
 	// The first implementation accepts identity, fields, and scalar literals as
@@ -3192,6 +3194,25 @@ parse_pipe :: proc(
 			}
 			left := current if pipe_root != invalid_id else result
 			left_node := parser.nodes.storage[int(left)]
+			// Bounded generated-path assignment: retain a path filter (including a
+			// zero-argument definition call) and its RHS stream. The evaluator owns
+			// stream collection and copy-on-write application.
+			if left_node.form == .Kinded && (left_node.kind == .Index || left_node.kind == .Comma || left_node.kind == .Call) {
+				advance(parser)
+				right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+				if !right_ok do return {}, false
+				for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child { right = parser.nodes.storage[int(right)].child }
+				path_span, path_span_ok := spanning(parser, left_node.span, left_node.span); assert(path_span_ok)
+				path_node, path_node_ok := append_node(parser, Node{kind=.Path, span=path_span, child=left, has_child=true})
+				if !path_node_ok do return {}, false
+				right_span := parser.nodes.storage[int(right)].span
+				span, span_ok := spanning(parser, left_node.span, right_span); assert(span_ok)
+				assign, assign_ok := append_node(parser, Node{kind=.Path_Assign, span=span, left=path_node, right=right})
+				if !assign_ok do return {}, false
+				if int(pipe_root) < 0 do return assign, true
+				tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = assign; tail.has_child = false
+				return pipe_root, true
+			}
 			// `.[] = scalar` is the first genuine iterator-path assignment
 			// contract.  Keep it separate from field/setpath lowering: the empty
 			// field name denotes an array/object value iterator, not an object key.

@@ -201,6 +201,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Static_Field_Index_Field_Update:
 		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 && node.has_name_span && node.has_base_name_span && node.has_number_text &&
 		       no_container_links && !node.has_value && !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text)
+	case .Path_Assign:
+		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Field_Set:
 		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right >= 0 &&
 			node.has_name_span && no_container_links && !node.has_value &&
@@ -503,6 +505,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Static_Field_Index_Field_Update:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Path_Assign:
+		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Dynamic_Field_Set:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Call:
@@ -823,6 +827,10 @@ lower_filter :: proc(
 			base_start, base_end, base_ok := diagnostic.span_offsets(source, node.base_name_span)
 			if !name_ok || !base_ok || name_end < name_start || base_end < base_start || !node_reference_valid(node.right, len(nodes)) ||
 				!checked_count_add(&operand_count, 4) || !checked_count_add(&text_count, u64(name_end-name_start)+u64(base_end-base_start)+u64(len(node.number_text))) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
+		case .Path_Assign:
+			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Dynamic_Field_Set:
@@ -1456,6 +1464,13 @@ lower_filter :: proc(
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)}))
 			operand_at += 1
 			instruction.operands_count = 4
+		case .Path_Assign:
+			instruction.opcode = .Path_Assign
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.left)}))
+			operand_at += 1
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)}))
+			operand_at += 1
+			instruction.operands_count = 2
 		case .Dynamic_Field_Set:
 			instruction.opcode = .Dynamic_Field_Set
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

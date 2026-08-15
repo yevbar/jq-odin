@@ -1,0 +1,28 @@
+# Bounded generated-path assignment evaluates RHS once and applies each path.
+.[1,2] = 10
+[0,1,2]
+[0,10,10]
+
+def x: .[1,2]; x=10
+[0,1,2]
+[0,10,10]
+
+.[1,2] = (1,2)
+[0,0,0]
+[0,1,1]
+[0,2,2]
+
+.[1,2] = empty
+[0,0,0]
+
+try (1 | .[1,2] = 10) catch .
+1
+"Cannot index number with number"
+
+try ({} | .[1,2] = 10) catch .
+{}
+"Cannot index object with number"
+
+.[1,2] = 10
+null
+[null,10,10]
