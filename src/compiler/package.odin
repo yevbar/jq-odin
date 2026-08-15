@@ -12,6 +12,7 @@ Lower_Error_Kind :: enum u8 {
 	Size_Overflow,
 	Resource_Failure,
 	Unresolved_Label,
+	Unresolved_Variable,
 }
 
 Lower_Outcome :: struct {
@@ -579,6 +580,10 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Variable:
 		for index := depth-1; index >= 0; index -= 1 {
 			if binding_name_equal(source, node.name_span, scopes[index]) do return true
+		}
+		if len(scopes) >= 2 {
+			scopes[0] = node.span
+			scopes[1] = node.name_span
 		}
 		return false
 	case .Binding:
@@ -1162,7 +1167,10 @@ lower_filter :: proc(
 			return Lower_Outcome{kind = .Invalid_AST}
 		}
 	}
-	if !validate_binding_scopes(nodes, root, source, scope_stack[:], 0, len(nodes)+1) {
+	if !validate_binding_scopes(nodes, root, source, scope_stack[:1022], 2, len(nodes)+1) {
+		if scope_stack[1].end > scope_stack[1].start {
+			return Lower_Outcome{kind = .Unresolved_Variable, error_span = scope_stack[0], error_name_span = scope_stack[1]}
+		}
 		return Lower_Outcome{kind = .Invalid_AST}
 	}
 	label_stack: [1024]diagnostic.Span

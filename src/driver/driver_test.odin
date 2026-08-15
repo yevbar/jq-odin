@@ -464,6 +464,26 @@ recursive_definition_with_local_break_label_remains_valid :: proc(t: ^testing.T)
 }
 
 @(test)
+unresolved_variable_reports_name_and_source_span :: proc(t: ^testing.T) {
+	result: Run_Result
+	err := run(&result, ". as $foo | [$foo, $bar]", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Compile)
+	testing.expect_value(t, err.compile_kind, compiler.Lower_Error_Kind.Unresolved_Variable)
+	// jq's caret covers the complete `$bar` token while the name span excludes
+	// its sigil for reuse by the CLI formatter.
+	testing.expect_value(t, err.compile_error_span.start, 19)
+	testing.expect_value(t, err.compile_error_span.end, 23)
+	testing.expect_value(t, err.compile_error_name_span.start, 20)
+	testing.expect_value(t, err.compile_error_name_span.end, 23)
+	destroy_result_test(t, &result)
+}
+
+@(test)
+bound_variable_remains_valid_inside_array_constructor :: proc(t: ^testing.T) {
+	expect_run(t, ". as $foo | [$foo]", "null", "[\n  null\n]\n")
+}
+
+@(test)
 parameterized_identity_uses_evaluator_argument_frame :: proc(t: ^testing.T) {
 	// This exact fixture bypasses module/text expansion and exercises the
 	// parser -> compiler -> evaluator two-edge Call contract.
