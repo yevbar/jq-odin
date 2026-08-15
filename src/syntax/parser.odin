@@ -5190,53 +5190,68 @@ append_node :: proc(parser: ^Parser, node: Node) -> (Node_Id, bool) {
 lower_walk_filter :: proc(parser: ^Parser, filter: Node_Id, span: diagnostic.Span) -> (Node_Id, bool) {
 	if filter < 0 || int(filter) >= parser.nodes.count do return {}, false
 
-	type_object, ok := append_node(parser, Node{kind=.Type, span=span})
+	ok: bool
+	type_object: Node_Id
+	type_object, ok = append_node(parser, Node{kind=.Type, span=span})
 	if !ok do return {}, false
-	object_name, ok := append_node(parser, Node{kind=.String, span=span, string_text="object", has_string_text=true})
+	object_name: Node_Id
+	object_name, ok = append_node(parser, Node{kind=.String, span=span, string_text="object", has_string_text=true})
 	if !ok do return {}, false
-	is_object, ok := append_node(parser, Node{
+	is_object: Node_Id
+	is_object, ok = append_node(parser, Node{
 		form=.Binary, span=span, left=type_object, right=object_name,
 		binary_operator=.Equal, operator_span=span, has_operator_span=true,
 	})
 	if !ok do return {}, false
 
-	type_array, ok := append_node(parser, Node{kind=.Type, span=span})
+	type_array: Node_Id
+	type_array, ok = append_node(parser, Node{kind=.Type, span=span})
 	if !ok do return {}, false
-	array_name, ok := append_node(parser, Node{kind=.String, span=span, string_text="array", has_string_text=true})
+	array_name: Node_Id
+	array_name, ok = append_node(parser, Node{kind=.String, span=span, string_text="array", has_string_text=true})
 	if !ok do return {}, false
-	is_array, ok := append_node(parser, Node{
+	is_array: Node_Id
+	is_array, ok = append_node(parser, Node{
 		form=.Binary, span=span, left=type_array, right=array_name,
 		binary_operator=.Equal, operator_span=span, has_operator_span=true,
 	})
 	if !ok do return {}, false
 
-	identity, ok := append_node(parser, Node{kind=.Identity, span=span})
+	identity: Node_Id
+	identity, ok = append_node(parser, Node{kind=.Identity, span=span})
 	if !ok do return {}, false
-	recursive_call, ok := append_node(parser, Node{kind=.Call, span=span, child=Node_Id(-1)})
+	recursive_call: Node_Id
+	recursive_call, ok = append_node(parser, Node{kind=.Call, span=span, child=Node_Id(-1)})
 	if !ok do return {}, false
-	map_values, ok := append_node(parser, Node{kind=.Map_Values, span=span, child=recursive_call, has_child=true})
+	map_values: Node_Id
+	map_values, ok = append_node(parser, Node{kind=.Map_Values, span=span, child=recursive_call, has_child=true})
 	if !ok do return {}, false
-	map_array, ok := append_node(parser, Node{kind=.Map, span=span, child=recursive_call, has_child=true})
+	map_array: Node_Id
+	map_array, ok = append_node(parser, Node{kind=.Map, span=span, child=recursive_call, has_child=true})
 	if !ok do return {}, false
-	array_branch, ok := append_node(parser, Node{
+	array_branch: Node_Id
+	array_branch, ok = append_node(parser, Node{
 		kind=.If, span=span,
 		if_condition=is_array, has_if_condition=true,
 		if_then=map_array, has_if_then=true,
 		if_else=identity, has_if_else=true,
 	})
 	if !ok do return {}, false
-	object_branch, ok := append_node(parser, Node{
+	object_branch: Node_Id
+	object_branch, ok = append_node(parser, Node{
 		kind=.If, span=span,
 		if_condition=is_object, has_if_condition=true,
 		if_then=map_values, has_if_then=true,
 		if_else=array_branch, has_if_else=true,
 	})
 	if !ok do return {}, false
-	body, ok := append_node(parser, Node{kind=.Pipe, span=span, left=object_branch, right=filter})
+	body: Node_Id
+	body, ok = append_node(parser, Node{kind=.Pipe, span=span, left=object_branch, right=filter})
 	if !ok do return {}, false
 	parser.nodes.storage[int(recursive_call)].child = body
 	parser.nodes.storage[int(recursive_call)].has_child = true
-	root_call, ok := append_node(parser, Node{kind=.Call, span=span, child=body, has_child=true})
+	root_call: Node_Id
+	root_call, ok = append_node(parser, Node{kind=.Call, span=span, child=body, has_child=true})
 	if !ok do return {}, false
 	return root_call, true
 }

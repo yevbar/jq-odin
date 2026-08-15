@@ -10,3 +10,8 @@ walk(select(IN({}, []) | not))
 walk(select(IN({}, []) | not))
 {"outer":{"empty":{},"arr":[],"n":0},"top":[]}
 {"outer":{"n":0}}
+
+# Object map_values order remains the source order after post-order callbacks.
+walk(if type=="number" then ., .+10 else . end)
+{"a":1,"b":2}
+{"a":1,"b":2}

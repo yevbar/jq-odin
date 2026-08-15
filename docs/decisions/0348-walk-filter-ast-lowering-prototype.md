@@ -1,6 +1,6 @@
-# Walk filter AST lowering prototype
+# Walk filter AST lowering
 
-Status: prototype; evaluator and CLI validation are pending.
+Status: implemented for the bounded recursive-filter contract.
 
 The pinned jq definition of `walk(f)` is a post-order recursive filter:
 objects recurse through `map_values`, arrays through `map`, atoms through
@@ -12,10 +12,14 @@ filter as the final pipe child; no driver source rewrite or new evaluator
 opcode is used.
 
 The focused shard is `compat/walk-filter-postorder.jq.test`, covering empty
-object/array pruning for the selected `IN({}, [])` predicate on scalar,
-nested-object, and array inputs. Because this worktree has no Odin compiler
-installed, compile, package validation, and candidate/oracle execution remain
-to be run in a Vers VM before integration. If recursive `Call` graph lowering
-or existing `Map`/`Map_Values` stream ownership cannot satisfy jq's child
-cardinality and error semantics, this prototype must be replaced by a
-first-class evaluator continuation contract.
+object/array pruning, array multi-output callbacks, object first-result
+behavior, source-order preservation, and callback errors. Package checks,
+Odin compilation, 86 evaluator tests, and the four-case pinned jq 1.8.1
+compatibility shard pass on the integration candidate. The existing
+`Map_Values` object traversal was corrected to consume entries in source order
+so rebuilt objects retain jq's key order.
+
+The lowering deliberately does not claim arbitrary user-defined `walk/1`
+shadowing or a separate evaluator opcode; it uses the existing recursive Call,
+Map, and Map_Values contracts and rejects malformed call shapes through normal
+parser paths.
