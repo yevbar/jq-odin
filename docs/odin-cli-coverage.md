@@ -6,9 +6,12 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `fc60a0d9`, the authoritative selected catalog measurement
-is **478/522 passed, 44 failed, 0 harness errors**
-(`/tmp/coverage-dynamic-3d3.json`). Persistent `input` stream behavior is covered by
+At integration head `aa515cf9`, the authoritative selected catalog measurement
+is **482/522 passed, 40 failed, 0 harness errors**
+(`/tmp/coverage-alt.json`). The bounded same-name destructuring alternation
+subset covers jq.test:952, :959, :966, and :973 through existing Binding/Try
+continuations; the remaining `?//` forms still require a first-class
+alternation ABI. Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
