@@ -6,8 +6,8 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `8a9bc630`, the authoritative selected catalog measurement
-is **466/522 passed, 56 failed, 0 harness errors**
+At integration head `a9235f69`, the authoritative selected catalog measurement
+is **467/522 passed, 55 failed, 0 harness errors**
 (`/tmp/coverage-66699.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
@@ -853,7 +853,7 @@ these remain implementation work rather than skipped coverage.
 
 ## Tuple-key follow-up (2026-08-14)
 
-The current integration head (`8a9bc630`) measures **466/522 passed, 56
+The current integration head (`a9235f69`) measures **467/522 passed, 55
 failed, 0 harness errors**. The static keyed materialization lane accepts
 comma-separated static tuple selectors in `sort_by(.a,.b)` and
 `group_by(.a,.b)`, plus bounded arithmetic/comparison expressions such as
@@ -868,3 +868,11 @@ The current head also accepts the bounded scalar form
 `Setpath` evaluator. The jq.test:1241-shaped fixture passes 2/2, including
 catchable typed number/object path errors. Dynamic path filters, variable
 paths, and generator-valued RHS updates remain deferred.
+
+## `with_entries` lowering follow-up (2026-08-14)
+
+`with_entries(filter)` now lowers to the real
+`to_entries | map(filter) | from_entries` instruction pipeline. The focused
+key-prefix and composition shard passes 3/3, and jq.test:1683 now passes in
+the full catalog. Non-object diagnostic wording and richer generator-valued
+entry updates remain deferred.
