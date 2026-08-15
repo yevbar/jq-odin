@@ -1211,7 +1211,7 @@ static_field_add_field_operands :: proc(storage: ^evaluator_storage, instruction
 
 @(private)
 static_optional_field_operand :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (key: string, ok: bool) {
-	if instruction.opcode != .Static_Field_Optional_Identity || instruction.operands_count != 1 do return
+	if (instruction.opcode != .Static_Field_Optional_Identity && instruction.opcode != .Static_Field_Delete) || instruction.operands_count != 1 do return
 	operand, operand_ok := program.program_operand(storage.compiled, instruction.operands_start)
 	if !operand_ok || operand.kind != .Text do return
 	key, ok = program.operand_text(storage.compiled, operand)
@@ -8470,6 +8470,42 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if value.object_error_kind(&set_error) != .None { _ = value.destroy_value(&key); _ = value.destroy_value(&replacement); _ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced); _ = value.destroy_object_error(&set_error); return begin_terminal_misuse(storage, .Malformed_Program) }
 				_ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
 				output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded
+				result, ready := propagate_output(storage, index, &output)
+				if ready do return result
+			case .Static_Field_Delete:
+				key_text, operands_ok := static_optional_field_operand(storage, instruction)
+				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Object && input_kind != .Null {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=key_text})
+					if ready do return result
+					continue
+				}
+				if input_kind == .Null {
+					output := value.clone_value(&frame.input)
+					if value.kind_of(&output) == .Invalid do return resource_step(.Out_Of_Memory)
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &output)
+					if ready do return result
+					continue
+				}
+				capacity_error := prepare_output(storage, index)
+				if capacity_error != nil do return resource_step(capacity_error)
+				frame = &storage.frames[index]
+				key, found := existing_object_key_copy(&frame.input, key_text)
+				if found {
+					_, removed, _, delete_error := value.object_delete_take(&frame.input, key_text)
+					_ = value.destroy_value(&key)
+					_ = value.destroy_value(&removed)
+					if value.object_error_kind(&delete_error) != .None {
+						_ = value.destroy_object_error(&delete_error)
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+				} else {
+					_ = value.destroy_value(&key)
+				}
+				output := value.take_value(&frame.input)
+				frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
 			case .Static_Field_Set_Number:

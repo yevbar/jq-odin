@@ -186,7 +186,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 &&
 		       node.has_name_span && no_container_links && !node.has_value && !node.boolean_value &&
 		       no_number && !node.has_string_text && string_header_absent(node.string_text)
-	case .Static_Field_Optional_Identity:
+	case .Static_Field_Optional_Identity, .Static_Field_Delete:
 		return node.container_kind == .None && no_child && no_edges && node.has_name_span &&
 		       !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Field_Set:
@@ -478,7 +478,7 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Static_Field_Add_Field:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
-	case .Static_Field_Optional_Identity:
+	case .Static_Field_Optional_Identity, .Static_Field_Delete:
 		return true
 	case .Dynamic_Field_Set:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
@@ -772,7 +772,7 @@ lower_filter :: proc(
 				!checked_count_add(&operand_count, 2) || !checked_count_add(&text_count, u64(name_end-name_start)+u64(rhs_end-rhs_start)) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
-		case .Static_Field_Optional_Identity:
+		case .Static_Field_Optional_Identity, .Static_Field_Delete:
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
 			if !name_ok || name_end < name_start || !checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(name_end-name_start)) {
 				return Lower_Outcome{kind = .Size_Overflow}
@@ -1342,8 +1342,8 @@ lower_filter :: proc(
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(rhs_end-rhs_start)}))
 			text_at += u32(rhs_end-rhs_start); operand_at += 1
 			instruction.operands_count = 2
-		case .Static_Field_Optional_Identity:
-			instruction.opcode = .Static_Field_Optional_Identity
+		case .Static_Field_Optional_Identity, .Static_Field_Delete:
+			instruction.opcode = .Static_Field_Optional_Identity if node.kind == .Static_Field_Optional_Identity else .Static_Field_Delete
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
 			assert(name_ok && name_end >= name_start)
 			assert(program.set_text(output, program.Byte_Offset(text_at), string(bytes[name_start:name_end])))

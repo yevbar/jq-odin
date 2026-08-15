@@ -1,0 +1,24 @@
+# Bounded root static field update deletion (`.name |= empty`).
+.foo |= empty
+{"foo":1,"bar":2}
+{"bar":2}
+
+.foo |= empty
+{}
+{}
+
+.foo |= empty
+null
+null
+
+.foo |= empty
+{"foo":null}
+{}
+
+try (.foo |= empty) catch .
+[1]
+"Cannot index array with string \"foo\""
+
+try (.foo |= empty) catch .
+1
+"Cannot index number with string \"foo\""

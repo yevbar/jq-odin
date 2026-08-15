@@ -287,6 +287,8 @@ Node_Kind :: enum {
 	Static_Field_Add_Field,
 	// Static_Field_Optional_Identity is a bounded `.name |= .?` update.
 	Static_Field_Optional_Identity,
+	// Static_Field_Delete is a bounded `.name |= empty` update.
+	Static_Field_Delete,
 	// Static_Iterator_Update preserves a filter-valued root iterator RHS.
 	Static_Iterator_Update,
 }
@@ -2428,6 +2430,14 @@ parse_pipe :: proc(
 					if !right_ok do return {}, false
 					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child { right = parser.nodes.storage[int(right)].child }
 					rhs := parser.nodes.storage[int(right)]
+					if rhs.form == .Kinded && rhs.kind == .Empty && !rhs.has_child && !rhs.has_value {
+						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+						update, update_ok := append_node(parser, Node{kind=.Static_Field_Delete, span=span, name_span=left_node.name_span, has_name_span=true})
+						if !update_ok do return {}, false
+						if pipe_root == invalid_id do return update, true
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+						return pipe_root, true
+					}
 					if rhs.form == .Kinded && rhs.kind == .Optional && rhs.has_child {
 						child := parser.nodes.storage[int(rhs.child)]
 						if child.form == .Kinded && child.kind == .Identity && !child.has_child && !child.has_value {
