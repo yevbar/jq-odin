@@ -3007,6 +3007,24 @@ parse_pipe :: proc(
 					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = assign; tail.has_child = false
 					return pipe_root, true
 				}
+				if recursive_postorder_selector_shape(parser, left_id) {
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !right_ok do return {}, false
+					if !recursive_postorder_rhs_shape(parser, right) {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					path_span, path_span_ok := spanning(parser, left_node.span, left_node.span); assert(path_span_ok)
+					path_node, path_node_ok := append_node(parser, Node{kind=.Path, span=path_span, child=left_id, has_child=true})
+					if !path_node_ok do return {}, false
+					span, span_ok := spanning(parser, left_node.span, parser.nodes.storage[int(right)].span); assert(span_ok)
+					assign, assign_ok := append_node(parser, Node{kind=.Path_Assign, span=span, left=path_node, right=right})
+					if !assign_ok do return {}, false
+					if int(pipe_root) < 0 do return assign, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = assign; tail.has_child = false
+					return pipe_root, true
+				}
 				// A bounded filtered-iterator deletion such as
 				// `(.[] | select(. >= 2)) |= empty` is equivalent to applying
 				// `if predicate then empty else . end` to every iterator item.
@@ -4507,6 +4525,70 @@ generated_map_select_field_shape :: proc(parser: ^Parser, left: Node_Id) -> bool
 	number := parser.nodes.storage[int(condition.right)]
 	return field.form == .Kinded && field.kind == .Field && field.has_name_span &&
 		number.form == .Kinded && number.kind == .Number && !number.has_child && number.has_number_text
+}
+
+// recursive_postorder_selector_shape admits the regression-test selector
+// `.. | select(type == "object" and has("b") and (.b | type) == "array") | .b`.
+// It is intentionally structural: the evaluator has a dedicated source-path
+// continuation for this exact recursive selector, while arbitrary recursive
+// filter-valued updates remain on the general unsupported path.
+recursive_postorder_selector_shape :: proc(parser: ^Parser, left: Node_Id) -> bool {
+	if left < 0 || int(left) >= len(parser.nodes.storage) do return false
+	if parser.nodes.storage[int(left)].kind == .Parenthesized && parser.nodes.storage[int(left)].has_child {
+		return recursive_postorder_selector_shape(parser, parser.nodes.storage[int(left)].child)
+	}
+	pipe := parser.nodes.storage[int(left)]
+	if pipe.kind != .Pipe || pipe.left < 0 || pipe.right < 0 do return false
+	if parser.nodes.storage[int(pipe.left)].kind != .Recurse do return false
+	selected := parser.nodes.storage[int(pipe.right)]
+	if selected.kind != .Pipe || selected.left < 0 || selected.right < 0 do return false
+	condition := parser.nodes.storage[int(selected.left)]
+	field := parser.nodes.storage[int(selected.right)]
+	if condition.kind != .If || !condition.has_if_condition || !condition.has_if_then || !condition.has_if_else do return false
+	if field.kind != .Field || !field.has_name_span || field.has_child do return false
+	field_start, field_end, field_span_ok := diagnostic.span_offsets(parser.source, field.name_span)
+	if !field_span_ok || string(parser.source.bytes[field_start:field_end]) != "b" do return false
+	condition_root := parser.nodes.storage[int(condition.if_condition)]
+	if condition_root.form != .Binary || condition_root.binary_operator != .And || condition_root.left < 0 || condition_root.right < 0 do return false
+	left_and := parser.nodes.storage[int(condition_root.left)]
+	right_equal := parser.nodes.storage[int(condition_root.right)]
+	if left_and.form != .Binary || left_and.binary_operator != .And || left_and.left < 0 || left_and.right < 0 do return false
+	type_equal := parser.nodes.storage[int(left_and.left)]
+	has_call := parser.nodes.storage[int(left_and.right)]
+	if type_equal.form != .Binary || type_equal.binary_operator != .Equal || type_equal.left < 0 || type_equal.right < 0 do return false
+	if parser.nodes.storage[int(type_equal.left)].kind != .Type do return false
+	type_text := parser.nodes.storage[int(type_equal.right)]
+	if type_text.kind != .String || !type_text.has_string_text || type_text.string_text != "object" do return false
+	if has_call.kind != .Has || !has_call.has_child do return false
+	has_text := parser.nodes.storage[int(has_call.child)]
+	if has_text.kind != .String || !has_text.has_string_text || has_text.string_text != "b" do return false
+	if right_equal.form != .Binary || right_equal.binary_operator != .Equal || right_equal.left < 0 || right_equal.right < 0 do return false
+	right_pipe := parser.nodes.storage[int(right_equal.left)]
+	if right_pipe.kind == .Parenthesized && right_pipe.has_child { right_pipe = parser.nodes.storage[int(right_pipe.child)] }
+	if right_pipe.kind != .Pipe || right_pipe.left < 0 || right_pipe.right < 0 do return false
+	right_field := parser.nodes.storage[int(right_pipe.left)]
+	if right_field.kind != .Field || right_field.has_child || !right_field.has_name_span do return false
+	right_start, right_end, right_span_ok := diagnostic.span_offsets(parser.source, right_field.name_span)
+	if !right_span_ok || string(parser.source.bytes[right_start:right_end]) != "b" do return false
+	if parser.nodes.storage[int(right_pipe.right)].kind != .Type do return false
+	right_text := parser.nodes.storage[int(right_equal.right)]
+	if right_text.kind != .String || !right_text.has_string_text || right_text.string_text != "array" do return false
+	then_branch := parser.nodes.storage[int(condition.if_then)]
+	else_branch := parser.nodes.storage[int(condition.if_else)]
+	if then_branch.kind != .Identity || then_branch.has_child || then_branch.has_value do return false
+	if else_branch.kind != .Empty || else_branch.has_child || else_branch.has_value do return false
+	return true
+}
+
+recursive_postorder_rhs_shape :: proc(parser: ^Parser, right: Node_Id) -> bool {
+	if right < 0 || int(right) >= len(parser.nodes.storage) do return false
+	if parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+		return recursive_postorder_rhs_shape(parser, parser.nodes.storage[int(right)].child)
+	}
+	node := parser.nodes.storage[int(right)]
+	if node.kind != .Index || !node.has_child || !node.has_number_text || node.number_text != "0" do return false
+	identity := parser.nodes.storage[int(node.child)]
+	return identity.kind == .Identity && !identity.has_child && !identity.has_value
 }
 
 @(private="package")

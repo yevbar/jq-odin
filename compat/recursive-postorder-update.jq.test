@@ -1,0 +1,20 @@
+# Bounded recursive post-order path update for jq.test:2093.
+(.. | select(type == "object" and has("b") and (.b | type) == "array")|.b) |= .[0]
+{"a":{"b":[1,{"b":3}]}}
+{"a":{"b":1}}
+
+(.. | select(type == "object" and has("b") and (.b | type) == "array")|.b) |= .[0]
+{"a":{"c":1}}
+{"a":{"c":1}}
+
+(.. | select(type == "object" and has("b") and (.b | type) == "array")|.b) |= .[0]
+{"b":[]}
+{"b":null}
+
+(.. | select(type == "object" and has("b") and (.b | type) == "array")|.b) |= .[0]
+{"b":[1,{"b":[2]}]}
+%%FAIL
+
+(.. | select(type == "object" and has("b") and (.b | type) == "array")|.b) |= .[0]
+{"b":[{"b":[]}]}
+%%FAIL

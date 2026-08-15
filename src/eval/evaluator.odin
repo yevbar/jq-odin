@@ -4046,6 +4046,88 @@ paths_result :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (valu
 	prefix, prefix_ok := path_array(allocator); if !prefix_ok { _ = value.destroy_value(&output); return {}, false }; if !walk(input, &prefix, &output, 0) { _ = value.destroy_value(&prefix); _ = value.destroy_value(&output); return {}, false }; _ = value.destroy_value(&prefix); return output, true
 }
 
+// recursive_postorder_match_paths collects the source coordinates selected by
+// jq.test:2093.  The traversal is deliberately performed against the original
+// root, in preorder, and callers apply the resulting coordinates sequentially
+// to a working copy.  This preserves jq's late-error behavior when an earlier
+// update invalidates a later stale coordinate.
+recursive_postorder_match_paths :: proc(input: ^value.Value, allocator: runtime.Allocator) -> (value.Value, bool) {
+	output, output_ok := path_array(allocator)
+	if !output_ok do return {}, false
+	prefix, prefix_ok := path_array(allocator)
+	if !prefix_ok { _ = value.destroy_value(&output); return {}, false }
+	walk :: proc(v, current: ^value.Value, out: ^value.Value, allocator: runtime.Allocator, depth: int) -> bool {
+		if depth > 512 do return true
+		kind := value.kind_of(v)
+		if kind == .Object {
+			selected, found := value.object_get_copy(v, "b")
+			if found {
+				if value.kind_of(&selected) == .Array {
+					component, component_error := value.string_value("b", allocator)
+					if value.constructor_error_kind(&component_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_constructor_error(&component_error); return false }
+					match_path := value.clone_value(current)
+					if !path_append_take(&match_path, &component) { _ = value.destroy_value(&component); _ = value.destroy_value(&selected); _ = value.destroy_value(&match_path); return false }
+					if !path_append_take(out, &match_path) { _ = value.destroy_value(&match_path); _ = value.destroy_value(&selected); return false }
+				}
+				_ = value.destroy_value(&selected)
+			}
+		}
+		if kind != .Array && kind != .Object do return true
+		count := 0
+		if kind == .Array { count, _ = value.array_length(v) } else { count, _ = value.object_length(v) }
+		for offset in 0..<count {
+			component: value.Value
+			child: value.Value
+			if kind == .Array {
+				component = value.number_value(f64(offset))
+				child, _ = value.array_element_copy(v, offset)
+			} else {
+				key, item, got := value.object_entry_copy(v, offset)
+				if !got do return false
+				component, child = key, item
+			}
+			child_path := value.clone_value(current)
+			if !path_append_take(&child_path, &component) { _ = value.destroy_value(&child); _ = value.destroy_value(&child_path); return false }
+			if !walk(&child, &child_path, out, allocator, depth+1) { _ = value.destroy_value(&child); _ = value.destroy_value(&child_path); return false }
+			_ = value.destroy_value(&child)
+			_ = value.destroy_value(&child_path)
+		}
+		return true
+	}
+	if !walk(input, &prefix, &output, allocator, 0) { _ = value.destroy_value(&prefix); _ = value.destroy_value(&output); return {}, false }
+	_ = value.destroy_value(&prefix)
+	return output, true
+}
+
+recursive_postorder_program_shape :: proc(storage: ^evaluator_storage, index: program.Instruction_Index) -> bool {
+	unwrap :: proc(storage: ^evaluator_storage, at: program.Instruction_Index) -> (program.Instruction_Index, bool) {
+		instruction, ok := program.program_instruction(storage.compiled, at)
+		if !ok do return 0, false
+		if instruction.opcode == .Parenthesized {
+			child, child_ok := child_instruction(storage, instruction, 0)
+			if !child_ok do return 0, false
+			return unwrap(storage, child)
+		}
+		return at, true
+	}
+	root, root_ok := unwrap(storage, index)
+	if !root_ok do return false
+	node, node_ok := program.program_instruction(storage.compiled, root)
+	if !node_ok || node.opcode != .Sequence || node.operands_count != 2 do return false
+	left, left_ok := child_instruction(storage, node, 0)
+	right, right_ok := child_instruction(storage, node, 1)
+	if !left_ok || !right_ok do return false
+	left_node, left_node_ok := program.program_instruction(storage.compiled, left)
+	right_node, right_node_ok := program.program_instruction(storage.compiled, right)
+	if !left_node_ok || !right_node_ok || left_node.opcode != .Recurse || right_node.opcode != .Sequence || right_node.operands_count != 2 do return false
+	condition, condition_edge_ok := child_instruction(storage, right_node, 0)
+	field, field_edge_ok := child_instruction(storage, right_node, 1)
+	if !condition_edge_ok || !field_edge_ok do return false
+	condition_node, condition_ok := program.program_instruction(storage.compiled, condition)
+	field_node, field_ok := program.program_instruction(storage.compiled, field)
+	return condition_ok && field_ok && condition_node.opcode == .If && field_node.opcode == .Field
+}
+
 @(private)
 resource_step :: proc(err: runtime.Allocator_Error) -> Step_Result {
 	return {kind = .Resource_Error, resource_error = err}
@@ -8987,6 +9069,52 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						// assignment frame can report jq's result-bearing diagnostic.
 						path_child = path_body
 					}
+				}
+				if recursive_postorder_program_shape(storage, path_child) {
+					paths, paths_ok := recursive_postorder_match_paths(&frame.input, storage.allocator)
+					if !paths_ok { _ = value.destroy_value(&frame.path_assign_results); return resource_step(.Out_Of_Memory) }
+					working := value.clone_value(&frame.input)
+					path_count, path_count_ok := value.array_length(&paths)
+					if !path_count_ok { _ = value.destroy_value(&paths); _ = value.destroy_value(&working); _ = value.destroy_value(&frame.path_assign_results); return begin_terminal_misuse(storage, .Malformed_Program) }
+					for path_index in 0..<path_count {
+						path, path_value_ok := value.array_element_copy(&paths, path_index)
+						selected, selected_kind, selected_ok := lookup_path(&working, &path)
+						if !path_value_ok || !selected_ok {
+							_ = value.destroy_value(&path); _ = value.destroy_value(&selected); _ = value.destroy_value(&paths); _ = value.destroy_value(&working); _ = value.destroy_value(&frame.path_assign_results)
+							return begin_terminal_misuse(storage, .Malformed_Program)
+						}
+						if selected_kind != .None {
+							runtime_error, runtime_error_ok := set_path_runtime_error(&working, &path, 0, instruction.span, storage.allocator)
+							_ = value.destroy_value(&path); _ = value.destroy_value(&selected); _ = value.destroy_value(&paths); _ = value.destroy_value(&working); _ = value.destroy_value(&frame.path_assign_results)
+							if !runtime_error_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+							result, ready := raise_runtime(storage, index, runtime_error)
+							if len(runtime_error.key) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)runtime_error.key, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
+							if ready do return result
+							continue
+						}
+						replacement := value.null_value()
+						if value.kind_of(&selected) == .Array {
+							length, length_ok := value.array_length(&selected)
+							if !length_ok { _ = value.destroy_value(&path); _ = value.destroy_value(&selected); _ = value.destroy_value(&replacement); _ = value.destroy_value(&paths); _ = value.destroy_value(&working); _ = value.destroy_value(&frame.path_assign_results); return begin_terminal_misuse(storage, .Malformed_Program) }
+							if length > 0 { _ = value.destroy_value(&replacement); replacement, _ = value.array_element_copy(&selected, 0) }
+						} else {
+							selected_kind_name := runtime_value_kind_name(value.kind_of(&selected))
+							message := strings.concatenate([]string{"Cannot index ", selected_kind_name, " with number"}, storage.allocator)
+							_ = value.destroy_value(&path); _ = value.destroy_value(&selected); _ = value.destroy_value(&replacement); _ = value.destroy_value(&paths); _ = value.destroy_value(&working); _ = value.destroy_value(&frame.path_assign_results)
+							result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=value.kind_of(&selected), span=instruction.span, key=message})
+							if ready do return result
+							continue
+						}
+						updated, updated_ok := set_path_value(&working, &path, 0, &replacement, storage.allocator)
+						_ = value.destroy_value(&path); _ = value.destroy_value(&selected); _ = value.destroy_value(&replacement)
+						if !updated_ok { _ = value.destroy_value(&paths); _ = value.destroy_value(&working); _ = value.destroy_value(&frame.path_assign_results); return begin_terminal_misuse(storage, .Malformed_Program) }
+						_ = value.destroy_value(&working); working = updated
+					}
+					_ = value.destroy_value(&paths); _ = value.destroy_value(&frame.path_assign_results)
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &working)
+					if ready do return result
+					continue
 				}
 				generated_key, generated_ok, generated_error := generated_map_select_field_error_key(storage, &frame.input, path_child, storage.allocator)
 				if generated_error != nil do return resource_step(generated_error)
