@@ -1370,7 +1370,8 @@ parse_pipe :: proc(
 				spelling := token_spelling(parser, token)
 				// jq exposes uppercase IN as the generator-membership builtin;
 				// normalize its spelling before the regular call dispatch.
-				if spelling == "IN" do spelling = "in"
+				uppercase_in := spelling == "IN"
+				if uppercase_in do spelling = "in"
 				call_body, is_definition_call := visible_definition(parser, spelling)
 				if is_definition_call && !token_is(parser, .Open_Paren) {
 					advance(parser)
@@ -1999,6 +2000,20 @@ parse_pipe :: proc(
 							assert(span_ok)
 							new_term, ok := append_node(parser, Node{kind=.In, span=span, child=first, has_child=true, predicate=second, has_predicate=true})
 							if !ok { return {}, false }
+							term = new_term
+							term_ready = true
+							continue
+						}
+						if uppercase_in && parser.nodes.storage[int(first)].kind == .Comma {
+							if !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
+							close := parser.lookahead.token
+							advance(parser)
+							identity, identity_ok := append_node(parser, Node{kind=.Identity, span=token.span})
+							if !identity_ok do return {}, false
+							span, span_ok := spanning(parser, token.span, close.span)
+							assert(span_ok)
+							new_term, new_ok := append_node(parser, Node{kind=.In, span=span, child=first, has_child=true, predicate=identity, has_predicate=true})
+							if !new_ok do return {}, false
 							term = new_term
 							term_ready = true
 							continue

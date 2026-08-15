@@ -1,0 +1,16 @@
+# Bounded uppercase IN/2 comma-literal membership.
+IN({}, [])
+null
+false
+
+IN({}, [])
+{}
+true
+
+IN({}, [])
+[]
+true
+
+IN({}, [])
+1
+false
