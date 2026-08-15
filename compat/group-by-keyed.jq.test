@@ -9,3 +9,12 @@ group_by(.b) | .[]
 [{"a":4,"b":1}]
 [{"a":0,"b":2}]
 [{"a":1,"b":4},{"a":1,"b":4}]
+
+# Comma-separated static fields form a tuple key for stable ordering/grouping.
+sort_by(.a,.b)
+[{"a":1,"b":2},{"a":1,"b":1},{"a":0,"b":9}]
+[{"a":0,"b":9},{"a":1,"b":1},{"a":1,"b":2}]
+
+group_by(.a,.b)
+[{"a":1,"b":2},{"a":1,"b":1},{"a":0,"b":9}]
+[[{"a":0,"b":9}],[{"a":1,"b":1}],[{"a":1,"b":2}]]

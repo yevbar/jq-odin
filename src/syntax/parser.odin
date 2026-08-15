@@ -4911,7 +4911,7 @@ lower_static_keyed_call :: proc(parser: ^Parser, token: Token, spelling: string)
 	}
 	close := parser.lookahead.token
 	advance(parser)
-	if !static_key_filter(parser, argument) || parser.nodes.storage[int(argument)].kind == .Comma {
+	if !static_key_filter(parser, argument) {
 		fail_from_lookahead(parser, .Expression)
 		return {}, false
 	}

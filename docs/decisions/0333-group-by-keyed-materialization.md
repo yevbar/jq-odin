@@ -7,8 +7,9 @@ while preserving value order within each group. This reuses the reviewed
 stable-key comparator used by bounded `sort_by(.field)` and keeps the ordinary
 `sort` opcode unchanged.
 
-The implementation is intentionally limited to one static field selector.
-Dynamic key filters, expression keys, and the full multi-key/grouping contract
-remain deferred; those require resumable key-stream evaluation and jq's exact
-runtime error/cardinality behavior. The focused fixture
-`compat/group-by-keyed.jq.test` covers direct grouping and composition.
+The implementation accepts a comma-separated tuple of static field selectors
+for `sort_by` and `group_by` (for example, `sort_by(.a,.b)`). Dynamic key
+filters and expression keys remain deferred; those require resumable key-stream
+evaluation and jq's exact runtime error/cardinality behavior. The focused
+fixture `compat/group-by-keyed.jq.test` covers direct grouping, composition,
+and tuple-key ordering.
