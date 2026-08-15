@@ -5,6 +5,19 @@ import diagnostic "jq:diagnostic"
 import "core:mem"
 import "core:strings"
 import "core:testing"
+@(test)
+binding_path_assignment_shape :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<binding-path-assignment>", `(.a as $x | .b) = "b"`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	testing.expect_value(t, parser.nodes.storage[int(outcome.root)].kind, Node_Kind.Binding_Path_Assign)
+	assign := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, parser.nodes.storage[int(assign.left)].kind, Node_Kind.Binding)
+	testing.expect_value(t, parser.nodes.storage[int(assign.right)].kind, Node_Kind.String)
+	_ = destroy_parser(&parser)
+}
 
 @(test)
 alternation_binding_retains_producer_and_branch_list :: proc(t: ^testing.T) {

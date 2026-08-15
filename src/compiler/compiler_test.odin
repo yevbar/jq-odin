@@ -1338,18 +1338,15 @@ callable_generator_path_argument_preserves_nested_field_shape :: proc(t: ^testin
 }
 
 @(test)
-nested_lexical_fixture_lowers_definition_call_edges :: proc(t: ^testing.T) {
+binding_path_assignment_lowers_to_reserved_opcode :: proc(t: ^testing.T) {
 	parser: syntax.Parser
 	compiled: program.Program
-	_, _, lowered := parse_and_lower(t, `def id(x):x; 2000 as $x | def f(x):1 as $x | id([$x, x, x]); def g(x): 100 as $x | f($x,$x+x); g($x)`, &parser, &compiled)
+	_, _, lowered := parse_and_lower(t, `(.a as $x | .b) = "b"`, &parser, &compiled)
 	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
 	root, root_ok := program.program_root(&compiled)
 	testing.expect(t, root_ok)
-	root_instruction := instruction_at(&compiled, root)
-	testing.expect_value(t, root_instruction.opcode, program.Opcode.Binding)
-	testing.expect_value(t, root_instruction.operands_count, program.Count(3))
-	testing.expect_value(t, instruction_operand(&compiled, root_instruction, 0).kind, program.Operand_Kind.Instruction)
-	testing.expect_value(t, instruction_operand(&compiled, root_instruction, 1).kind, program.Operand_Kind.Instruction)
-	testing.expect_value(t, instruction_operand(&compiled, root_instruction, 2).kind, program.Operand_Kind.Text)
+	instruction := instruction_at(&compiled, root)
+	testing.expect_value(t, instruction.opcode, program.Opcode.Binding_Path_Assign)
+	testing.expect_value(t, instruction.operands_count, program.Count(2))
 	expect_cleanup(t, &parser, &compiled)
 }

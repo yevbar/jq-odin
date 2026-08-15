@@ -318,6 +318,9 @@ Node_Kind :: enum {
 	// definition. It is distinct from `$name` lexical variables and remains
 	// evaluator-unsupported until closure activation is implemented.
 	Parameter_Reference,
+	// Experimental binding-aware assignment shape; compiler/evaluator activation
+	// remains deferred until path capture semantics are implemented.
+	Binding_Path_Assign,
 }
 
 Node_Id :: distinct int
@@ -4117,7 +4120,9 @@ parse_pipe :: proc(
 				return {}, false
 			}
 			advance(parser)
-			right, body_ok := parse_pipe(parser, closing, stop_at_comma)
+				body_closing := closing
+				if parser.frames.count > entry_frame_depth do body_closing = .Close_Paren
+				right, body_ok := parse_pipe(parser, body_closing, stop_at_comma)
 			if !body_ok { return {}, false }
 			span, span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(right)].span)
 			assert(span_ok)
@@ -4130,6 +4135,30 @@ parse_pipe :: proc(
 				has_name_span = true,
 			})
 			if !bound_ok { return {}, false }
+			// When this `as` body is inside a parenthesized frame, consume that
+			// frame here so a following assignment belongs to the outer group rather
+			// than being rejected as an unexpected close token.
+			if parser.frames.count > entry_frame_depth && token_is(parser, .Close_Paren) {
+				close := parser.lookahead.token
+				advance(parser)
+				frame_state := parser.frames.storage[parser.frames.count-1]
+				parser.frames.count -= 1
+				frame_node := &parser.nodes.storage[int(frame_state.parenthesized)]
+				group_span, group_span_ok := spanning(parser, frame_node.span, close.span); assert(group_span_ok)
+				frame_node^ = Node{kind=.Parenthesized, span=group_span, child=bound, has_child=true}
+				if token_is(parser, .Assign) {
+					advance(parser)
+					rhs, rhs_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !rhs_ok do return {}, false
+					for rhs >= 0 && parser.nodes.storage[int(rhs)].kind == .Parenthesized && parser.nodes.storage[int(rhs)].has_child { rhs = parser.nodes.storage[int(rhs)].child }
+					rhs_node := parser.nodes.storage[int(rhs)]
+					if rhs_node.form != .Kinded || (rhs_node.kind != .Number && rhs_node.kind != .Boolean && rhs_node.kind != .Null && rhs_node.kind != .String) || rhs_node.has_child || rhs_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+					assignment_span, assignment_span_ok := spanning(parser, frame_node.span, rhs_node.span); assert(assignment_span_ok)
+					assign, assign_ok := append_node(parser, Node{kind=.Binding_Path_Assign, span=assignment_span, left=bound, right=rhs}); if !assign_ok do return {}, false
+					return assign, true
+				}
+				return frame_state.parenthesized, true
+			}
 			if pipe_root != invalid_id {
 				tail := &parser.nodes.storage[int(pipe_tail)]
 				tail.right = bound
@@ -4173,6 +4202,24 @@ parse_pipe :: proc(
 				span = span,
 				child = result,
 				has_child = true,
+			}
+			// Claim assignment immediately after a parenthesized binding so the
+			// low-precedence `as` frame does not consume the `=` as part of its body.
+			if token_is(parser, .Assign) && result >= 0 {
+				candidate := parser.nodes.storage[int(result)]
+				if candidate.kind == .Binding {
+					advance(parser)
+					rhs, rhs_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !rhs_ok do return {}, false
+					for rhs >= 0 && parser.nodes.storage[int(rhs)].kind == .Parenthesized && parser.nodes.storage[int(rhs)].has_child { rhs = parser.nodes.storage[int(rhs)].child }
+					rhs_node := parser.nodes.storage[int(rhs)]
+					if rhs_node.form != .Kinded || (rhs_node.kind != .Number && rhs_node.kind != .Boolean && rhs_node.kind != .Null && rhs_node.kind != .String) || rhs_node.has_child || rhs_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+					assignment_span, assignment_span_ok := spanning(parser, candidate.span, rhs_node.span); assert(assignment_span_ok)
+					assign, assign_ok := append_node(parser, Node{kind=.Binding_Path_Assign, span=assignment_span, left=result, right=rhs}); if !assign_ok do return {}, false
+					term = assign
+					term_ready = true
+					continue
+				}
 			}
 
 			live_pipe_count -= current_pipe_count

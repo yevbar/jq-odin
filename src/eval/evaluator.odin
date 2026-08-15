@@ -8861,7 +8861,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					result, ready := unwind_break(storage, index, name)
 					if ready do return result
 					continue
-				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Parameter_Path_Update, .Setpath, .Delpaths:
+				case .Path, .Getpath, .Paths, .Path_Assign, .Binding_Path_Assign, .Dynamic_Index_Assign, .Parameter_Path_Update, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Alternation:
 					if instruction.operands_count < 3 || !capture_composite_instruction(storage, frame, instruction) {

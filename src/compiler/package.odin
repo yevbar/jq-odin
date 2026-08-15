@@ -208,6 +208,8 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 		       no_container_links && !node.has_value && !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text)
 	case .Path_Assign:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+	case .Binding_Path_Assign:
+		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Index_Assign:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && node.has_reduce_update && node.reduce_update >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Parameter_Identity_Update:
@@ -539,6 +541,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Static_Field_Index_Field_Update:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Path_Assign:
+		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Binding_Path_Assign:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Dynamic_Index_Assign:
 		return validate_binding_scopes(nodes, node.left, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget) && validate_binding_scopes(nodes, node.reduce_update, source, scopes, depth, next_budget)
@@ -950,6 +954,10 @@ lower_filter :: proc(
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Path_Assign:
+			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
+		case .Binding_Path_Assign:
 			if !node_reference_valid(node.left, len(nodes)) || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 2) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
@@ -1679,6 +1687,11 @@ lower_filter :: proc(
 			operand_at += 1
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)}))
 			operand_at += 1
+			instruction.operands_count = 2
+		case .Binding_Path_Assign:
+			instruction.opcode = .Binding_Path_Assign
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.left)})); operand_at += 1
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)})); operand_at += 1
 			instruction.operands_count = 2
 		case .Dynamic_Index_Assign:
 			instruction.opcode = .Dynamic_Index_Assign
