@@ -461,6 +461,7 @@ Run_Options :: struct {
 Run_Error :: struct {
 	kind:                 Run_Error_Kind,
 	filter_parse_kind:    syntax.Parse_Error_Kind,
+	filter_parse_message: string,
 	filter_expected:      syntax.Parse_Expectation,
 	filter_actual:        syntax.Token_Kind,
 	filter_has_actual:    bool,
@@ -1290,7 +1291,8 @@ run_with_options :: proc(
 			start, end, _ := diagnostic.span_offsets(source, parsed.error.span)
 			return finish(result, {
 				kind = .Filter_Parse,
-				filter_parse_kind = parsed.error.kind,
+					filter_parse_kind = parsed.error.kind,
+					filter_parse_message = parsed.error.message,
 				filter_expected = parsed.error.expected,
 				filter_actual = parsed.error.actual,
 				filter_has_actual = parsed.error.has_actual,

@@ -479,6 +479,18 @@ unresolved_variable_reports_name_and_source_span :: proc(t: ^testing.T) {
 }
 
 @(test)
+invalid_escape_reports_lexical_message_and_span :: proc(t: ^testing.T) {
+	result: Run_Result
+	err := run(&result, "\"u\\vw\"", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Parse)
+	testing.expect_value(t, err.filter_parse_kind, syntax.Parse_Error_Kind.Lexical_Error)
+	testing.expect_value(t, err.filter_parse_message, "Invalid escape")
+	testing.expect_value(t, err.filter_start, 2)
+	testing.expect_value(t, err.filter_end, 4)
+	destroy_result_test(t, &result)
+}
+
+@(test)
 bound_variable_remains_valid_inside_array_constructor :: proc(t: ^testing.T) {
 	expect_run(t, ". as $foo | [$foo]", "null", "[\n  null\n]\n")
 }

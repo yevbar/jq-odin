@@ -316,6 +316,43 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		}
 	}
 	ok := true
+	if err.kind == .Filter_Parse && err.filter_parse_kind == .Lexical_Error &&
+	   len(err.filter_parse_message) > 0 && len(source) > 0 {
+		start := err.filter_start
+		end := err.filter_end
+		if start < 0 || end <= start || end > len(source) {
+			return write_all(os.stderr, "jq-odin: filter parse error\n")
+		}
+		line := 1
+		line_start := 0
+		for at := 0; at < start; at += 1 {
+			if source[at] == '\n' {
+				line += 1
+				line_start = at + 1
+			}
+		}
+		inner_line := line
+		inner_column := start + 2 - line_start
+		ok = write_all(os.stderr, "jq: error: ") && ok
+		ok = write_all(os.stderr, err.filter_parse_message) && ok
+		ok = write_all(os.stderr, " at line ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", inner_line)) && ok
+		ok = write_all(os.stderr, ", column ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", inner_column)) && ok
+		ok = write_all(os.stderr, " (while parsing '\"") && ok
+		ok = write_all(os.stderr, source[start:end]) && ok
+		ok = write_all(os.stderr, "\"') at <top-level>, line ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", line)) && ok
+		ok = write_all(os.stderr, ", column ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d", start-line_start+1)) && ok
+		ok = write_all(os.stderr, ":\n    ") && ok
+		ok = write_all(os.stderr, source[line_start:]) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 1..<start-line_start+1 do ok = write_all(os.stderr, " ") && ok
+		for _ in start..<end do ok = write_all(os.stderr, "^") && ok
+		ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
+		return ok
+	}
 	if err.kind == .Module && (err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error) {
 		column := 1
 		for at := 0; at+len(err.module_name) <= len(source); at += 1 {
