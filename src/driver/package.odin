@@ -1014,6 +1014,72 @@ filter_definition_shape :: proc(source: string) -> (has_definition: bool, has_pa
 	return
 }
 
+// simple_callable_term accepts only the bounded arithmetic body understood by
+// the first executable parameterized-call slice. Parameter identifiers are
+// distinguished from `.` by their source span; both lower to Identity in the
+// AST, but only the declaration parameter may be rebound by a Call frame.
+simple_callable_term :: proc(
+	nodes: []syntax.Node,
+	source: diagnostic.Source,
+	parameter: diagnostic.Span,
+	id: syntax.Node_Id,
+	seen_parameter: ^bool,
+) -> bool {
+	if id < 0 || int(id) >= len(nodes) || seen_parameter == nil do return false
+	node := nodes[int(id)]
+	if node.form == .Binary {
+		if node.binary_operator != .Add || node.left < 0 || node.right < 0 do return false
+		return simple_callable_term(nodes, source, parameter, node.left, seen_parameter) &&
+			simple_callable_term(nodes, source, parameter, node.right, seen_parameter)
+	}
+	if node.form != .Kinded || node.container_kind != .None || node.has_child || node.has_value do return false
+	if node.kind == .Number {
+		return node.has_number_text
+	}
+	if node.kind != .Identity do return false
+	start, end, span_ok := diagnostic.span_offsets(source, node.span)
+	parameter_start, parameter_end, parameter_ok := diagnostic.span_offsets(source, parameter)
+	if !span_ok || !parameter_ok || end-start != parameter_end-parameter_start {
+		return false
+	}
+	bytes := diagnostic.source_bytes(source)
+	if bytes[start:end] != bytes[parameter_start:parameter_end] do return false
+	seen_parameter^ = true
+	return true
+}
+
+// parameterized_simple_definition performs the routing check from the real
+// syntax tree rather than rewriting source text. It accepts one declaration,
+// one parameter, a direct call to that declaration, and an additive body made
+// from the parameter and numeric literals. Unsupported callable bodies return
+// false and remain on the existing module expansion bridge.
+parameterized_simple_definition :: proc(source: string, allocator: runtime.Allocator) -> bool {
+	parser: syntax.Parser
+	borrowed := diagnostic.borrow_source("<call-routing>", source)
+	if !syntax.init_parser(&parser, borrowed, allocator) do return false
+	outcome := syntax.parse_filter(&parser)
+	supported := false
+	definitions := syntax.parser_definitions(&parser)
+	nodes := syntax.parser_nodes(&parser)
+	if len(definitions) == 1 && definitions[0].has_parameter && len(nodes) > 0 {
+		seen_parameter := false
+		body_supported := simple_callable_term(nodes, borrowed, definitions[0].parameter_span, definitions[0].body, &seen_parameter) && seen_parameter
+		if body_supported {
+			// On a successful parse require the direct call edge. On an input
+			// error, retain this route so malformed calls still produce the
+			// parser's jq-compatible diagnostic instead of a module-loader error.
+			if outcome.kind != .Success {
+				supported = true
+			} else if outcome.root >= 0 && int(outcome.root) < len(nodes) {
+				root := nodes[int(outcome.root)]
+				supported = root.form == .Kinded && root.kind == .Call && root.has_call_argument && root.child == definitions[0].body
+			}
+		}
+	}
+	_ = syntax.destroy_parser(&parser)
+	return supported
+}
+
 // run_with_options parses one complete filter and a stream of JSON input
 // values, drains every evaluator output for each input in order, and produces
 // owned LF-delimited bytes in the requested formatting mode.
@@ -1132,12 +1198,16 @@ run_with_options :: proc(
 			}
 		}
 		parameterized_definition = parameterized_definition || nested_parameterized
-		// The evaluator now owns one narrow parameterized ABI slice. Route only
-		// its identity fixture through syntax/compiler/eval; all other
-		// parameterized forms remain on the mature module bridge until their
-		// lexical binding and generator semantics are implemented.
-		parameterized_identity_definition := strings.has_prefix(trimmed_filter, "def id(x): x; id(") && strings.has_suffix(trimmed_filter, ")")
-		if has_definition && (!parameterized_definition || parameterized_identity_definition) {
+		// Route only the structurally validated arithmetic body through the real
+		// syntax/compiler/evaluator call frame. Other parameterized forms remain
+		// on the mature module bridge until their lexical binding semantics are
+		// separately contracted.
+		parameterized_simple := parameterized_definition && parameterized_simple_definition(trimmed_filter, allocator)
+		// Keep malformed forms of the already-accepted identity spelling on the
+		// parser path so jq emits a filter diagnostic instead of a module-loader
+		// error; this is a routing guard, not source expansion.
+		parameterized_identity_syntax := strings.has_prefix(trimmed_filter, "def id(x): x; id(")
+		if has_definition && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax) {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)

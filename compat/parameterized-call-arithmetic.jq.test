@@ -1,0 +1,15 @@
+# A structurally validated additive body runs through the real callable frame.
+def twice(x): x+x; twice(1)
+null
+2
+
+# Numeric literals and generator-valued arguments keep jq stream cardinality.
+def inc(x): x+1; inc((1,2))
+null
+2
+3
+
+# Unsupported bodies retain ordinary input semantics through the legacy bridge.
+def keep(x): .; keep(1)
+{"a":0}
+{"a":0}

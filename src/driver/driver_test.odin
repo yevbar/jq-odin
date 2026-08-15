@@ -450,6 +450,25 @@ parameterized_identity_uses_evaluator_argument_frame :: proc(t: ^testing.T) {
 }
 
 @(test)
+parameterized_simple_arithmetic_uses_evaluator_argument_frame :: proc(t: ^testing.T) {
+	// Additive bodies are structurally validated and run through the same
+	// argument/callee frames; unsupported bodies continue to use the bridge.
+	expect_run(t, "def twice(x): x+x; twice(1)", "null", "2\n")
+	expect_run(t, "def inc(x): x+1; inc((1,2))", "null", "2\n3\n")
+	// `.` is not the declaration parameter even though both lower to Identity;
+	// this body therefore remains on the mature module path.
+	expect_run(t, "def keep(x): .; keep(1)", "{\"a\":0}", "{\n  \"a\": 0\n}\n")
+}
+
+@(test)
+parameterized_simple_route_is_ast_validated :: proc(t: ^testing.T) {
+	testing.expect(t, parameterized_simple_definition("def twice(x): x+x; twice(1)", context.allocator))
+	testing.expect(t, parameterized_simple_definition("def inc(x): x+1; inc((1,2))", context.allocator))
+	testing.expect(t, !parameterized_simple_definition("def keep(x): .; keep(1)", context.allocator))
+	testing.expect(t, !parameterized_simple_definition("def twice(x): x*2; twice(1)", context.allocator))
+}
+
+@(test)
 ordinary_string_interpolation_evaluates_and_stringifies_each_result :: proc(t: ^testing.T) {
 	expect_run(t, `"inter\("pol" + "ation")"`, "null", `"interpolation"
 `)
