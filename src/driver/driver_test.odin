@@ -479,6 +479,24 @@ unresolved_variable_reports_name_and_source_span :: proc(t: ^testing.T) {
 }
 
 @(test)
+invalid_constant_object_key_reports_inner_source_span :: proc(t: ^testing.T) {
+	result: Run_Result
+	err := run(&result, "{(0):1}", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Compile)
+	testing.expect_value(t, err.compile_kind, compiler.Lower_Error_Kind.Invalid_Object_Key)
+	testing.expect_value(t, err.compile_error_span.start, 2)
+	testing.expect_value(t, err.compile_error_span.end, 3)
+	destroy_result_test(t, &result)
+
+	err = run(&result, "{non_const:., (0):1}", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Compile)
+	testing.expect_value(t, err.compile_kind, compiler.Lower_Error_Kind.Invalid_Object_Key)
+	testing.expect_value(t, err.compile_error_span.start, 15)
+	testing.expect_value(t, err.compile_error_span.end, 16)
+	destroy_result_test(t, &result)
+}
+
+@(test)
 invalid_escape_reports_lexical_message_and_span :: proc(t: ^testing.T) {
 	result: Run_Result
 	err := run(&result, "\"u\\vw\"", "null", context.allocator)

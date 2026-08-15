@@ -13,6 +13,7 @@ Lower_Error_Kind :: enum u8 {
 	Resource_Failure,
 	Unresolved_Label,
 	Unresolved_Variable,
+	Invalid_Object_Key,
 }
 
 Lower_Outcome :: struct {
@@ -821,7 +822,12 @@ lower_filter :: proc(
 							key_bytes = u64(key_end-key_start)
 						} else {
 							if constant_non_string_key(nodes, entry.key) {
-								return Lower_Outcome{kind = .Invalid_AST}
+								bad_key_node := nodes[int(entry.key)]
+								for bad_key_node.kind == .Parenthesized || bad_key_node.kind == .Optional {
+									if !bad_key_node.has_child || !node_reference_valid(bad_key_node.child, len(nodes)) do break
+									bad_key_node = nodes[int(bad_key_node.child)]
+								}
+								return Lower_Outcome{kind = .Invalid_Object_Key, error_span = bad_key_node.span}
 							}
 							key_bytes = 0
 						}

@@ -382,6 +382,31 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "^\njq: 1 compile error\n") && ok
 		return ok
 	}
+	if err.kind == .Filter_Compile && err.compile_kind == .Invalid_Object_Key && len(source) > 0 {
+		start := err.compile_error_span.start
+		end := err.compile_error_span.end
+		if start < 0 || end < start || end > len(source) {
+			return write_all(os.stderr, "jq-odin: filter compile error\n")
+		}
+		key := source[start:end]
+		kind := "number"
+		if key == "true" || key == "false" { kind = "boolean" }
+		if key == "null" { kind = "null" }
+		if len(key) > 0 && key[0] == '[' { kind = "array" }
+		if len(key) > 0 && key[0] == '{' { kind = "object" }
+		ok_key := write_all(os.stderr, "jq: error: Cannot use ")
+		ok_key = write_all(os.stderr, kind) && ok_key
+		ok_key = write_all(os.stderr, " (") && ok_key
+		ok_key = write_all(os.stderr, key) && ok_key
+		ok_key = write_all(os.stderr, ") as object key at <top-level>, line 1, column ") && ok_key
+		ok_key = write_all(os.stderr, fmt.tprintf("%d:\n    ", start+1)) && ok_key
+		ok_key = write_all(os.stderr, source) && ok_key
+		ok_key = write_all(os.stderr, "\n    ") && ok_key
+		for _ in 1..<start+1 do ok_key = write_all(os.stderr, " ") && ok_key
+		for _ in start..<end do ok_key = write_all(os.stderr, "^") && ok_key
+		ok_key = write_all(os.stderr, "\njq: 1 compile error\n") && ok_key
+		return ok_key
+	}
 	if err.kind == .Filter_Compile && err.compile_kind == .Unresolved_Variable && len(source) > 0 {
 		start := err.compile_error_span.start
 		end := err.compile_error_span.end
