@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `eef5788b`, the authoritative selected catalog measurement
-is **502/522 passed, 20 failed, 0 harness errors**
-(`/tmp/coverage-brace.json`). The bounded same-name destructuring alternation
+At integration head `49485252`, the authoritative selected catalog measurement
+is **504/522 passed, 18 failed, 0 harness errors**
+(`/tmp/coverage-empty-pattern.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
@@ -22,6 +22,8 @@ Constant non-string object keys now report jq-compatible type diagnostics and
 inner-key carets (jq.test:127, :139); arithmetic-key parser wording remains deferred.
 Single-character unmatched braces now preserve jq's source-located parse
 diagnostics (jq.test:2033, :2039); broader parser recovery remains deferred.
+Empty destructuring delimiters now preserve jq's token-specific diagnostics
+(jq.test:548, :554); multi-diagnostic parser recovery remains deferred.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
 `docs/decisions/0017-iterator-rhs-continuation.md`; this accounts for the
