@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `6c0d24ab`, the authoritative selected catalog measurement
-is **474/522 passed, 48 failed, 0 harness errors**
-(`/tmp/coverage-6c0d.json`). Persistent `input` stream behavior is covered by
+At integration head `8967a822`, the authoritative selected catalog measurement
+is **475/522 passed, 47 failed, 0 harness errors**
+(`/tmp/coverage-0cd12.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -916,4 +916,13 @@ Nested static field/index chains and Cartesian products of static path streams
 now lower to the existing `Delpaths` ABI. The complete jq.test:1168 expression
 passes, including `del(.)`, `del(empty)`, piped numeric selectors, and nested
 `.baz.bar[0].x`; dynamic keys, slices, and filter-valued path updates remain
+deferred.
+
+## Root index-field filter update follow-up (2026-08-14)
+
+The bounded form `.[nonnegative-index].field |= FILTER` now has a dedicated
+copy-on-write evaluator path. It handles null/missing array extension, empty
+RHS deletion/no-op behavior, first-output cardinality, late-error cancellation,
+and typed scalar/object/index errors. The focused shard passes 10/10 and adds
+jq.test:1232-shaped coverage; general nested paths and dynamic selectors remain
 deferred.
