@@ -7,6 +7,26 @@
 [4,"number",4]
 [null,"null",null]
 
+# Three repeated object alternatives, covering jq.test:936/940/944/948.
+try (.[] | . as {a:$a} ?// {a:$a} ?// {a:$a} | $a) catch .
+[[3],[4],[5],6]
+"Cannot index array with string \"a\""
+"Cannot index array with string \"a\""
+"Cannot index array with string \"a\""
+"Cannot index number with string \"a\""
+
+try (.[] as {a:$a} ?// {a:$a} ?// {a:$a} | $a) catch .
+[[3],[4],[5],6]
+"Cannot index array with string \"a\""
+
+try ([[3],[4],[5],6][] | . as {a:$a} ?// {a:$a} ?// {a:$a} | $a) catch .
+null
+"Cannot index array with string \"a\""
+
+try ([[3],[4],[5],6] | .[] as {a:$a} ?// {a:$a} ?// {a:$a} | $a) catch .
+null
+"Cannot index array with string \"a\""
+
 # Scalar-first exact upstream permutations jq.test:1008/1015/1022/1029.
 .[] | . as $a ?// {a:$a} ?// {a:$a} | $a
 [[3],[4],[5],6]

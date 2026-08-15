@@ -4038,6 +4038,24 @@ same_name_destructuring_alternation_accepts_scalar_object_object :: proc(t: ^tes
 }
 
 @(test)
+same_name_destructuring_alternation_accepts_three_objects :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<destructuring-alternation-three-objects>", `. as {a:$a} ?// {a:$a} ?// {a:$a} | $a`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Binding)
+	body := parser.nodes.storage[int(root.right)]
+	testing.expect_value(t, body.kind, Node_Kind.Try)
+	last := parser.nodes.storage[int(body.right)]
+	testing.expect_value(t, last.kind, Node_Kind.Try)
+	third := parser.nodes.storage[int(last.right)]
+	testing.expect_value(t, third.kind, Node_Kind.Binding)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 try_catch_stops_before_surrounding_binary :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<try-precedence>", `1 + try 2 catch 3 + 4`)

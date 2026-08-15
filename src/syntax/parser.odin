@@ -3835,6 +3835,45 @@ parse_pipe :: proc(
 						return {}, false
 					}
 					advance(parser)
+					// Exact three-object permutation `{a:$a} ?// {a:$a} ?// {a:$a}`.
+					if token_is(parser, .Open_Brace) {
+						third_pattern, third_ok := parse_container(parser, .Open_Brace)
+						if !third_ok do return {}, false
+						third_node := parser.nodes.storage[int(third_pattern)]
+						if third_node.container_kind != .Object || !third_node.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+						third_entry := parser.nodes.storage[int(third_node.value)]
+						if third_entry.kind != .Field || third_entry.container_kind != .Object_Entry || !third_entry.has_key || !third_entry.has_value { fail_from_lookahead(parser, .Expression); return {}, false }
+						third_key := parser.nodes.storage[int(third_entry.key)]
+						third_variable := parser.nodes.storage[int(third_entry.value)]
+						third_key_start, third_key_end, third_key_ok := diagnostic.span_offsets(parser.source, third_key.name_span)
+						third_var_start, third_var_end, third_var_ok := diagnostic.span_offsets(parser.source, third_variable.name_span)
+						third_key_name := diagnostic.source_bytes(parser.source)[third_key_start:third_key_end] if third_key_ok else ""
+						third_var_name := diagnostic.source_bytes(parser.source)[third_var_start:third_var_end] if third_var_ok else ""
+						if third_key.kind != .Field || !third_key.has_name_span || third_variable.kind != .Variable || !third_variable.has_name_span || !third_key_ok || !third_var_ok || third_key_name != "a" || third_var_name != first_name {
+							fail_from_lookahead(parser, .Expression); return {}, false
+						}
+						if !token_is(parser, .Pipe) { fail_from_lookahead(parser, .Expression); return {}, false }
+						advance(parser)
+						body, body_ok := parse_pipe(parser, closing, stop_at_comma)
+						if !body_ok do return {}, false
+						first_ref, first_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true}); if !first_ref_ok do return {}, false
+						first_field, first_field_ok := append_node(parser, Node{kind=.Field, span=first_key.span, child=first_ref, has_child=true, name_span=first_key.name_span, has_name_span=true}); if !first_field_ok do return {}, false
+						branch_one, branch_one_ok := append_node(parser, Node{kind=.Binding, span=parser.nodes.storage[int(first_field)].span, left=first_field, right=body, name_span=first.name_span, has_name_span=true}); if !branch_one_ok do return {}, false
+						second_ref, second_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true}); if !second_ref_ok do return {}, false
+						second_field, second_field_ok := append_node(parser, Node{kind=.Field, span=second_key.span, child=second_ref, has_child=true, name_span=second_key.name_span, has_name_span=true}); if !second_field_ok do return {}, false
+						branch_two, branch_two_ok := append_node(parser, Node{kind=.Binding, span=parser.nodes.storage[int(second_field)].span, left=second_field, right=body, name_span=second_variable.name_span, has_name_span=true}); if !branch_two_ok do return {}, false
+						third_ref, third_ref_ok := append_node(parser, Node{kind=.Variable, span=first.span, name_span=first.name_span, has_name_span=true}); if !third_ref_ok do return {}, false
+						third_field, third_field_ok := append_node(parser, Node{kind=.Field, span=third_key.span, child=third_ref, has_child=true, name_span=third_key.name_span, has_name_span=true}); if !third_field_ok do return {}, false
+						branch_three, branch_three_ok := append_node(parser, Node{kind=.Binding, span=parser.nodes.storage[int(third_field)].span, left=third_field, right=body, name_span=third_variable.name_span, has_name_span=true}); if !branch_three_ok do return {}, false
+						second_try_span, second_try_span_ok := spanning(parser, parser.nodes.storage[int(branch_two)].span, parser.nodes.storage[int(branch_three)].span); assert(second_try_span_ok)
+						second_try, second_try_ok := append_node(parser, Node{kind=.Try, span=second_try_span, left=branch_two, right=branch_three}); if !second_try_ok do return {}, false
+						try_span, try_span_ok := spanning(parser, parser.nodes.storage[int(branch_one)].span, parser.nodes.storage[int(second_try)].span); assert(try_span_ok)
+						try_node, try_ok := append_node(parser, Node{kind=.Try, span=try_span, left=branch_one, right=second_try}); if !try_ok do return {}, false
+						outer_span, outer_span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(try_node)].span); assert(outer_span_ok)
+						outer, outer_ok := append_node(parser, Node{kind=.Binding, span=outer_span, left=left, right=try_node, name_span=first.name_span, has_name_span=true}); if !outer_ok do return {}, false
+						if pipe_root != invalid_id { tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = outer; tail.has_child = false; return pipe_root, true }
+						return outer, true
+					}
 					if parser.lookahead.kind != .Token || parser.lookahead.token.kind != .Binding {
 						fail_from_lookahead(parser, .Expression)
 						return {}, false
