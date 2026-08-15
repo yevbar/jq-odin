@@ -3388,7 +3388,34 @@ parse_pipe :: proc(
 				first_name := diagnostic.source_bytes(parser.source)[first_name_start:first_name_end] if first_name_ok else ""
 				if !first_name_ok || first_name != "a" { fail_from_lookahead(parser, .Expression); return {}, false }
 				advance(parser)
-				if !token_is(parser, .Alternation) { fail_from_lookahead(parser, .Expression); return {}, false }
+				if !token_is(parser, .Alternation) {
+					// `$a` is also an ordinary binding when followed by `|` or a
+					// reduction body; leave those forms on the legacy path.
+					if token_is(parser, .Open_Paren) {
+						parser.pending_reduce_name = first_token.value_span
+						parser.has_pending_reduce = true
+						return left, true
+					}
+					if !token_is(parser, .Pipe) { fail_from_lookahead(parser, .Expression); return {}, false }
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, stop_at_comma)
+					if !right_ok do return {}, false
+					span, span_ok := spanning(parser, parser.nodes.storage[int(left)].span, parser.nodes.storage[int(right)].span); assert(span_ok)
+					bound, bound_ok := append_node(parser, Node{kind=.Binding, span=span, left=left, right=right, name_span=first_token.value_span, has_name_span=true}); if !bound_ok do return {}, false
+					if pipe_root != invalid_id {
+						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = bound; tail.has_child = false
+						pipe := pipe_root
+						for {
+							pipe_node := &parser.nodes.storage[int(pipe)]
+							pipe_span, pipe_span_ok := spanning(parser, parser.nodes.storage[int(pipe_node.left)].span, parser.nodes.storage[int(bound)].span); assert(pipe_span_ok)
+							pipe_node.span = pipe_span
+							if pipe == pipe_tail do break
+							pipe = pipe_node.right
+						}
+						return pipe_root, true
+					}
+					return bound, true
+				}
 				advance(parser)
 				if !token_is(parser, .Open_Brace) { fail_from_lookahead(parser, .Expression); return {}, false }
 				second_pattern, second_ok := parse_container(parser, .Open_Brace)
