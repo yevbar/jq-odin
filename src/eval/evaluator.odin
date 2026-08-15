@@ -8676,6 +8676,19 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if ready do return result
 			case .Static_Iterator_Update:
 				if instruction.operands_count != 1 do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Array && input_kind != .Object {
+					key, key_error := cannot_iterate_runtime_key(&frame.input, storage.allocator)
+					if key_error != nil do return resource_step(key_error)
+					err := Runtime_Error{kind = .Cannot_Iterate, input_kind = input_kind, span = instruction.span, key = key}
+					result, ready := raise_runtime(storage, index, err)
+					if len(key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)key, storage.allocator)
+						if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					}
+					if ready do return result
+					continue
+				}
 				if !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
 				if instruction.iterator_compound_operator == 255 {
 					frame.dynamic_index_base = value.clone_value(&frame.input)
