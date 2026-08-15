@@ -7,7 +7,7 @@ behavioral oracle.
 ## Current measured checkpoint
 
 At integration head `4c4a5bcc`, the authoritative selected catalog measurement
-is **476/522 passed, 46 failed, 0 harness errors**
+is **477/522 passed, 45 failed, 0 harness errors**
 (`/tmp/coverage-current-715.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
@@ -42,6 +42,9 @@ callable bodies continue through the existing module fallback.
 Generated path assignment for bounded literal path streams is covered by
 `compat/path-assignment-generated.jq.test` (7/7); dynamic components and
 filter-valued `|=` updates remain deferred under decision 0356.
+Generated path calls now preserve jq's result-bearing invalid-path diagnostics
+for scalar and non-path array results; this is covered by the extended path
+assignment shard and decision 0357.
 Static deletion from a `null` base now preserves jq's no-op semantics for
 `.foo`, `.[0]`, and `.foo[0]`; the focused shard is
 `compat/static-del-null.jq.test` and the contract is recorded in
