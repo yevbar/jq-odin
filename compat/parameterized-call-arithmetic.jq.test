@@ -9,6 +9,31 @@ null
 2
 3
 
+def dec(x): x-1; dec(3)
+null
+2
+
+def mul(x): x*2; mul(3)
+null
+6
+
+def half(x): x/2; half(3)
+null
+1.5
+
+def rem(x): x%2; rem(5)
+null
+1
+
+# Existing evaluator diagnostics remain catchable through the callable frame.
+def div(x): x/0; try div(1) catch .
+null
+"number (1) and number (0) cannot be divided because the divisor is zero"
+
+def dec(x): x-1; try dec("a") catch .
+null
+"string (\"a\") and number (1) cannot be subtracted"
+
 # Unsupported bodies retain ordinary input semantics through the legacy bridge.
 def keep(x): .; keep(1)
 {"a":0}

@@ -455,6 +455,12 @@ parameterized_simple_arithmetic_uses_evaluator_argument_frame :: proc(t: ^testin
 	// argument/callee frames; unsupported bodies continue to use the bridge.
 	expect_run(t, "def twice(x): x+x; twice(1)", "null", "2\n")
 	expect_run(t, "def inc(x): x+1; inc((1,2))", "null", "2\n3\n")
+	expect_run(t, "def dec(x): x-1; dec(3)", "null", "2\n")
+	expect_run(t, "def mul(x): x*2; mul(3)", "null", "6\n")
+	expect_run(t, "def half(x): x/2; half(3)", "null", "1.5\n")
+	expect_run(t, "def rem(x): x%2; rem(5)", "null", "1\n")
+	expect_run(t, "def div(x): x/0; try div(1) catch .", "null", "\"number (1) and number (0) cannot be divided because the divisor is zero\"\n")
+	expect_run(t, "def dec(x): x-1; try dec(\"a\") catch .", "null", "\"string (\\\"a\\\") and number (1) cannot be subtracted\"\n")
 	// `.` is not the declaration parameter even though both lower to Identity;
 	// this body therefore remains on the mature module path.
 	expect_run(t, "def keep(x): .; keep(1)", "{\"a\":0}", "{\n  \"a\": 0\n}\n")
@@ -464,8 +470,11 @@ parameterized_simple_arithmetic_uses_evaluator_argument_frame :: proc(t: ^testin
 parameterized_simple_route_is_ast_validated :: proc(t: ^testing.T) {
 	testing.expect(t, parameterized_simple_definition("def twice(x): x+x; twice(1)", context.allocator))
 	testing.expect(t, parameterized_simple_definition("def inc(x): x+1; inc((1,2))", context.allocator))
+	testing.expect(t, parameterized_simple_definition("def dec(x): x-1; dec(3)", context.allocator))
+	testing.expect(t, parameterized_simple_definition("def mul(x): x*2; mul(3)", context.allocator))
+	testing.expect(t, parameterized_simple_definition("def half(x): x/2; half(3)", context.allocator))
+	testing.expect(t, parameterized_simple_definition("def rem(x): x%2; rem(5)", context.allocator))
 	testing.expect(t, !parameterized_simple_definition("def keep(x): .; keep(1)", context.allocator))
-	testing.expect(t, !parameterized_simple_definition("def twice(x): x*2; twice(1)", context.allocator))
 }
 
 @(test)

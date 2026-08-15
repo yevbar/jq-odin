@@ -1015,7 +1015,7 @@ filter_definition_shape :: proc(source: string) -> (has_definition: bool, has_pa
 }
 
 // simple_callable_term accepts only the bounded arithmetic body understood by
-// the first executable parameterized-call slice. Parameter identifiers are
+// the executable parameterized-call slice. Parameter identifiers are
 // distinguished from `.` by their source span; both lower to Identity in the
 // AST, but only the declaration parameter may be rebound by a Call frame.
 simple_callable_term :: proc(
@@ -1028,7 +1028,12 @@ simple_callable_term :: proc(
 	if id < 0 || int(id) >= len(nodes) || seen_parameter == nil do return false
 	node := nodes[int(id)]
 	if node.form == .Binary {
-		if node.binary_operator != .Add || node.left < 0 || node.right < 0 do return false
+		#partial switch node.binary_operator {
+		case .Add, .Subtract, .Multiply, .Divide, .Modulo:
+		case:
+			return false
+		}
+		if node.left < 0 || node.right < 0 do return false
 		return simple_callable_term(nodes, source, parameter, node.left, seen_parameter) &&
 			simple_callable_term(nodes, source, parameter, node.right, seen_parameter)
 	}
@@ -1050,7 +1055,7 @@ simple_callable_term :: proc(
 
 // parameterized_simple_definition performs the routing check from the real
 // syntax tree rather than rewriting source text. It accepts one declaration,
-// one parameter, a direct call to that declaration, and an additive body made
+// one parameter, a direct call to that declaration, and an arithmetic body made
 // from the parameter and numeric literals. Unsupported callable bodies return
 // false and remain on the existing module expansion bridge.
 parameterized_simple_definition :: proc(source: string, allocator: runtime.Allocator) -> bool {
