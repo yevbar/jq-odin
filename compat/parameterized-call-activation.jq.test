@@ -1,0 +1,19 @@
+# One-argument identity calls run the argument filter before the callee body.
+def id(x): x; id(1)
+null
+1
+
+# Generator-valued arguments activate one callee frame per argument output.
+def id(x): x; id((1,2))
+null
+1
+2
+
+# An empty argument stream makes the callable stream empty.
+def id(x): x; id(empty)
+null
+
+# The body remains an ordinary filter after the argument is bound.
+def id(x): x; id(1) + 1
+null
+2
