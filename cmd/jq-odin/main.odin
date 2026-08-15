@@ -345,6 +345,22 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
 		return ok
 	}
+	// A leading modulo token is syntactically an operand, not a complete
+	// filter. jq reports its source spelling (rather than the internal token
+	// name) and anchors the diagnostic at the first byte. Keep this formatter
+	// gated by the parser's token/span metadata so a valid infix `%` expression
+	// continues through normal evaluation and unrelated parse errors are not
+	// overmatched.
+	if err.kind == .Filter_Parse && err.filter_parse_kind == .Unexpected_Token &&
+	   err.filter_has_actual && err.filter_actual == syntax.Token_Kind.Modulo &&
+	   err.filter_start == 0 && err.filter_end == 1 && len(source) > 0 && source[0] == '%' {
+		line_end := 0
+		for line_end < len(source) && source[line_end] != '\n' do line_end += 1
+		ok = write_all(os.stderr, "jq: error: syntax error, unexpected '%', expecting end of file at <top-level>, line 1, column 1:\n    ") && ok
+		ok = write_all(os.stderr, source[:line_end]) && ok
+		ok = write_all(os.stderr, "\n    ^\njq: 1 compile error\n") && ok
+		return ok
+	}
 	// jq reports a source-located diagnostic for a lone unmatched brace. Keep
 	// this single-error formatter narrow; multi-diagnostic parser recovery (for
 	// example arithmetic object keys) remains a separate contract.

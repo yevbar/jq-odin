@@ -541,6 +541,19 @@ malformed_single_braces_preserve_parse_spans :: proc(t: ^testing.T) {
 }
 
 @(test)
+leading_modulo_parse_metadata_preserves_source_token_span :: proc(t: ^testing.T) {
+	result: Run_Result
+	err := run(&result, "%::wat", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Parse)
+	testing.expect_value(t, err.filter_parse_kind, syntax.Parse_Error_Kind.Unexpected_Token)
+	testing.expect(t, err.filter_has_actual)
+	testing.expect_value(t, err.filter_actual, syntax.Token_Kind.Modulo)
+	testing.expect_value(t, err.filter_start, 0)
+	testing.expect_value(t, err.filter_end, 1)
+	destroy_result_test(t, &result)
+}
+
+@(test)
 empty_destructuring_reports_closing_token_span :: proc(t: ^testing.T) {
 	result: Run_Result
 	err := run(&result, ". as [] | null", "null", context.allocator)
