@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `d8ccf4d6`, the authoritative selected catalog measurement
-is **505/522 passed, 17 failed, 0 harness errors**
-(`/tmp/coverage-modulo.json`). The bounded same-name destructuring alternation
+At integration head `1da381f0`, the authoritative selected catalog measurement
+is **511/522 passed, 11 failed, 0 harness errors**
+(`/tmp/coverage-module-diag-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
@@ -1005,3 +1005,12 @@ gated CLI formatter now matches jq for leading modulo syntax (`%`, `%foo`,
 `%::wat`, and doubled/multiline variants) while preserving valid infix modulo
 evaluation. Remaining failures are documented ABI or module-diagnostic
 boundaries; no broad parser/evaluator behavior is claimed by this slice.
+
+## Module metadata diagnostic follow-up (2026-08-15)
+
+The module loader now preserves source spans for constant metadata, invalid
+escapes, and dynamic import paths. The CLI emits jq-compatible diagnostics for
+the six remaining module/include compile cases, including escaped paths. The
+focused driver shard passes 72/72, and the catalog rises to **511/522**; the
+remaining 11 cases are callable/path/reduce/recursive ABI boundaries or the
+multi-diagnostic object-key case.
