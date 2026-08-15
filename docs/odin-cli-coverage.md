@@ -6,16 +6,16 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `929f44c7`, the authoritative selected catalog measurement
-is **517/522 passed, 5 failed, 0 harness errors**
+At integration head `351f3137`, the authoritative selected catalog measurement
+is **519/522 passed, 3 failed, 0 harness errors**
 (`/tmp/coverage-callable-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
 alternation ABI. Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
-The five remaining selected failures are jq.test:864, :929, :1273, :1277,
-and :2093; existing decisions document their required lexical-call,
+The three remaining selected failures are jq.test:864, :929, and :2093;
+existing decisions document their required lexical-call,
 recursive-pattern, or filter-path continuation ABIs.
 The composed formal-call cardinality failure at jq.test:864 is further pinned
 in decision `docs/decisions/0396-composed-formal-call-cardinality-boundary.md`;
@@ -1083,3 +1083,13 @@ typed index errors, preserves the original root, and applies the literal body
 path with copy-on-write, including null-root object synthesis. The focused
 fixture passes 4/4 and the full pinned catalog rises to **517/522**. Dynamic
 binding paths, RHS references, and multi-output producers remain deferred.
+
+## Generated map/select assignment follow-up (2026-08-15)
+
+The parser and evaluator now recognize the strict
+`map(select(.field == NUMBER))[].field` generated-path shape for both `=` and
+`|=`. Matching objects are materialized before assignment so jq's
+result-bearing invalid-path diagnostic is preserved; empty, null, and scalar
+roots retain their jq-compatible outcomes. The focused fixture passes 5/5 and
+the full pinned catalog rises to **519/522**. Remaining failures are jq.test:
+864, :929, and :2093.
