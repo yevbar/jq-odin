@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `b7e75c4e`, the authoritative selected catalog measurement
+At integration head `1f635692`, the authoritative selected catalog measurement
 is **516/522 passed, 6 failed, 0 harness errors**
 (`/tmp/coverage-callable-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
@@ -17,6 +17,9 @@ alternation ABI. Persistent `input` stream behavior is covered by
 The six remaining selected failures are jq.test:864, :929, :1273, :1277,
 :2088, and :2093; existing decisions document their required lexical-call,
 recursive-pattern, or filter-path continuation ABIs.
+The append-only `Parameter_Reference` syntax/program scaffold now distinguishes
+formal filter references from lexical `$` variables; runtime closure activation
+is intentionally not routed yet (decision 0385).
 Undefined-variable compile diagnostics now include jq-compatible source/name spans
 and carets (jq.test:560); boolean object-key diagnostics remain deferred.
 Invalid string escapes now preserve the lexical message and offending-line caret
