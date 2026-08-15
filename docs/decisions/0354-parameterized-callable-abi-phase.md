@@ -9,10 +9,11 @@ callee body as operand zero and lowers the argument filter as operand one.
 metadata; the evaluator call-frame prototype carries the argument instruction
 edge so a future activation can transfer ownership into a callee frame.
 
-The parser rejects an extra positional argument (`id(1,2)`) because this phase
-supports exactly one parameter, and rejects parenthesized calls to zero-argument
-definitions (`def zero: 1; zero(2)`). Top-level zero-argument definitions and
-their recursive/declaration-snapshot behavior remain unchanged.
+The parser treats comma as jq's generator operator inside the single
+filter-valued argument (`id(1,2)` emits two values), rejects semicolon-separated
+extra formal arguments (`id(1;2)`), and rejects parenthesized calls to
+zero-argument definitions (`def zero: 1; zero(2)`). Top-level zero-argument
+definitions and their recursive/declaration-snapshot behavior remain unchanged.
 
 This is an ABI and structural validation checkpoint, not full runtime binding:
 the production evaluator still accepts only one-operand `Call` instructions.

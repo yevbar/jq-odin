@@ -1546,11 +1546,11 @@ parse_pipe :: proc(
 							return {}, false
 						}
 					advance(parser)
-					// Parameterized definitions currently expose exactly one filter
-					// argument. Stop at a comma so an extra positional argument is
-					// rejected here instead of being silently folded into a Comma
-					// filter node and lowered as one value.
-					argument, argument_ok := parse_pipe(parser, .Close_Paren, true)
+					// A comma inside the parentheses is jq's generator operator and
+					// remains part of this single filter-valued argument. Semicolon
+					// separated formal arguments are outside this one-parameter ABI
+					// and are rejected by the parser's normal call boundary.
+					argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
 					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					advance(parser)
 					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true, call_argument=argument, has_call_argument=true})

@@ -4127,9 +4127,10 @@ parameterized_identity_definition_records_argument_root :: proc(t: ^testing.T) {
 }
 
 @(test)
-parameterized_definition_rejects_extra_positional_argument :: proc(t: ^testing.T) {
+
+parameterized_definition_rejects_extra_formal_argument :: proc(t: ^testing.T) {
 	parser: Parser
-	source := diagnostic.borrow_source("<parameterized-arity>", `def id(x): x; id(1,2)`)
+	source := diagnostic.borrow_source("<parameterized-arity>", `def id(x): x; id(1;2)`)
 	testing.expect(t, init_parser(&parser, source, context.allocator))
 	outcome := parse_filter(&parser)
 	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
