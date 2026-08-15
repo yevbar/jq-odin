@@ -22,6 +22,11 @@ Callable_Entry :: struct {
 	ordinal: Definition_Ordinal,
 	arity: Callable_Arity,
 	body: Instruction_Index,
+	// Namespace offsets identify the alias prefix in the source spelling. They
+	// are metadata only in this phase; evaluator dispatch remains unchanged.
+	namespace_start: Source_Offset,
+	namespace_end:   Source_Offset,
+	has_namespace:   bool,
 }
 
 Source_Span :: struct {

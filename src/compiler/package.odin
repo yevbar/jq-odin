@@ -757,6 +757,15 @@ lower_filter :: proc(
 		if !node_payload_shape_valid(node) {
 			return Lower_Outcome{kind = .Invalid_AST}
 		}
+		if node.kind == .Call && node.has_call_namespace {
+			if !node.has_call_name do return Lower_Outcome{kind = .Invalid_AST}
+			namespace_start, namespace_end, namespace_ok := diagnostic.span_offsets(source, node.call_namespace_span)
+			call_start, call_end, call_ok := diagnostic.span_offsets(source, node.call_name_span)
+			bytes := diagnostic.source_bytes(source)
+			if !namespace_ok || !call_ok || namespace_start != call_start || namespace_end <= namespace_start || namespace_end+2 > call_end || bytes[namespace_end:namespace_end+2] != "::" {
+				return Lower_Outcome{kind = .Invalid_AST}
+			}
+		}
 		if node.form == .Binary {
 			_, operator_error := span_to_program(source, node.operator_span)
 			if operator_error != .None {

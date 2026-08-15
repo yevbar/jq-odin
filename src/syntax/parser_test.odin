@@ -4275,6 +4275,30 @@ top_level_definition_table_preserves_order_and_resolves_calls :: proc(t: ^testin
 }
 
 @(test)
+qualified_definition_and_call_retain_namespace_spans :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<qualified-definition>", `def foo::a: 1; foo::a`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	definitions := parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 1)
+	testing.expect(t, definitions[0].has_namespace)
+	namespace_start, namespace_end, namespace_ok := diagnostic.span_offsets(source, definitions[0].namespace_span)
+	testing.expect(t, namespace_ok)
+	testing.expect_value(t, namespace_start, 4)
+	testing.expect_value(t, namespace_end, 7)
+	root := parser.nodes.storage[int(outcome.root)]
+	testing.expect_value(t, root.kind, Node_Kind.Call)
+	testing.expect(t, root.has_call_namespace)
+	call_namespace_start, call_namespace_end, call_namespace_ok := diagnostic.span_offsets(source, root.call_namespace_span)
+	testing.expect(t, call_namespace_ok)
+	testing.expect_value(t, call_namespace_start, 15)
+	testing.expect_value(t, call_namespace_end, 18)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 top_level_definition_calls_capture_declaration_snapshot :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<definition-snapshot>", `def f: 1; def g: f; def f: 2; g`)

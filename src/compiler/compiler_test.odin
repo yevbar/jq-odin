@@ -283,6 +283,22 @@ multiple_top_level_definitions_lower_to_direct_call_edges :: proc(t: ^testing.T)
 }
 
 @(test)
+qualified_call_namespace_metadata_survives_lowering_validation :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, parsed, lowered := parse_and_lower(t, `def foo::a: 1; foo::a`, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	definitions := syntax.parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 1)
+	testing.expect(t, definitions[0].has_namespace)
+	root := syntax.parser_nodes(&parser)[int(parsed.root)]
+	testing.expect(t, root.kind == .Call && root.has_call_namespace)
+	root_instruction := instruction_at(&compiled, program.Instruction_Index(parsed.root))
+	testing.expect_value(t, root_instruction.opcode, program.Opcode.Call)
+	expect_cleanup(t, &parser, &compiled)
+}
+
+@(test)
 parameterized_identity_call_lowers_argument_edge :: proc(t: ^testing.T) {
 	parser: syntax.Parser
 	compiled: program.Program

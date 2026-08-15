@@ -320,9 +320,13 @@ Node_Id :: distinct int
 
 // Definition records one top-level zero-argument declaration in source order.
 // name_span borrows the Parser's Source; body points into the same parser-owned
-// node arena. ordinal is stable for the lifetime of this parse and starts at 0.
+// node arena. For a qualified declaration, namespace_span identifies the alias
+// prefix before `::` while name_span retains the complete spelling. ordinal is
+// stable for the lifetime of this parse and starts at 0.
 Definition :: struct {
 	name_span: diagnostic.Span,
+	namespace_span: diagnostic.Span,
+	has_namespace: bool,
 	body:      Node_Id,
 	ordinal:   u32,
 	scope_depth: u32,
@@ -429,6 +433,8 @@ Node :: struct {
 	iterator_compound: bool,
 	call_name_span: diagnostic.Span,
 	has_call_name: bool,
+	call_namespace_span: diagnostic.Span,
+	has_call_namespace: bool,
 	call_argument: Node_Id,
 	has_call_argument: bool,
 	// Parameterized any/all retain generator and predicate filters as separate
@@ -804,8 +810,11 @@ parse_filter :: proc(parser: ^Parser) -> Parse_Outcome {
 				parser.nodes.storage[i].has_child = true
 			}
 		}
+		namespace_span, has_namespace := qualified_namespace_span(parser, name.span)
 		definition_error := append_fallible_buffer(&parser.definitions, Definition{
 			name_span = name.span,
+			namespace_span = namespace_span,
+			has_namespace = has_namespace,
 			body = body,
 			ordinal = u32(parser.definitions.count),
 			scope_depth = parser.definition_scope_depth,
@@ -1062,6 +1071,23 @@ definition_name_matches :: proc(parser: ^Parser, span: diagnostic.Span, spelling
 	return bytes[start:end] == spelling
 }
 
+// qualified_namespace_span retains the namespace prefix of a namespaced
+// identifier without allocating or rewriting its source spelling. The full
+// identifier remains in the accompanying name/call span; this prefix is only
+// structural metadata for the later callable-table ABI.
+qualified_namespace_span :: proc(parser: ^Parser, span: diagnostic.Span) -> (diagnostic.Span, bool) {
+	start, end, ok := diagnostic.span_offsets(parser.source, span)
+	if !ok || end < start do return {}, false
+	bytes := diagnostic.source_bytes(parser.source)
+	for at := start; at+1 < end; at += 1 {
+		if bytes[at] == ':' && bytes[at+1] == ':' {
+			namespace, namespace_ok := diagnostic.make_span(parser.source, start, at)
+			return namespace, namespace_ok
+		}
+	}
+	return {}, false
+}
+
 // visible_definition returns the latest declaration already visible at the
 // current source position. A declaration being parsed is represented by an
 // unresolved body edge so recursive calls can be patched after its body root
@@ -1154,8 +1180,11 @@ parse_nested_definition :: proc(
 			parser.nodes.storage[i].has_child = true
 		}
 	}
+	namespace_span, has_namespace := qualified_namespace_span(parser, name.span)
 	definition_error := append_fallible_buffer(&parser.definitions, Definition{
 		name_span = name.span,
+		namespace_span = namespace_span,
+		has_namespace = has_namespace,
 		body = body,
 		ordinal = u32(parser.definitions.count),
 		scope_depth = parser.definition_scope_depth,
@@ -1657,6 +1686,7 @@ parse_pipe :: proc(
 				continue
 			case .Identifier:
 				spelling := token_spelling(parser, token)
+				call_namespace_span, has_call_namespace := qualified_namespace_span(parser, token.span)
 				// jq exposes uppercase IN as the generator-membership builtin;
 				// normalize its spelling before the regular call dispatch.
 				uppercase_in := spelling == "IN"
@@ -1685,14 +1715,14 @@ parse_pipe :: proc(
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
 					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
 					advance(parser)
-					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true, call_argument=argument, has_call_argument=true})
+					new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true, call_namespace_span=call_namespace_span, has_call_namespace=has_call_namespace, call_argument=argument, has_call_argument=true})
 					if !call_ok { return {}, false }
 					term = new_term
 					term_ready = true
 					continue
 					}
 					if !call_has_parameter {
-						new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true})
+						new_term, call_ok := append_node(parser, Node{kind=.Call, span=token.span, child=call_body, has_child=call_body >= 0, call_name_span=token.span, has_call_name=true, call_namespace_span=call_namespace_span, has_call_namespace=has_call_namespace})
 						if !call_ok { return {}, false }
 						term = new_term
 						term_ready = true

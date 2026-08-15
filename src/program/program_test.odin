@@ -680,10 +680,16 @@ callable_entry_snapshots_ordinal_arity_and_body :: proc(t: ^testing.T) {
 		ordinal = Definition_Ordinal(7),
 		arity = Callable_Arity(1),
 		body = Instruction_Index(9),
+		namespace_start = Source_Offset(4),
+		namespace_end = Source_Offset(7),
+		has_namespace = true,
 	}
 	testing.expect_value(t, entry.ordinal, Definition_Ordinal(7))
 	testing.expect_value(t, entry.arity, Callable_Arity(1))
 	testing.expect_value(t, entry.body, Instruction_Index(9))
+	testing.expect_value(t, entry.namespace_start, Source_Offset(4))
+	testing.expect_value(t, entry.namespace_end, Source_Offset(7))
+	testing.expect(t, entry.has_namespace)
 }
 
 @(test)
