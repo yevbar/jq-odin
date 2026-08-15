@@ -4274,6 +4274,27 @@ nested_formal_reference_is_distinct_from_lexical_variable :: proc(t: ^testing.T)
 }
 
 @(test)
+nested_lexical_fixture_preserves_definition_ordinals_and_scopes :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<nested-lexical-fixture>", `def id(x):x; 2000 as $x | def f(x):1 as $x | id([$x, x, x]); def g(x): 100 as $x | f($x,$x+x); g($x)`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	definitions := parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 3)
+	for index in 0..<len(definitions) {
+		testing.expect_value(t, definitions[index].ordinal, u32(index))
+	}
+	testing.expect_value(t, definitions[0].scope_depth, u32(0))
+	testing.expect(t, definitions[1].scope_depth > 0 && definitions[2].scope_depth > 0)
+	for definition in definitions {
+		body := parser.nodes.storage[int(definition.body)]
+		testing.expect(t, body.kind != Node_Kind.Call || body.has_child)
+	}
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 parameterized_definition_rejects_extra_formal_argument :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<parameterized-arity>", `def id(x): x; id(1;2)`)
