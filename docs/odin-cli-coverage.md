@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `1ca6b181`, the authoritative selected catalog measurement
-is **471/522 passed, 51 failed, 0 harness errors**
-(`/tmp/coverage-index.json`). Persistent `input` stream behavior is covered by
+At integration head `a47f436c`, the authoritative selected catalog measurement
+is **472/522 passed, 50 failed, 0 harness errors**
+(`/tmp/coverage-walk.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -27,9 +27,10 @@ The uppercase `INDEX(stream; key)` case at jq.test:2047 is covered by
 materialized and keyed entries are passed through the existing `from_entries`
 path.
 The remaining recursive `walk(filter)` case at jq.test:2388 is explicitly
-deferred under decision `docs/decisions/0348-walk-filter-contract.md`; it needs
-post-order traversal and container-specific callback cardinality rather than a
-driver rewrite.
+covered by `compat/walk-filter-postorder.jq.test` and decision
+`docs/decisions/0348-walk-filter-ast-lowering-prototype.md`; it uses recursive
+AST calls with post-order `Map`/`Map_Values` rebuilding rather than a driver
+rewrite.
 Static deletion from a `null` base now preserves jq's no-op semantics for
 `.foo`, `.[0]`, and `.foo[0]`; the focused shard is
 `compat/static-del-null.jq.test` and the contract is recorded in
