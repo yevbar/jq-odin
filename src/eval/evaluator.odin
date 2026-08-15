@@ -10971,6 +10971,28 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			result, ready := propagate_output(storage, index, &output)
 			if ready do return result
 
+		case .Static_Field_Update_Empty:
+			key_text, _, operands_ok := static_field_update_operands(storage, instruction)
+			if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			if value.kind_of(&frame.input) == .Object {
+				key, found := existing_object_key_copy(&frame.input, key_text)
+				if found {
+					_, removed, _, delete_error := value.object_delete_take(&frame.input, key_text)
+					_ = value.destroy_value(&key)
+					_ = value.destroy_value(&removed)
+					if value.object_error_kind(&delete_error) != .None {
+						_ = value.destroy_object_error(&delete_error)
+						return begin_terminal_misuse(storage, .Malformed_Program)
+					}
+				} else {
+					_ = value.destroy_value(&key)
+				}
+			}
+			output := value.take_value(&frame.input)
+			frame.phase = .Leaf_Yielded
+			result, ready := propagate_output(storage, index, &output)
+			if ready do return result
+
 		case .Iterator_Update_Active:
 			if instruction.iterator_compound_operator == 255 do return begin_terminal_misuse(storage, .Malformed_Program)
 			length, length_ok := value.array_length(&frame.input)
