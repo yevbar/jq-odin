@@ -316,6 +316,8 @@ Opcode :: enum u8 {
 	Static_Field_Optional_Identity,
 	// Static_Field_Delete is a bounded `.name |= empty` update.
 	Static_Field_Delete,
+	// Static_Field_Update is a resumable root `.name |= FILTER` update.
+	Static_Field_Update,
 	// Static_Iterator_Update is a resumable root `.[] |= FILTER` update.
 	Static_Iterator_Update,
 }
@@ -582,7 +584,7 @@ opcode_is_binary :: proc(opcode: Opcode) -> bool {
 		return true
 	case .Group_By_Key:
 		return false
-	case .Pow, .Identity, .If, .While, .Until, .Label, .Break, .Static_Iterator_Delete, .Static_Iterator_Update, .Static_Field_Add_Field, .Static_Field_Optional_Identity, .Static_Field_Delete, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Iterator_Set_Number, .Static_Index_Set_Number, .Static_Slice_Set_Number, .Dynamic_Field_Set, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
+	case .Pow, .Identity, .If, .While, .Until, .Label, .Break, .Static_Iterator_Delete, .Static_Iterator_Update, .Static_Field_Add_Field, .Static_Field_Optional_Identity, .Static_Field_Delete, .Static_Field_Update, .Last, .First, .Log10, .Log2, .Exp, .Exp2, .Exp10, .Asin, .Acos, .Cos, .Sin, .Tan, .Sinh, .Cosh, .Acosh, .Asinh, .Atanh, .Isinfinite, .Any_Not, .All_Not, .Error, .Try, .IsEmpty, .Range, .Limit, .Skip, .Nth, .Map, .Map_Values, .Slice, .Recurse, .Static_Field_Add_Number, .Static_Field_Set_Number, .Static_Iterator_Set_Number, .Static_Index_Set_Number, .Static_Slice_Set_Number, .Dynamic_Field_Set, .Path, .Getpath, .Strftime, .Strptime, .Mktime, .Gmtime, .Fromdate, .Todate, .Negate, .Field, .Index, .Parenthesized, .Sequence, .Fork, .Optional,
 	     .In, .Inside, .Setpath, .Delpaths,
 	     .Array, .Object, .Variable, .Binding, .Reduce, .Foreach, .Call, .Length, .Keys, .Keys_Unsorted, .Tostring, .Tonumber, .Min, .Max, .Toboolean, .Builtins, .Debug, .Input, .Base64, .Base64d, .Uri, .Urid, .Html, .Text, .Json, .Csv, .Tsv, .Sh, .Tojson, .Fromjson, .Log, .From_Entries, .To_Entries, .Isnan, .Utf8bytelength, .Not_Builtin, .Empty, .Values, .Arrays, .Objects, .Iterables, .Scalars, .Booleans, .Nulls, .Numbers, .Strings, .Finites, .Normals, .Floor, .Round, .Trunc, .Transpose, .Unique, .Sort, .Sort_By_Key, .Type, .Abs, .Sqrt, .Fabs, .Add_Builtin, .Trim, .Ltrim, .Rtrim, .Atan, .Ascii_Downcase, .Ascii_Upcase, .Reverse, .Implode, .Explode, .Ceil, .Flatten, .Nan, .Infinite, .Any, .All, .Isfinite, .Join, .Isnormal, .Contains, .Split, .Index_Builtin, .Rindex_Builtin, .Indices_Builtin, .Startswith, .Endswith, .Has, .Bsearch, .Ltrimstr, .Rtrimstr, .Trimstr, .Paths:
 		return false
@@ -673,6 +675,8 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		if count != 1 { return false }; expected_count = 1
 	case .Static_Field_Delete:
 		if count != 1 { return false }; expected_count = 1
+	case .Static_Field_Update:
+		if count != 2 { return false }; expected_count = 2
 	case .Static_Slice_Set_Number:
 		if count != 3 { return false }; expected_count = 3
 	case .Dynamic_Field_Set:
@@ -757,7 +761,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		operand := program.operands[int(start+offset)]
 		expected_kind := Operand_Kind.Instruction
 		index_key_instruction := instruction.opcode == .Index && instruction.index_key_kind == .Instruction && offset == 1
-		if instruction.opcode == .Static_Field_Add_Number || instruction.opcode == .Static_Field_Set_Number || instruction.opcode == .Static_Field_Add_Field || instruction.opcode == .Static_Field_Optional_Identity || instruction.opcode == .Static_Field_Delete || instruction.opcode == .Static_Iterator_Set_Number || (instruction.opcode == .Static_Iterator_Update && offset != 0) || instruction.opcode == .Static_Index_Set_Number || instruction.opcode == .Static_Slice_Set_Number || (instruction.opcode == .Dynamic_Field_Set && offset == 0) ||
+		if instruction.opcode == .Static_Field_Add_Number || instruction.opcode == .Static_Field_Set_Number || instruction.opcode == .Static_Field_Add_Field || instruction.opcode == .Static_Field_Optional_Identity || instruction.opcode == .Static_Field_Delete || (instruction.opcode == .Static_Field_Update && offset == 0) || instruction.opcode == .Static_Iterator_Set_Number || (instruction.opcode == .Static_Iterator_Update && offset != 0) || instruction.opcode == .Static_Index_Set_Number || instruction.opcode == .Static_Slice_Set_Number || (instruction.opcode == .Dynamic_Field_Set && offset == 0) ||
 		   (!index_key_instruction && (instruction.opcode == .Field || instruction.opcode == .Index) && offset == count-1) ||
 		   (instruction.opcode == .Slice && offset > 0 && operand.kind != .Instruction) ||
 		   (instruction.has_literal && offset == 0) {
@@ -838,6 +842,8 @@ instruction_child_count :: proc(program: ^Program, instruction: Instruction) -> 
 		return 1
 	case .Static_Field_Add_Field, .Static_Field_Optional_Identity, .Static_Field_Delete:
 		return 0
+	case .Static_Field_Update:
+		return 1
 	case .Path, .Getpath, .Delpaths:
 		return 1
 	case .Setpath:

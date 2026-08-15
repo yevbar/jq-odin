@@ -289,6 +289,8 @@ Node_Kind :: enum {
 	Static_Field_Optional_Identity,
 	// Static_Field_Delete is a bounded `.name |= empty` update.
 	Static_Field_Delete,
+	// Static_Field_Update is a resumable root `.name |= FILTER` update.
+	Static_Field_Update,
 	// Static_Iterator_Update preserves a filter-valued root iterator RHS.
 	Static_Iterator_Update,
 }
@@ -2466,7 +2468,15 @@ parse_pipe :: proc(
 							return pipe_root, true
 						}
 					}
-					fail_from_lookahead(parser, .Expression); return {}, false
+					// Preserve the complete RHS filter as a child instruction for
+					// root static-field updates. The evaluator consumes the first
+					// output, deletes on an empty stream, and cancels later outputs.
+					span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+					update, update_ok := append_node(parser, Node{kind=.Static_Field_Update, span=span, right=right, name_span=left_node.name_span, has_name_span=true})
+					if !update_ok do return {}, false
+					if pipe_root == invalid_id do return update, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
+					return pipe_root, true
 				}
 			}
 			// Root `.[] |= empty` has jq's deletion semantics: every array

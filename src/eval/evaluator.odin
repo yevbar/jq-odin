@@ -172,6 +172,8 @@ frame_phase :: enum u8 {
 	Iterator_Update_Active,
 	Iterator_Update_Child_Active,
 	Iterator_Update_Delete_Active,
+	Static_Field_Update_Child_Active,
+	Static_Field_Update_Empty,
 	Binding_Start_Left,
 	Binding_Left_Active,
 	Binding_Body_Active,
@@ -250,6 +252,7 @@ eval_frame :: struct {
 	iterator_cursor: int,
 	iterator_update_seen: bool,
 	iterator_update_cancel: bool,
+	static_field_update_seen: bool,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
 	in_source_value: value.Value,
@@ -1219,6 +1222,19 @@ static_optional_field_operand :: proc(storage: ^evaluator_storage, instruction: 
 }
 
 @(private)
+static_field_update_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (key: string, rhs: program.Instruction_Index, ok: bool) {
+	if instruction.opcode != .Static_Field_Update || instruction.operands_count != 2 do return
+	key_operand, key_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	rhs_operand, rhs_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+	if !key_ok || !rhs_ok || key_operand.kind != .Text || rhs_operand.kind != .Instruction do return
+	key, key_ok = program.operand_text(storage.compiled, key_operand)
+	_, rhs_ok = program.program_instruction(storage.compiled, rhs_operand.instruction)
+	rhs = rhs_operand.instruction
+	ok = key_ok && rhs_ok
+	return
+}
+
+@(private)
 static_iterator_set_operand :: proc(
 	storage: ^evaluator_storage,
 	instruction: program.Instruction,
@@ -2067,6 +2083,10 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
+	case .Static_Field_Update:
+		if instruction.operands_count != 2 do return false
+		_, child_ok := child_instruction(storage, instruction, 1)
+		if !child_ok do return false
 	case .Path, .Getpath, .Delpaths:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -2135,6 +2155,8 @@ resumed_composite_instruction_valid :: proc(
 		}
 	case .Iterator_Update_Active, .Iterator_Update_Child_Active, .Iterator_Update_Delete_Active:
 		if frame.mode != .Normal || instruction.opcode != .Static_Iterator_Update do return false
+	case .Static_Field_Update_Child_Active, .Static_Field_Update_Empty:
+		if frame.mode != .Normal || instruction.opcode != .Static_Field_Update do return false
 	case .Contains_Child_Active:
 		if frame.mode != .Normal || instruction.opcode != .Contains do return false
 	case .In_Child_Active, .In_First_Child_Active, .In_Second_Start, .In_Second_Child_Active, .In_Result:
@@ -2199,6 +2221,8 @@ resumed_composite_instruction_valid :: proc(
 	}
 	else if frame.phase == .Iterator_Update_Active || frame.phase == .Iterator_Update_Child_Active || frame.phase == .Iterator_Update_Delete_Active {
 		expected_operand_count = 1
+	} else if frame.phase == .Static_Field_Update_Child_Active || frame.phase == .Static_Field_Update_Empty {
+		expected_operand_count = 2
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
 		expected_operand_count = 3
@@ -3384,7 +3408,7 @@ output_needs_frame :: proc(storage: ^evaluator_storage, producer: int) -> bool {
 		parent := storage.frames[current].parent
 		if parent < 0 do return false
 		phase := storage.frames[parent].phase
-		if phase == .Sequence_Left_Active || phase == .Field_Child_Active || phase == .Index_Child_Active || phase == .Binary_Left_Active || phase == .If_Condition_Active || phase == .If_Then_Active || phase == .If_Else_Active do return true
+		if phase == .Sequence_Left_Active || phase == .Field_Child_Active || phase == .Static_Field_Update_Child_Active || phase == .Index_Child_Active || phase == .Binary_Left_Active || phase == .If_Condition_Active || phase == .If_Then_Active || phase == .If_Else_Active do return true
 		current = parent
 	}
 	return false
@@ -3542,6 +3566,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 			frame.phase = .Iterator_Update_Delete_Active if !frame.iterator_update_seen else .Iterator_Update_Active
 		}
 	case .Iterator_Update_Active, .Iterator_Update_Delete_Active:
+		return false
+	case .Static_Field_Update_Child_Active:
+		frame.phase = .Static_Field_Update_Empty
+	case .Static_Field_Update_Empty:
 		return false
 	case .Binary_Left_Active:
 		// Defined-or treats an empty left stream like a null/false result and
@@ -4163,6 +4191,59 @@ propagate_output :: proc(
 			return {}, false
 		case .Field_Result_Active:
 			current = parent
+		case .Static_Field_Update_Child_Active:
+			if frame.static_field_update_seen {
+				_ = value.destroy_value(owned)
+				return {}, false
+			}
+			frame.static_field_update_seen = true
+			capacity_error := prepare_output(storage, parent)
+			if capacity_error != nil {
+				storage.pending_value = value.take_value(owned)
+				return resource_step(capacity_error), true
+			}
+			frame = &storage.frames[parent]
+			key_text, _, operands_ok := static_field_update_operands(storage, instruction)
+			if !operands_ok {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			}
+			if value.kind_of(&frame.input) == .Null {
+				empty_object, object_error := value.object_value(storage.allocator)
+				if value.object_error_kind(&object_error) != .None {
+					_ = value.destroy_value(owned)
+					_ = value.destroy_object_error(&object_error)
+					return resource_step(.Out_Of_Memory), true
+				}
+				_ = value.destroy_value(&frame.input)
+				frame.input = empty_object
+			}
+			key, key_ok := existing_object_key_copy(&frame.input, key_text)
+			if !key_ok {
+				key_error: value.Constructor_Error
+				key, key_error = value.string_value(key_text, storage.allocator)
+				if value.constructor_error_kind(&key_error) != .None {
+					_ = value.destroy_value(owned)
+					_ = value.destroy_constructor_error(&key_error)
+					return resource_step(.Out_Of_Memory), true
+				}
+			}
+			duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, owned)
+			if value.object_error_kind(&set_error) != .None {
+				_ = value.destroy_value(&key)
+				_ = value.destroy_value(owned)
+				_ = value.destroy_value(&duplicate)
+				_ = value.destroy_value(&displaced)
+				_ = value.destroy_object_error(&set_error)
+				return begin_terminal_misuse(storage, .Malformed_Program), true
+			}
+			_ = value.destroy_value(&duplicate)
+			_ = value.destroy_value(&displaced)
+			free_error := destroy_frames_to(storage, parent+1)
+			if free_error != nil do return resource_step(free_error), true
+			frame = &storage.frames[parent]
+			frame.phase = .Complete
+			output := value.take_value(&frame.input)
+			return propagate_output(storage, parent, &output)
 	case .Index_Child_Active:
 		index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
 		if !index_ok {
@@ -8472,6 +8553,35 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded
 				result, ready := propagate_output(storage, index, &output)
 				if ready do return result
+			case .Static_Field_Update:
+				key_text, rhs_instruction, operands_ok := static_field_update_operands(storage, instruction)
+				if !operands_ok || !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Object && input_kind != .Null {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=key_text})
+					if ready do return result
+					continue
+				}
+				replacement: value.Value
+				if input_kind == .Object {
+					found: bool
+					replacement, found = value.object_get_copy(&frame.input, key_text)
+					if !found do replacement = value.null_value()
+				} else {
+					replacement = value.null_value()
+				}
+				if value.kind_of(&replacement) == .Invalid do return resource_step(.Out_Of_Memory)
+				if storage.frame_count == len(storage.frames) {
+					capacity_error := grow_frames(storage)
+					if capacity_error != nil { _ = value.destroy_value(&replacement); return resource_step(capacity_error) }
+					frame = &storage.frames[index]
+				}
+				if !push_frame(storage, rhs_instruction, index, &replacement) {
+					_ = value.destroy_value(&replacement)
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
+				storage.frames[index].static_field_update_seen = false
+				storage.frames[index].phase = .Static_Field_Update_Child_Active
 			case .Static_Field_Delete:
 				key_text, operands_ok := static_optional_field_operand(storage, instruction)
 				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
@@ -8885,17 +8995,24 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if ready do return result
 			case .Static_Field_Add_Number:
 				key_text, number_text, operands_ok := static_field_add_operands(storage, instruction)
-				if !operands_ok || value.kind_of(&frame.input) != .Object {
-					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Object && input_kind != .Null {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=key_text})
+					if ready do return result
+					continue
+				}
+				if input_kind == .Null {
+					empty_object, object_error := value.object_value(storage.allocator)
+					if value.object_error_kind(&object_error) != .None { _ = value.destroy_object_error(&object_error); return resource_step(.Out_Of_Memory) }
+					_ = value.destroy_value(&frame.input)
+					frame.input = empty_object
 				}
 				capacity_error := prepare_output(storage, index)
 				if capacity_error != nil do return resource_step(capacity_error)
 				frame = &storage.frames[index]
 				old, found := value.object_get_copy(&frame.input, key_text)
-				if !found || value.kind_of(&old) != .Number {
-					_ = value.destroy_value(&old)
-					return begin_terminal_misuse(storage, .Unsupported_Opcode)
-				}
+				if !found do old = value.null_value()
 				increment, increment_error := value.literal_number_value(number_text, storage.allocator)
 				if value.constructor_error_kind(&increment_error) != .None {
 					_ = value.destroy_value(&old)
@@ -8928,7 +9045,15 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 				key, key_ok := existing_object_key_copy(&frame.input, key_text)
-				if !key_ok { _ = value.destroy_value(&updated); return begin_terminal_misuse(storage, .Malformed_Program) }
+				if !key_ok {
+					key_error: value.Constructor_Error
+					key, key_error = value.string_value(key_text, storage.allocator)
+					if value.constructor_error_kind(&key_error) != .None {
+						_ = value.destroy_value(&updated)
+						_ = value.destroy_constructor_error(&key_error)
+						return resource_step(.Out_Of_Memory)
+					}
+				}
 				duplicate, displaced, set_error := value.object_set_take(&frame.input, &key, &updated)
 				set_kind := value.object_error_kind(&set_error)
 				if set_kind != .None {
