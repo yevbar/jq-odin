@@ -973,3 +973,15 @@ whose body is an additive tree of the parameter and numeric literals. This
 covers `inc(x): x+1` and `twice(x): x+x` without broad textual expansion;
 unsupported bodies continue through the legacy bridge. The focused arithmetic
 shard passes 3/3, while general filter-valued callable bodies remain deferred.
+
+## Destructuring alternation follow-up (2026-08-15)
+
+The current reviewed implementation head (`f31acdd9`) measures **490/522
+passed, 32 failed, 0 harness errors** against the pinned jq 1.8.1 catalog.
+The bounded alternation runtime preserves array-pattern branch rollback and
+handles `. as [$a] ?// [$b] | .` for arrays and `null`, with jq-compatible
+indexed-type diagnostics for non-array inputs. Existing object-pattern
+permutations remain on their specialized lowering path; regression fixtures
+cover those permutations. Array/object pattern captures visible in the body,
+literal patterns, generators, and general multi-output rollback remain
+deferred under the branch-scope ABI decision.
