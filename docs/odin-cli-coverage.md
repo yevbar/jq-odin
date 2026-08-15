@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `2584bf04`, the authoritative selected catalog measurement
-is **513/522 passed, 9 failed, 0 harness errors**
-(`/tmp/coverage-module-runtime2.json`). The bounded same-name destructuring alternation
+At integration head `4c752975`, the authoritative selected catalog measurement
+is **514/522 passed, 8 failed, 0 harness errors**
+(`/tmp/coverage-object-key-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
@@ -1023,3 +1023,11 @@ aliases and JSON data aliases. This brings jq.test:1862 and :1879 to parity;
 the focused module fixture and driver tests pass. Remaining failures are the
 multi-diagnostic object-key case plus larger reduce, callable, recursive, and
 path-update continuations.
+
+## Secondary object-key diagnostic follow-up (2026-08-15)
+
+Parser errors can now carry one additional borrowed diagnostic span/message.
+Unparenthesized arithmetic object keys match jq's two-diagnostic output and
+carets (`{1+2:3}`, `{1-2:3}`, `{1*2+3:4}`), while literal, pipe, and
+parenthesized key forms retain their existing behavior. The catalog rises to
+**514/522**; broad parser recovery remains deferred.
