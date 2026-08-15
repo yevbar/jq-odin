@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `bfc85664`, the authoritative selected catalog measurement
-is **497/522 passed, 25 failed, 0 harness errors**
-(`/tmp/coverage-invalid-escape.json`). The bounded same-name destructuring alternation
+At integration head `d9399580`, the authoritative selected catalog measurement
+is **500/522 passed, 22 failed, 0 harness errors**
+(`/tmp/coverage-object-key.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
@@ -18,6 +18,8 @@ Undefined-variable compile diagnostics now include jq-compatible source/name spa
 and carets (jq.test:560); boolean object-key diagnostics remain deferred.
 Invalid string escapes now preserve the lexical message and offending-line caret
 (jq.test:63); broader parser diagnostic wording remains deferred.
+Constant non-string object keys now report jq-compatible type diagnostics and
+inner-key carets (jq.test:127, :139); arithmetic-key parser wording remains deferred.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
 `docs/decisions/0017-iterator-rhs-continuation.md`; this accounts for the
