@@ -301,6 +301,8 @@ Node_Kind :: enum {
 	Static_Field_Index_Field_Update,
 	// Static_Iterator_Update preserves a filter-valued root iterator RHS.
 	Static_Iterator_Update,
+	// Dynamic_Index_Assign captures one root instruction-valued index key.
+	Dynamic_Index_Assign,
 }
 
 Node_Id :: distinct int
@@ -2787,7 +2789,6 @@ parse_pipe :: proc(
 			}
 			result = pipe_root
 		}
-
 		if token_is(parser, .Assign_Pipe) {
 			optional_left := current if pipe_root != invalid_id else result
 			if optional_left >= 0 {
@@ -3187,6 +3188,43 @@ parse_pipe :: proc(
 				}
 			}
 			if current >= 0 && parser.nodes.storage[int(current)].kind == .Index {
+				index_node := parser.nodes.storage[int(current)]
+				// Root-only instruction-valued index assignment has a dedicated
+				// key-stream continuation. Nested dynamic paths remain deferred.
+				if index_node.has_index_key && index_node.has_child &&
+					parser.nodes.storage[int(index_node.child)].kind == .Identity {
+					advance(parser)
+					// A RHS parser nested inside an open parenthesized frame must stop at
+					// that frame's close token. Passing an invalid closing token would let
+					// the RHS consume the group's close itself, losing the assignment node
+					// before the outer frame can apply its optional suffix.
+					rhs_closing := closing
+					if parser.frames.count > entry_frame_depth do rhs_closing = .Close_Paren
+					right, right_ok := parse_pipe(parser, rhs_closing, true, false, false, true)
+					if !right_ok do return {}, false
+					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+						right = parser.nodes.storage[int(right)].child
+					}
+					rhs := parser.nodes.storage[int(right)]
+					if rhs.form != .Kinded || (rhs.kind != .Number && rhs.kind != .Boolean && rhs.kind != .Null && rhs.kind != .String) || rhs.has_child || rhs.has_value {
+						fail_from_lookahead(parser, .Expression); return {}, false
+					}
+					span, span_ok := spanning(parser, index_node.span, rhs.span); assert(span_ok)
+					assign, assign_ok := append_node(parser, Node{kind=.Dynamic_Index_Assign, span=span, left=index_node.child, right=index_node.index_key, reduce_update=right, has_reduce_update=true})
+					if !assign_ok do return {}, false
+					if parser.frames.count > entry_frame_depth {
+						// The assignment replaces the current term; it is not a
+						// comma node awaiting a right-hand term.
+						current = invalid_id
+						result = assign
+						term = assign
+						term_ready = true
+						continue
+					}
+					if int(pipe_root) < 0 do return assign, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = assign; tail.has_child = false
+					return pipe_root, true
+				}
 				index_base := parser.nodes.storage[int(current)].child
 				if index_base < 0 || parser.nodes.storage[int(index_base)].kind != .Index {
 					return parse_static_index_set_number(parser, current, pipe_root, pipe_tail, closing)
@@ -3604,6 +3642,19 @@ parse_pipe :: proc(
 			term_has_postfix = frame_state.outer_term_has_postfix
 			assert(binary_frame == frame_state.outer_binary_boundary)
 			term = frame_state.parenthesized
+			// Assignment parsing returns before the regular postfix loop. Allow
+			// the narrow dynamic-index assignment wrapper `(.[key] = value)?`
+			// to consume its question suffix at the group boundary.
+			if token_is(parser, .Question) && result >= 0 {
+				child_node := parser.nodes.storage[int(result)]
+				if child_node.kind == .Dynamic_Index_Assign {
+					advance(parser)
+					optional_span, optional_span_ok := spanning(parser, frame_node.span, child_node.span); assert(optional_span_ok)
+					optional, optional_ok := append_node(parser, Node{kind=.Optional, span=optional_span, child=frame_state.parenthesized, has_child=true})
+					if !optional_ok do return {}, false
+					term = optional
+				}
+			}
 			term_ready = true
 			group_depth -= 1
 			continue

@@ -213,6 +213,10 @@ frame_phase :: enum u8 {
 	Path_Assign_RHS_Start,
 	Path_Assign_RHS_Active,
 	Path_Assign_Apply,
+	Dynamic_Index_Assign_Key_Active,
+	Dynamic_Index_Assign_RHS_Start,
+	Dynamic_Index_Assign_RHS_Active,
+	Dynamic_Index_Assign_Apply,
 	Complete,
 	Debug_Emit,
 	Debug_Output,
@@ -294,6 +298,9 @@ eval_frame :: struct {
 	path_assign_results: value.Value,
 	path_assign_rhs_results: value.Value,
 	path_assign_rhs_cursor: int,
+	dynamic_index_assign_keys: value.Value,
+	dynamic_index_assign_rhs: value.Value,
+	dynamic_index_assign_rhs_cursor: int,
 	// True when the path stream was evaluated dynamically rather than
 	// materialized from literal field/index syntax. Generated paths use jq's
 	// result-bearing invalid-path diagnostic on failed assignment.
@@ -2190,6 +2197,9 @@ capture_composite_instruction :: proc(
 		_, path_ok := child_instruction(storage, instruction, 0)
 		_, rhs_ok := child_instruction(storage, instruction, 1)
 		if !path_ok || !rhs_ok do return false
+	case .Dynamic_Index_Assign:
+		if instruction.operands_count != 3 do return false
+		for offset in 0..<3 { _, child_ok := child_instruction(storage, instruction, u32(offset)); if !child_ok do return false }
 	case .Path, .Getpath, .Delpaths:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -2268,6 +2278,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Static_Field_Index_Field_Update do return false
 	case .Path_Assign_Child_Active, .Path_Assign_RHS_Start, .Path_Assign_RHS_Active, .Path_Assign_Apply:
 		if frame.mode != .Normal || instruction.opcode != .Path_Assign do return false
+	case .Dynamic_Index_Assign_Key_Active, .Dynamic_Index_Assign_RHS_Start, .Dynamic_Index_Assign_RHS_Active, .Dynamic_Index_Assign_Apply:
+		if frame.mode != .Normal || instruction.opcode != .Dynamic_Index_Assign do return false
 	case .Contains_Child_Active:
 		if frame.mode != .Normal || instruction.opcode != .Contains do return false
 	case .In_Child_Active, .In_First_Child_Active, .In_Second_Start, .In_Second_Child_Active, .In_Result:
@@ -2344,6 +2356,8 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = 2
 	} else if frame.phase == .Path_Assign_RHS_Start || frame.phase == .Path_Assign_RHS_Active {
 		expected_operand_count = 2
+	} else if frame.phase == .Dynamic_Index_Assign_Key_Active || frame.phase == .Dynamic_Index_Assign_RHS_Start || frame.phase == .Dynamic_Index_Assign_RHS_Active || frame.phase == .Dynamic_Index_Assign_Apply {
+		expected_operand_count = 3
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
 		expected_operand_count = 3
@@ -3256,6 +3270,22 @@ set_path_value :: proc(input, path: ^value.Value, offset: int, replacement: ^val
 	_ = value.destroy_value(&component); return {}, false
 }
 
+@(private)
+dynamic_index_assign_runtime_error :: proc(input, key: ^value.Value, span: program.Source_Span, allocator: runtime.Allocator) -> (Runtime_Error, bool) {
+	input_kind := value.kind_of(input)
+	key_kind := value.kind_of(key)
+	valid := (key_kind == .String && (input_kind == .Object || input_kind == .Null)) ||
+		(key_kind == .Number && (input_kind == .Array || input_kind == .Null))
+	if valid do return {}, false
+	message: string
+	if input_kind == .Array || input_kind == .String || input_kind == .Null {
+		message, _ = strings.concatenate([]string{"Array/string slice indices must be integers"}, allocator)
+	} else {
+		message = strings.concatenate([]string{"Cannot index ", runtime_value_kind_name(input_kind), " with ", runtime_value_kind_name(key_kind)}, allocator)
+	}
+	return Runtime_Error{kind=.User_Error, input_kind=input_kind, span=span, key=message}, true
+}
+
 // set_path_runtime_error classifies the typed failure that set_path_value
 // reports as a boolean.  Literal getpath-assignment lowering uses this before
 // falling back to malformed-program handling so try/catch receives jq's
@@ -3476,6 +3506,10 @@ destroy_frames_to :: proc(storage: ^evaluator_storage, target_count: int) -> run
 		free_error = value.destroy_value(&storage.frames[index].path_assign_results)
 		if free_error != nil do return free_error
 		free_error = value.destroy_value(&storage.frames[index].path_assign_rhs_results)
+		if free_error != nil do return free_error
+		free_error = value.destroy_value(&storage.frames[index].dynamic_index_assign_keys)
+		if free_error != nil do return free_error
+		free_error = value.destroy_value(&storage.frames[index].dynamic_index_assign_rhs)
 		if free_error != nil do return free_error
 		storage.frames[index] = {}
 		storage.frame_count -= 1
@@ -3786,6 +3820,12 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Path_Assign_Apply
 	case .Path_Assign_Apply:
 		return false
+	case .Dynamic_Index_Assign_Key_Active:
+		frame.phase = .Dynamic_Index_Assign_RHS_Start
+	case .Dynamic_Index_Assign_RHS_Active:
+		frame.phase = .Dynamic_Index_Assign_Apply
+	case .Dynamic_Index_Assign_Apply:
+		return false
 	case .Binary_Left_Active:
 		// Defined-or treats an empty left stream like a null/false result and
 		// must start its right-hand generator when the producer exhausts without
@@ -3924,6 +3964,10 @@ finish_top_frame :: proc(storage: ^evaluator_storage) -> (runtime.Allocator_Erro
 	free_error = value.destroy_value(&storage.frames[index].path_assign_results)
 	if free_error != nil do return free_error, true
 	free_error = value.destroy_value(&storage.frames[index].path_assign_rhs_results)
+	if free_error != nil do return free_error, true
+	free_error = value.destroy_value(&storage.frames[index].dynamic_index_assign_keys)
+	if free_error != nil do return free_error, true
+	free_error = value.destroy_value(&storage.frames[index].dynamic_index_assign_rhs)
 	if free_error != nil do return free_error, true
 	free_error = value.destroy_value(&storage.frames[index].add_accumulator)
 	if free_error != nil do return free_error, true
@@ -4655,6 +4699,16 @@ propagate_output :: proc(
 		return {}, false
 	case .Path_Assign_RHS_Active:
 		duplicate, append_error := value.array_append_take(&frame.path_assign_rhs_results, owned)
+		_ = value.destroy_value(&duplicate)
+		if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(owned); _ = value.destroy_array_error(&append_error); return resource_step(.Out_Of_Memory), true }
+		return {}, false
+	case .Dynamic_Index_Assign_Key_Active:
+		duplicate, append_error := value.array_append_take(&frame.dynamic_index_assign_keys, owned)
+		_ = value.destroy_value(&duplicate)
+		if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(owned); _ = value.destroy_array_error(&append_error); return resource_step(.Out_Of_Memory), true }
+		return {}, false
+	case .Dynamic_Index_Assign_RHS_Active:
+		duplicate, append_error := value.array_append_take(&frame.dynamic_index_assign_rhs, owned)
 		_ = value.destroy_value(&duplicate)
 		if value.array_error_kind(&append_error) != .None { _ = value.destroy_value(owned); _ = value.destroy_array_error(&append_error); return resource_step(.Out_Of_Memory), true }
 		return {}, false
@@ -8339,6 +8393,24 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				frame.phase = .Path_Assign_Child_Active
 				continue
 			}
+			if instruction.opcode == .Dynamic_Index_Assign {
+				if instruction.operands_count != 3 || !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				base_child, base_ok := child_instruction(storage, instruction, 0)
+				key_child, key_ok := child_instruction(storage, instruction, 1)
+				if !base_ok || !key_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+				base_instruction, base_instruction_ok := program.program_instruction(storage.compiled, base_child)
+				if !base_instruction_ok || base_instruction.opcode != .Identity { return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+				keys, keys_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&keys_error) != .None { _ = value.destroy_array_error(&keys_error); return resource_step(.Out_Of_Memory) }
+				frame.dynamic_index_assign_keys = value.take_value(&keys)
+				rhs, rhs_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&rhs_error) != .None { _ = value.destroy_array_error(&rhs_error); _ = value.destroy_value(&frame.dynamic_index_assign_keys); return resource_step(.Out_Of_Memory) }
+				frame.dynamic_index_assign_rhs = value.take_value(&rhs)
+				input_copy := value.clone_value(&frame.input)
+				if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, key_child, index, &input_copy) { _ = value.destroy_value(&frame.dynamic_index_assign_keys); _ = value.destroy_value(&frame.dynamic_index_assign_rhs); return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy) }
+				frame.phase = .Dynamic_Index_Assign_Key_Active
+				continue
+			}
 			if instruction.opcode == .Setpath {
 				if instruction.operands_count != 2 { return begin_terminal_misuse(storage, .Malformed_Program) }
 				path_instruction, path_child_ok := child_instruction(storage, instruction, 0)
@@ -8623,7 +8695,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					result, ready := unwind_break(storage, index, name)
 					if ready do return result
 					continue
-				case .Path, .Getpath, .Paths, .Path_Assign, .Setpath, .Delpaths:
+				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 			case .Identity:
 				capacity_error := prepare_output(storage, index)
@@ -11624,6 +11696,50 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				_ = value.destroy_value(&working); working = updated
 			}
 			if path_assign_suppressed do continue
+			_ = value.destroy_value(&template)
+			result, ready := propagate_output(storage, index, &working); if ready do return result
+		case .Dynamic_Index_Assign_RHS_Start:
+			results, results_error := value.array_value(storage.allocator)
+			if value.array_error_kind(&results_error) != .None { _ = value.destroy_array_error(&results_error); return resource_step(.Out_Of_Memory) }
+			_ = value.destroy_value(&frame.dynamic_index_assign_rhs)
+			frame.dynamic_index_assign_rhs = value.take_value(&results)
+			frame.dynamic_index_assign_rhs_cursor = 0
+			rhs_child, rhs_ok := child_instruction(storage, instruction, 2)
+			input_copy := value.clone_value(&frame.input)
+			if !rhs_ok || value.kind_of(&input_copy) == .Invalid || !push_frame(storage, rhs_child, index, &input_copy) { _ = value.destroy_value(&input_copy); _ = value.destroy_value(&frame.dynamic_index_assign_rhs); return begin_terminal_misuse(storage, .Malformed_Program) }
+			frame.phase = .Dynamic_Index_Assign_RHS_Active
+		case .Dynamic_Index_Assign_Apply:
+			key_length, key_length_ok := value.array_length(&frame.dynamic_index_assign_keys)
+			rhs_length, rhs_length_ok := value.array_length(&frame.dynamic_index_assign_rhs)
+			if !key_length_ok || !rhs_length_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
+			if key_length == 0 || frame.dynamic_index_assign_rhs_cursor >= rhs_length { frame.phase = .Complete; continue }
+			template, template_ok := value.array_element_copy(&frame.dynamic_index_assign_rhs, frame.dynamic_index_assign_rhs_cursor)
+			frame.dynamic_index_assign_rhs_cursor += 1
+			working := value.clone_value(&frame.input)
+			if !template_ok || value.kind_of(&working) == .Invalid { _ = value.destroy_value(&template); _ = value.destroy_value(&working); return begin_terminal_misuse(storage, .Malformed_Program) }
+			dynamic_assign_suppressed := false
+			for key_index in 0..<key_length {
+				key, key_ok := value.array_element_copy(&frame.dynamic_index_assign_keys, key_index)
+				replacement := value.clone_value(&template)
+				if !key_ok || value.kind_of(&replacement) == .Invalid { _ = value.destroy_value(&key); _ = value.destroy_value(&replacement); _ = value.destroy_value(&template); _ = value.destroy_value(&working); return begin_terminal_misuse(storage, .Malformed_Program) }
+				runtime_error, runtime_error_ok := dynamic_index_assign_runtime_error(&working, &key, instruction.span, storage.allocator)
+				if runtime_error_ok {
+					_ = value.destroy_value(&key); _ = value.destroy_value(&replacement); _ = value.destroy_value(&template); _ = value.destroy_value(&working)
+					result, ready := raise_runtime(storage, index, runtime_error)
+					if len(runtime_error.key) > 0 { free_error := runtime.mem_free_bytes(transmute([]byte)runtime_error.key, storage.allocator); if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error) }
+					if ready do return result
+					dynamic_assign_suppressed = true
+					break
+				}
+				path, path_error := value.array_value(storage.allocator)
+				if value.array_error_kind(&path_error) != .None { _ = value.destroy_array_error(&path_error); _ = value.destroy_value(&key); _ = value.destroy_value(&replacement); _ = value.destroy_value(&template); _ = value.destroy_value(&working); return resource_step(.Out_Of_Memory) }
+				if _, append_error := value.array_append_take(&path, &key); value.array_error_kind(&append_error) != .None { _ = value.destroy_array_error(&append_error); _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); _ = value.destroy_value(&template); _ = value.destroy_value(&working); return resource_step(.Out_Of_Memory) }
+				updated, updated_ok := set_path_value(&working, &path, 0, &replacement, storage.allocator)
+				_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
+				if !updated_ok { _ = value.destroy_value(&template); _ = value.destroy_value(&working); return begin_terminal_misuse(storage, .Malformed_Program) }
+				_ = value.destroy_value(&working); working = updated
+			}
+			if dynamic_assign_suppressed do continue
 			_ = value.destroy_value(&template)
 			result, ready := propagate_output(storage, index, &working); if ready do return result
 

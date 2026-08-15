@@ -1,0 +1,36 @@
+# Root dynamic-index assignment captures an instruction-valued key and keeps
+# jq's optional suppression semantics for typed update errors.
+(.[{}] = 0)?
+null
+
+(.[{}] = 0)?
+[]
+
+(.[{}] = 0)?
+{}
+
+(.[{}] = 0)?
+1
+
+(.[{}] = 0)?
+[1,2]
+
+(.[{}] = 0)?
+"x"
+
+# `try` preserves the typed diagnostics when suppression is not requested.
+try (.[{}] = 0) catch .
+null
+"Array/string slice indices must be integers"
+
+try (.[{}] = 0) catch .
+{}
+"Cannot index object with object"
+
+try (.[{}] = 0) catch .
+1
+"Cannot index number with object"
+
+try (.[{}] = 0) catch .
+"x"
+"Array/string slice indices must be integers"
