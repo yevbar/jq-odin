@@ -191,6 +191,7 @@ frame_phase :: enum u8 {
 	Binary_Start_Right,
 	Binary_Right_Active,
 	Call_Start,
+	Call_Argument_Active,
 	If_Condition_Active,
 	If_Then_Active,
 	If_Else_Active,
@@ -2023,10 +2024,16 @@ capture_composite_instruction :: proc(
 ) -> bool {
 	if frame.mode != .Normal && frame.mode != .Field_Only && frame.mode != .Index_Only && frame.mode != .Slice_Only do return false
 	#partial switch instruction.opcode {
-	case .Parenthesized, .Optional, .Negate, .Call:
+	case .Parenthesized, .Optional, .Negate:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
 		if !child_ok do return false
+	case .Call:
+		if instruction.operands_count != 1 && instruction.operands_count != 2 do return false
+		for offset in 0..<int(instruction.operands_count) {
+			_, child_ok := child_instruction(storage, instruction, u32(offset))
+			if !child_ok do return false
+		}
 	case .First, .Last, .Add_Builtin:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -2259,7 +2266,7 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Fork do return false
 	case .Sequence_Start_Left, .Sequence_Left_Active, .Sequence_Right_Active:
 		if frame.mode != .Normal || instruction.opcode != .Sequence do return false
-	case .Call_Start, .Call_Active:
+	case .Call_Start, .Call_Argument_Active, .Call_Active:
 		if frame.mode != .Normal || instruction.opcode != .Call do return false
 	case .Binding_Start_Left, .Binding_Left_Active, .Binding_Body_Active:
 		if frame.mode != .Normal || instruction.opcode != .Binding do return false
@@ -2326,8 +2333,12 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = 2
 	} else if frame.phase == .Binary_Start_Left || frame.phase == .Binary_Left_Active || frame.phase == .Binary_Start_Right || frame.phase == .Binary_Right_Active {
 		expected_operand_count = 2
-	} else if frame.phase == .Call_Start || frame.phase == .Call_Active {
+	} else if frame.phase == .Call_Start {
 		expected_operand_count = 1
+	} else if frame.phase == .Call_Argument_Active {
+		expected_operand_count = 2
+	} else if frame.phase == .Call_Active {
+		expected_operand_count = u8(instruction.operands_count)
 	} else do expected_operand_count = 2
 	if !frame.has_saved_instruction ||
 	   frame.saved_operand_count != expected_operand_count ||
@@ -3669,8 +3680,14 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Complete
 	case .Sequence_Right_Active:
 		frame.phase = .Sequence_Left_Active
-	case .Call_Active:
+	case .Call_Argument_Active:
+		// The argument generator exhausted without another value. The call
+		// therefore has no further callee activations to schedule.
 		frame.phase = .Complete
+	case .Call_Active:
+		// A two-edge call resumes its argument generator after each callee
+		// activation; legacy one-edge calls complete after their body stream.
+		frame.phase = .Call_Argument_Active if instruction.operands_count == 2 else .Complete
 	case .Field_Child_Active:
 		frame.phase = .Complete
 	case .Field_Result_Active:
@@ -4331,6 +4348,27 @@ propagate_output :: proc(
 			return {}, false
 		case .If_Then_Active, .If_Else_Active:
 			current = parent
+		case .Call_Argument_Active:
+			// Each argument output owns one callee activation. The argument frame
+			// remains below that activation so generator-valued arguments resume
+			// after the body stream is exhausted.
+			child, ok := child_instruction(storage, instruction, 0)
+			if !ok || value.kind_of(owned) == .Invalid {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			}
+			if storage.frame_count == len(storage.frames) {
+				capacity_error := grow_frames(storage)
+				if capacity_error != nil {
+					storage.pending_value = value.take_value(owned)
+					return resource_step(capacity_error), true
+				}
+				frame = &storage.frames[parent]
+			}
+			if !push_frame(storage, child, parent, owned) {
+				return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true
+			}
+			frame.phase = .Call_Active
+			return {}, false
 		case .Call_Active:
 			// A call forwards each value from its definition body to the caller;
 			// notify_exhausted completes this frame after the body stream ends.
@@ -11180,7 +11218,9 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				}
 			case .Call:
-				if instruction.operands_count != 1 { return begin_terminal_misuse(storage, .Malformed_Program) }
+				if instruction.operands_count != 1 && instruction.operands_count != 2 {
+					return begin_terminal_misuse(storage, .Malformed_Program)
+				}
 				child, child_ok := child_instruction(storage, instruction, 0)
 				if !child_ok { return begin_terminal_misuse(storage, .Malformed_Program) }
 				// Calls use a real child frame so recursive definitions preserve the
@@ -11201,10 +11241,21 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					frame = &storage.frames[index]
 				}
 				input_copy := value.clone_value(&frame.input)
-				if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, child, index, &input_copy) {
+				if value.kind_of(&input_copy) == .Invalid {
 					return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
 				}
-				frame.phase = .Call_Active
+				if instruction.operands_count == 2 {
+					argument, argument_ok := child_instruction(storage, instruction, 1)
+					if !argument_ok || !push_frame(storage, argument, index, &input_copy) {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+					}
+					frame.phase = .Call_Argument_Active
+				} else {
+					if !push_frame(storage, child, index, &input_copy) {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+					}
+					frame.phase = .Call_Active
+				}
 			case:
 				return begin_terminal_misuse(storage, .Malformed_Program)
 			}

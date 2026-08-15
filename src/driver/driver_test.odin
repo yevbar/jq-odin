@@ -440,6 +440,14 @@ recursive_zero_argument_calls_are_bounded_and_catchable :: proc(t: ^testing.T) {
 }
 
 @(test)
+parameterized_identity_uses_evaluator_argument_frame :: proc(t: ^testing.T) {
+	// This exact fixture bypasses module/text expansion and exercises the
+	// parser -> compiler -> evaluator two-edge Call contract.
+	expect_run(t, "def id(x): x; id(1)", "null", "1\n")
+	expect_run(t, "def id(x): x; id(1,2)", "null", "", .Filter_Parse)
+}
+
+@(test)
 ordinary_string_interpolation_evaluates_and_stringifies_each_result :: proc(t: ^testing.T) {
 	expect_run(t, `"inter\("pol" + "ation")"`, "null", `"interpolation"
 `)

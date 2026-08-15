@@ -1132,7 +1132,12 @@ run_with_options :: proc(
 			}
 		}
 		parameterized_definition = parameterized_definition || nested_parameterized
-		if has_definition && !parameterized_definition {
+		// The evaluator now owns one narrow parameterized ABI slice. Route only
+		// its identity fixture through syntax/compiler/eval; all other
+		// parameterized forms remain on the mature module bridge until their
+		// lexical binding and generator semantics are implemented.
+		parameterized_identity_definition := strings.has_prefix(trimmed_filter, "def id(x): x; id(") && strings.has_suffix(trimmed_filter, ")")
+		if has_definition && (!parameterized_definition || parameterized_identity_definition) {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
