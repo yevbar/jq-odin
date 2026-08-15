@@ -26,3 +26,17 @@ try ({} | .[1,2] = 10) catch .
 .[1,2] = 10
 null
 [null,10,10]
+
+# A generated path filter that yields an array result is rejected as an
+# assignment path with jq's result-bearing diagnostic.
+try (def x: reverse; x=10) catch .
+[0,1,2]
+"Invalid path expression with result [2,1,0]"
+
+try (def x: ["a"]; x=10) catch .
+{}
+"Invalid path expression with result [\"a\"]"
+
+try (def x: 1; x=10) catch .
+{}
+"Invalid path expression with result 1"

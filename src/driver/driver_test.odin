@@ -478,6 +478,17 @@ parameterized_simple_route_is_ast_validated :: proc(t: ^testing.T) {
 }
 
 @(test)
+generated_path_assignment_preserves_result_diagnostic :: proc(t: ^testing.T) {
+	// Dynamic path filters are evaluated by the assignment frame so jq's
+	// result-bearing invalid-path diagnostic remains catchable.
+	expect_run(t, "try (def x: reverse; x=10) catch .", "[0,1,2]", "\"Invalid path expression with result [2,1,0]\"\n")
+	expect_run(t, "try (def x: [\"a\"]; x=10) catch .", "null", "\"Invalid path expression with result [\\\"a\\\"]\"\n")
+	expect_run(t, "try (def x: 1; x=10) catch .", "null", "\"Invalid path expression with result 1\"\n")
+	// Literal paths retain their existing type-specific assignment errors.
+	expect_run(t, "try (1 | .[1,2] = 10) catch .", "null", "\"Cannot index number with number\"\n")
+}
+
+@(test)
 ordinary_string_interpolation_evaluates_and_stringifies_each_result :: proc(t: ^testing.T) {
 	expect_run(t, `"inter\("pol" + "ation")"`, "null", `"interpolation"
 `)

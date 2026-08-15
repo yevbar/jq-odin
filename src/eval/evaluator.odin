@@ -294,6 +294,10 @@ eval_frame :: struct {
 	path_assign_results: value.Value,
 	path_assign_rhs_results: value.Value,
 	path_assign_rhs_cursor: int,
+	// True when the path stream was evaluated dynamically rather than
+	// materialized from literal field/index syntax. Generated paths use jq's
+	// result-bearing invalid-path diagnostic on failed assignment.
+	path_assign_generated: bool,
 	static_slice_error_pending: bool,
 	iterator_break_at: int,
 	iterator_break_enabled: bool,
@@ -4633,6 +4637,17 @@ propagate_output :: proc(
 		if ready do return result, true
 		return {}, false
 	case .Path_Assign_Child_Active:
+		if frame.path_assign_generated && value.kind_of(owned) != .Array {
+			input_kind := value.kind_of(&frame.input)
+			invalid_key, key_error := invalid_path_result_key(owned, storage.allocator)
+			_ = value.destroy_value(owned)
+			if key_error != nil do return resource_step(key_error), true
+			if len(invalid_key) == 0 do return begin_terminal_misuse(storage, .Malformed_Program), true
+			result, ready := raise_runtime(storage, current, Runtime_Error{kind=.User_Error, input_kind=input_kind, span=instruction.span, key=invalid_key})
+			free_error := runtime.mem_free_bytes(transmute([]byte)invalid_key, storage.allocator)
+			if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error), true
+			return result, ready
+		}
 		if value.kind_of(owned) != .Array { _ = value.destroy_value(owned); return begin_terminal_misuse(storage, .Malformed_Program), true }
 		duplicate, append_error := value.array_append_take(&frame.path_assign_results, owned)
 		_ = value.destroy_value(&duplicate)
@@ -8288,6 +8303,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			}
 			if instruction.opcode == .Path_Assign {
 				if instruction.operands_count != 2 || !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				frame.path_assign_generated = false
 				path_child, path_ok := child_instruction(storage, instruction, 0)
 				if !path_ok {
 					return begin_terminal_misuse(storage, .Unsupported_Opcode)
@@ -8310,10 +8326,16 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 							frame.phase = .Path_Assign_RHS_Start
 							continue
 						}
+						// A generated assignment path must evaluate the underlying
+						// filter directly. The ordinary Path opcode validates path
+						// filters eagerly and would discard the result before the
+						// assignment frame can report jq's result-bearing diagnostic.
+						path_child = path_body
 					}
 				}
 				input_copy := value.clone_value(&frame.input)
 				if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, path_child, index, &input_copy) { _ = value.destroy_value(&frame.path_assign_results); return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy) }
+				frame.path_assign_generated = true
 				frame.phase = .Path_Assign_Child_Active
 				continue
 			}
@@ -11558,6 +11580,28 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				path, path_ok := value.array_element_copy(&frame.path_assign_results, path_index)
 				replacement := value.clone_value(&template)
 				if !path_ok || value.kind_of(&replacement) == .Invalid { _ = value.destroy_value(&path); _ = value.destroy_value(&replacement); _ = value.destroy_value(&template); _ = value.destroy_value(&working); return begin_terminal_misuse(storage, .Malformed_Program) }
+				if frame.path_assign_generated {
+					// Generated path values are not literal path syntax. Even an array
+					// result that looks indexable (for example `["a"]`) is rejected by
+					// jq with the result-bearing invalid-path diagnostic.
+					invalid_key, key_error := invalid_path_result_key(&path, storage.allocator)
+					_ = value.destroy_value(&path); _ = value.destroy_value(&replacement)
+					_ = value.destroy_value(&template)
+					_ = value.destroy_value(&working)
+					if key_error != nil do return resource_step(key_error)
+					if len(invalid_key) == 0 do return begin_terminal_misuse(storage, .Malformed_Program)
+					result, ready := raise_runtime(storage, index, Runtime_Error{
+						kind = .User_Error,
+						input_kind = value.kind_of(&frame.input),
+						span = instruction.span,
+						key = invalid_key,
+					})
+					free_error := runtime.mem_free_bytes(transmute([]byte)invalid_key, storage.allocator)
+					if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					if ready do return result
+					path_assign_suppressed = true
+					break
+				}
 				updated, updated_ok := set_path_value(&working, &path, 0, &replacement, storage.allocator)
 				if !updated_ok {
 					runtime_error, runtime_error_ok := set_path_runtime_error(&working, &path, 0, instruction.span, storage.allocator)
