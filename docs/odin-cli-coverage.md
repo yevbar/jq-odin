@@ -30,7 +30,9 @@ and generator-valued callable bodies remain deferred under decisions 0385 and
 Binding-aware assignment, generated map/select assignment, and recursive
 post-order updates now have exact oracle seam records in decisions 0387, 0388,
 0389, 0391, and 0392; nested-call parser/compiler shape tests now pin the
-definition/ordinal structure, while runtime continuation remains deferred.
+definition/ordinal structure, while runtime continuation remains deferred. The
+generated map/select assignment parser-precedence blocker is additionally
+recorded in decision 0395.
 Undefined-variable compile diagnostics now include jq-compatible source/name spans
 and carets (jq.test:560); boolean object-key diagnostics remain deferred.
 Invalid string escapes now preserve the lexical message and offending-line caret
