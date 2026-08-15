@@ -685,3 +685,10 @@ callable_entry_snapshots_ordinal_arity_and_body :: proc(t: ^testing.T) {
 	testing.expect_value(t, entry.arity, Callable_Arity(1))
 	testing.expect_value(t, entry.body, Instruction_Index(9))
 }
+
+@(test)
+callable_path_update_opcode_reserves_rhs_edge :: proc(t: ^testing.T) {
+	instruction := Instruction{opcode = .Parameter_Path_Update, operands_count = 1}
+	testing.expect_value(t, instruction_child_count(nil, instruction), 1)
+	testing.expect(t, !opcode_is_binary(.Parameter_Path_Update))
+}

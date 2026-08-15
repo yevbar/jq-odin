@@ -311,6 +311,12 @@ eval_frame :: struct {
 	call_path_active: bool,
 	call_path_add: bool,
 	call_path_add_number: f64,
+	// Reserved for the first-class generator argument continuation. Paths are
+	// owned values; the original root remains separate so every application
+	// uses source coordinates rather than a previously mutated result.
+	call_path_paths: value.Value,
+	call_path_cursor: int,
+	call_path_original_root: value.Value,
 	// True when the path stream was evaluated dynamically rather than
 	// materialized from literal field/index syntax. Generated paths use jq's
 	// result-bearing invalid-path diagnostic on failed assignment.
@@ -731,6 +737,10 @@ constructor_frame_destroy :: proc(frame: ^eval_frame) -> runtime.Allocator_Error
 	free_error = value.destroy_value(&frame.selected_value)
 	if free_error != nil do return free_error
 	free_error = value.destroy_value(&frame.dynamic_index_base)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.call_path_paths)
+	if free_error != nil do return free_error
+	free_error = value.destroy_value(&frame.call_path_original_root)
 	if free_error != nil do return free_error
 	frame.selected_seen = false
 	frame.limit_remaining = 0
@@ -8770,7 +8780,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					result, ready := unwind_break(storage, index, name)
 					if ready do return result
 					continue
-				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Setpath, .Delpaths:
+				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Parameter_Path_Update, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Alternation:
 					if instruction.operands_count < 3 || !capture_composite_instruction(storage, frame, instruction) {

@@ -305,6 +305,9 @@ Node_Kind :: enum {
 	Dynamic_Index_Assign,
 	// Parameter_Identity_Update is the bounded `x |= .` callable body.
 	Parameter_Identity_Update,
+	// Parameter_Path_Update reserves a filter-valued callable update body. The
+	// RHS child is explicit; the argument path filter is supplied by Call.
+	Parameter_Path_Update,
 	// Alternation retains the producer, branch pattern descriptors, and body.
 	Alternation,
 	Alternation_Branch,
