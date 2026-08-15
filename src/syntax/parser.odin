@@ -3862,7 +3862,15 @@ parse_pipe :: proc(
 				// descriptor ABI; simple object permutations stay on their legacy
 				// lowering path for compatibility.
 				if token_is(parser, .Alternation) && pattern_has_nested_container(parser, pattern) {
-					return parse_alternation_binding(parser, left, pattern, closing, stop_at_comma)
+					alternation, alternation_ok := parse_alternation_binding(parser, left, pattern, closing, stop_at_comma)
+					if !alternation_ok do return {}, false
+					if pipe_root != invalid_id {
+						tail := &parser.nodes.storage[int(pipe_tail)]
+						tail.right = alternation
+						tail.has_child = false
+						return pipe_root, true
+					}
+					return alternation, true
 				}
 				ordinary, ordinary_ok := try_parse_ordinary_pattern_binding(parser, left, pattern, pipe_root, pipe_tail, closing, stop_at_comma)
 				if ordinary_ok do return ordinary, true
