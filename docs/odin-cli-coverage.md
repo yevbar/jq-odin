@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `42ceac60`, the authoritative selected catalog measurement
-is **469/522 passed, 53 failed, 0 harness errors**
-(`/tmp/coverage-42ce.json`). Persistent `input` stream behavior is covered by
+At integration head `933ff545`, the authoritative selected catalog measurement
+is **470/522 passed, 52 failed, 0 harness errors**
+(`/tmp/coverage-join.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -44,6 +44,11 @@ Static field compound addition is covered by
 compound updates is covered by `compat/iterator-compound-sequence.jq.test`.
 The exact pipe-root optional identity update `.identifier |= .?` is covered by
 `compat/static-optional-update.jq.test`.
+The bounded two-argument uppercase `JOIN($idx; idx_expr)` form is now lowered
+to existing `Map`/`Index`/array instructions and passes jq.test:2051; its
+focused shard is `compat/join-index.jq.test` and its contract is recorded in
+`docs/decisions/0346-join-index-contract.md`. JOIN/3, JOIN/4, and dynamic
+index-object streams remain deferred.
 Root iterator
 compound updates (`+=`, `-=`, `*=`, `/=`, `%=` with numeric literal RHS) are
 covered by `compat/iterator-compound-updates.jq.test` (11/11 focused cases;
