@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `0287b61d`, the authoritative selected catalog measurement
-is **463/522 passed, 59 failed, 0 harness errors**
-(`/tmp/coverage-group.json`). Persistent `input` stream behavior is covered by
+At integration head `e713110c`, the authoritative selected catalog measurement
+is **464/522 passed, 58 failed, 0 harness errors**
+(`/tmp/coverage-defined-or.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
@@ -26,6 +26,13 @@ Static deletion from a `null` base now preserves jq's no-op semantics for
 `compat/static-del-null.jq.test` and the contract is recorded in
 `docs/decisions/0334-static-del-null-base.md`. Typed diagnostics for invalid
 non-null deletion targets remain a separate deferred path-update contract.
+Root iterator defined-or updates (`.[] //= FILTER`) reuse the resumable
+iterator-update contract; the focused shard is
+`compat/iterator-defined-or.jq.test` and the decision is
+`docs/decisions/0335-static-iterator-defined-or.md`. The selected gain is
+the upstream iterator defined-or case at jq.test:1357. Direct diagnostics for
+some pre-existing dynamic child errors remain tracked separately from this
+slice; caught payloads and update cardinality match jq.
 Static field compound addition is covered by
 `compat/field-compound-add.jq.test`, and comma composition of root iterator
 compound updates is covered by `compat/iterator-compound-sequence.jq.test`.
