@@ -17,6 +17,10 @@ alternation ABI. Persistent `input` stream behavior is covered by
 The six remaining selected failures are jq.test:864, :929, :1273, :1277,
 :2088, and :2093; existing decisions document their required lexical-call,
 recursive-pattern, or filter-path continuation ABIs.
+The composed formal-call cardinality failure at jq.test:864 is further pinned
+in decision `docs/decisions/0396-composed-formal-call-cardinality-boundary.md`;
+temporary nested routing removed the crash but did not preserve argument-stream
+cursor semantics, so no route change is integrated.
 The append-only `Parameter_Reference` syntax/program scaffold now distinguishes
 formal filter references from lexical `$` variables. A bounded one-formal
 closure activation phase, including a literal-binding caller-scope shape, is
