@@ -1300,3 +1300,25 @@ foreach_lowers_to_four_operands :: proc(t: ^testing.T) {
 	testing.expect(t, root.has_reduce_update && root.has_name_span)
 	testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
 }
+
+@(test)
+callable_generator_path_argument_preserves_nested_field_shape :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	source := diagnostic.borrow_source("<callable-generator-path>", `def inc(x): x |= .+1; inc(.[].a)`)
+	testing.expect(t, syntax.init_parser(&parser, source, context.allocator))
+	parsed := syntax.parse_filter(&parser)
+	testing.expect_value(t, parsed.kind, syntax.Parse_Outcome_Kind.Success)
+	nodes := syntax.parser_nodes(&parser)
+	root := nodes[int(parsed.root)]
+	testing.expect_value(t, root.kind, syntax.Node_Kind.Call)
+	testing.expect(t, root.has_call_argument)
+	argument := nodes[int(root.call_argument)]
+	testing.expect_value(t, argument.kind, syntax.Node_Kind.Field)
+	testing.expect(t, argument.has_child && argument.has_name_span)
+	parent := nodes[int(argument.child)]
+	testing.expect_value(t, parent.kind, syntax.Node_Kind.Field)
+	testing.expect(t, parent.has_child && parent.has_name_span)
+	base := nodes[int(parent.child)]
+	testing.expect_value(t, base.kind, syntax.Node_Kind.Identity)
+	testing.expect_value(t, syntax.destroy_parser(&parser), runtime.Allocator_Error.None)
+}
