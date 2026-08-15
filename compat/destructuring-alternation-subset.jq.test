@@ -7,6 +7,37 @@
 [4,"number",4]
 [null,"null",null]
 
+# Scalar-first exact upstream permutations jq.test:1008/1015/1022/1029.
+.[] | . as $a ?// {a:$a} ?// {a:$a} | $a
+[[3],[4],[5],6]
+[3]
+[4]
+[5]
+6
+
+.[] as $a ?// {a:$a} ?// {a:$a} | $a
+[[3],[4],[5],6]
+[3]
+[4]
+[5]
+6
+
+[[3],[4],[5],6][] | . as $a ?// {a:$a} ?// {a:$a} | $a
+null
+null
+[3]
+[4]
+[5]
+6
+
+[[3],[4],[5],6] | .[] as $a ?// {a:$a} ?// {a:$a} | $a
+null
+null
+[3]
+[4]
+[5]
+6
+
 # Exact upstream permutation jq.test:980.
 .[] | . as {a:$a} ?// $a ?// {a:$a} | $a
 [[3],[4],[5],6]

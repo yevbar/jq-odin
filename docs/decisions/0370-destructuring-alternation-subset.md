@@ -13,6 +13,7 @@ bounded orders, with one field and one repeated variable name:
 ```jq
 . as {a:$a} ?// {a:$a} ?// $a | BODY
 . as {a:$a} ?// $a ?// {a:$a} | BODY
+. as $a ?// {a:$a} ?// {a:$a} | BODY
 ```
 
 The producer is captured once by an outer binding. Each projection and scalar
@@ -22,14 +23,15 @@ fallback branches are explicitly piped through the captured value so `BODY`
 receives the original input rather than a caught error value.
 
 The guard intentionally excludes multiple fields, differing variable names,
-array/object mixed alternatives, scalar-first permutations, and arbitrary
+array/object mixed alternatives, differing variable names, and arbitrary
 alternative counts. Those forms still require a first-class Alternation AST/IR
 continuation with branch scope rollback and generator cardinality.
 
 ## Evidence
 
 Oracle source cases are `upstream/jq/tests/jq.test:952`, `:959`, `:966`,
-`:973`, `:980`, `:987`, `:994`, and `:1001`. Focused fixture
+`:973`, `:980`, `:987`, `:994`, `:1001`, `:1008`, `:1015`, `:1022`, and
+`:1029`. Focused fixture
 `compat/destructuring-alternation-subset.jq.test` covers mixed object, array,
 scalar, and null inputs, original-body input preservation, and a body error
 that must not trigger a later alternative.
