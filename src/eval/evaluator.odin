@@ -719,27 +719,11 @@ push_frame :: proc(
 	index := storage.frame_count
 	call_argument: program.Instruction_Index
 	has_call_argument := false
-	call_argument_scope_parent := -1
-	call_argument_scope_active := false
 	if parent >= 0 && parent < storage.frame_count {
-		// Formal argument edges are lexical state for the entire callee body,
-		// not merely the immediately nested frame.  Composite expressions such
-		// as `[x, x, x]` insert Fork/constructor frames between a parameter
-		// reference and its formal frame, so walk the active ancestry when
-		// propagating the retained argument instruction.
-		ancestor := parent
-		for ancestor >= 0 {
-			parent_frame := &storage.frames[ancestor]
-			if parent_frame.call_argument_scope_active {
-				call_argument_scope_active = true
-				call_argument_scope_parent = parent_frame.call_argument_scope_parent
-			}
-			if parent_frame.has_call_argument {
-				call_argument = parent_frame.call_argument
-				has_call_argument = true
-				break
-			}
-			ancestor = parent_frame.parent
+		parent_frame := &storage.frames[parent]
+		if parent_frame.has_call_argument {
+			call_argument = parent_frame.call_argument
+			has_call_argument = true
 		}
 	}
 	storage.frames[index] = eval_frame{
@@ -749,8 +733,6 @@ push_frame :: proc(
 		input = value.take_value(input),
 		call_argument = call_argument,
 		has_call_argument = has_call_argument,
-		call_argument_scope_parent = call_argument_scope_parent,
-		call_argument_scope_active = call_argument_scope_active,
 	}
 	storage.frame_count += 1
 	return true
@@ -1115,18 +1097,7 @@ instruction_contains_parameter_reference :: proc(
 	instruction, ok := program.program_instruction(storage.compiled, index)
 	if !ok do return false
 	if instruction.opcode == .Parameter_Reference do return true
-	if instruction.opcode == .Variable do return false
-	if instruction.opcode == .Call {
-		// Do not follow the callee body edge: recursive definitions would make
-		// this discovery unbounded.  A parameter reference in a filter-valued
-		// call argument is nevertheless part of the current lexical body and
-		// must select the formal-call activation path.
-		if instruction.operands_count == 2 {
-			argument, argument_ok := child_instruction(storage, instruction, 1)
-			if argument_ok && instruction_contains_parameter_reference(storage, argument, depth+1) do return true
-		}
-		return false
-	}
+	if instruction.opcode == .Call || instruction.opcode == .Variable do return false
 	for offset in 0..<u32(instruction.operands_count) {
 		operand, operand_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+offset))
 		if operand_ok && operand.kind == .Instruction && instruction_contains_parameter_reference(storage, operand.instruction, depth+1) {
@@ -9651,34 +9622,6 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						return begin_terminal_misuse(storage, .Unsupported_Opcode)
 					}
 					argument := frame.call_argument
-					// A formal argument is itself a filter evaluated in the caller's
-					// lexical scope.  If that filter contains a bare formal reference,
-					// skip the currently active callee's argument edge and resolve the
-					// enclosing formal edge instead (e.g. g's `x` inside f($x,$x+x)).
-					lexical_scope := frame.parent
-					argument_owner := -1
-					for lexical_scope >= 0 {
-						if storage.frames[lexical_scope].call_argument_scope_active {
-							argument_owner = storage.frames[lexical_scope].call_argument_scope_parent
-							break
-						}
-						lexical_scope = storage.frames[lexical_scope].parent
-					}
-					if argument_owner >= 0 {
-						lexical_scope = storage.frames[argument_owner].parent
-						resolved := false
-						for lexical_scope >= 0 {
-							if storage.frames[lexical_scope].has_call_argument {
-								argument = storage.frames[lexical_scope].call_argument
-								resolved = true
-								break
-							}
-							lexical_scope = storage.frames[lexical_scope].parent
-						}
-						if !resolved {
-							return begin_terminal_misuse(storage, .Malformed_Program)
-						}
-					}
 					input_copy := value.clone_value(&frame.input)
 					if storage.frame_count == len(storage.frames) {
 						capacity_error := grow_frames(storage)
@@ -9694,19 +9637,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					argument_frame := &storage.frames[storage.frame_count-1]
 					argument_frame.call_argument_scope_active = true
 					argument_frame.call_argument_scope_parent = -1
-					// If this parameter reference occurs inside another retained
-					// argument, its filter belongs to the enclosing formal scope.
-					// Skip the active callee before finding the scope marker to attach
-					// to the newly pushed argument frame.
 					scope := frame.parent
-					active_owner := -1
-					for probe := scope; probe >= 0; probe = storage.frames[probe].parent {
-						if storage.frames[probe].call_argument_scope_active {
-							active_owner = storage.frames[probe].call_argument_scope_parent
-							break
-						}
-					}
-					if active_owner >= 0 do scope = storage.frames[active_owner].parent
 					for scope >= 0 {
 						if storage.frames[scope].call_formal_reference {
 							argument_frame.call_argument_scope_parent = scope
