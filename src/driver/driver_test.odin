@@ -523,6 +523,24 @@ invalid_escape_reports_lexical_message_and_span :: proc(t: ^testing.T) {
 }
 
 @(test)
+malformed_single_braces_preserve_parse_spans :: proc(t: ^testing.T) {
+	result: Run_Result
+	err := run(&result, "{", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Parse)
+	testing.expect_value(t, err.filter_parse_kind, syntax.Parse_Error_Kind.Unexpected_End)
+	testing.expect_value(t, err.filter_start, 1)
+	testing.expect_value(t, err.filter_end, 1)
+	destroy_result_test(t, &result)
+
+	err = run(&result, "}", "null", context.allocator)
+	testing.expect_value(t, err.kind, Run_Error_Kind.Filter_Parse)
+	testing.expect_value(t, err.filter_parse_kind, syntax.Parse_Error_Kind.Lexical_Error)
+	testing.expect_value(t, err.filter_start, 0)
+	testing.expect_value(t, err.filter_end, 1)
+	destroy_result_test(t, &result)
+}
+
+@(test)
 bound_variable_remains_valid_inside_array_constructor :: proc(t: ^testing.T) {
 	expect_run(t, ". as $foo | [$foo]", "null", "[\n  null\n]\n")
 }

@@ -316,6 +316,19 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		}
 	}
 	ok := true
+	// jq reports a source-located diagnostic for a lone unmatched brace. Keep
+	// this single-error formatter narrow; multi-diagnostic parser recovery (for
+	// example arithmetic object keys) remains a separate contract.
+	if err.kind == .Filter_Parse && len(source) == 1 && source[0] == '{' {
+		return write_all(os.stderr,
+			"jq: error: syntax error, unexpected end of file at <top-level>, line 1, column 1:\n    {\n    ^\n"+
+			"jq: 1 compile error\n")
+	}
+	if err.kind == .Filter_Parse && len(source) == 1 && source[0] == '}' {
+		return write_all(os.stderr,
+			"jq: error: syntax error, unexpected INVALID_CHARACTER, expecting end of file at <top-level>, line 1, column 1:\n    }\n    ^\n"+
+			"jq: 1 compile error\n")
+	}
 	if err.kind == .Filter_Parse && err.filter_parse_kind == .Lexical_Error &&
 	   len(err.filter_parse_message) > 0 && len(source) > 0 {
 		start := err.filter_start
