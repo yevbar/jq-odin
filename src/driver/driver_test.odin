@@ -849,6 +849,28 @@ module_include_accepts_quoted_search_metadata :: proc(t: ^testing.T) {
 	testing.expect_value(t, unsupported, false)
 }
 
+@(test)
+module_metadata_diagnostics_preserve_jq_spans :: proc(t: ^testing.T) {
+	cases := []struct {
+		source: string,
+		kind: Module_Error_Kind,
+		start, end: int,
+	}{
+		{`module (.+1); 0`, .Metadata_Constant, 7, 12},
+		{`module []; 0`, .Metadata_Object, 7, 9},
+		{`include "a" (.+1); 0`, .Metadata_Constant, 12, 17},
+		{`include "a" []; 0`, .Metadata_Object, 12, 14},
+		{`include "\ "; 0`, .Invalid_Escape, 9, 11},
+		{`include "\(a)"; 0`, .Import_Path_Constant, 8, 14},
+	}
+	for tc in cases {
+		kind, start, end := module_metadata_diagnostic(tc.source, 0)
+		testing.expect_value(t, kind, tc.kind)
+		testing.expect_value(t, start, tc.start)
+		testing.expect_value(t, end, tc.end)
+	}
+}
+
 module_expansion_rejects_wrong_arity :: proc(
 	t: ^testing.T,
 	definitions: [dynamic]module_definition,

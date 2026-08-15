@@ -413,6 +413,53 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
 		return ok
 	}
+	// Module directives are parsed by the loader before the ordinary filter
+	// parser.  Preserve jq's source-located diagnostics for the small set of
+	// constant-folding failures that occur at that boundary.
+	if err.kind == .Module &&
+	   (err.module_kind == .Metadata_Constant || err.module_kind == .Metadata_Object ||
+	    err.module_kind == .Import_Path_Constant || err.module_kind == .Invalid_Escape) {
+		start := err.module_diagnostic_start
+		end := err.module_diagnostic_end
+		if start < 0 || end <= start || end > len(source) do return write_all(os.stderr, "jq-odin: module error\n")
+		line := 1
+		line_start := 0
+		for at := 0; at < start; at += 1 {
+			if source[at] == '\n' { line += 1; line_start = at + 1 }
+		}
+		line_end := line_start
+		for line_end < len(source) && source[line_end] != '\n' do line_end += 1
+		if err.module_kind == .Invalid_Escape {
+			quote_start := start
+			for quote_start > 0 && source[quote_start] != '"' do quote_start -= 1
+			quote_end := end
+			for quote_end < len(source) && source[quote_end] != '"' do quote_end += 1
+			if quote_start < len(source) && quote_end < len(source) {
+				inner := source[quote_start:quote_end+1]
+				inner_column := start-quote_start+3
+				ok = write_all(os.stderr, "jq: error: Invalid escape at line ") && ok
+				ok = write_all(os.stderr, fmt.tprintf("%d, column %d (while parsing '\"%s\"') at <top-level>, line %d, column %d:\n    ", line, inner_column, inner[1:len(inner)-1], line, start-line_start+1)) && ok
+				ok = write_all(os.stderr, source[line_start:line_end]) && ok
+				ok = write_all(os.stderr, "\n    ") && ok
+				for _ in 0..<start-line_start do ok = write_all(os.stderr, " ") && ok
+				for _ in start..<end do ok = write_all(os.stderr, "^") && ok
+				ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
+				return ok
+			}
+		}
+		message := "Module metadata must be constant"
+		if err.module_kind == .Metadata_Object do message = "Module metadata must be an object"
+		if err.module_kind == .Import_Path_Constant do message = "Import path must be constant"
+		ok = write_all(os.stderr, "jq: error: ") && ok
+		ok = write_all(os.stderr, message) && ok
+		ok = write_all(os.stderr, fmt.tprintf(" at <top-level>, line %d, column %d:\n    ", line, start-line_start+1)) && ok
+		ok = write_all(os.stderr, source[line_start:line_end]) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 0..<start-line_start do ok = write_all(os.stderr, " ") && ok
+		for _ in start..<end do ok = write_all(os.stderr, "^") && ok
+		ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
+		return ok
+	}
 	if err.kind == .Module && (err.module_kind == .Undefined_Function || err.module_kind == .Syntax_Error) {
 		column := 1
 		for at := 0; at+len(err.module_name) <= len(source); at += 1 {
@@ -547,6 +594,7 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		case .Duplicate_Definition: message = ": duplicate module definition"
 		case .Cycle: message = ": cyclic module dependency"
 		case .Undefined_Function, .Syntax_Error: message = ""
+		case .Metadata_Constant, .Metadata_Object, .Import_Path_Constant, .Invalid_Escape: message = ""
 		case .None:
 		}
 		ok = write_all(os.stderr, message) && ok

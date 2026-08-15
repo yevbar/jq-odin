@@ -489,6 +489,8 @@ Run_Error :: struct {
 	resource_error:       runtime.Allocator_Error,
 	module_name:          string,
 	module_arity:         int,
+	module_diagnostic_start: int,
+	module_diagnostic_end: int,
 }
 
 @(private)
@@ -1267,6 +1269,8 @@ run_with_options :: proc(
 			}
 			return finish(result, {kind = .Module, module_kind = module_outcome.kind,
 				module_name = module_outcome.module_name, module_arity = module_outcome.module_arity,
+				module_diagnostic_start = module_outcome.diagnostic_start,
+				module_diagnostic_end = module_outcome.diagnostic_end,
 				resource_error = module_outcome.resource_error})
 		}
 		if len(filter_memory) > 0 {

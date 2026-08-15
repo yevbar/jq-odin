@@ -20,6 +20,10 @@ Module_Error_Kind :: enum u8 {
 	Cycle,
 	Undefined_Function,
 	Syntax_Error,
+	Metadata_Constant,
+	Metadata_Object,
+	Import_Path_Constant,
+	Invalid_Escape,
 }
 
 module_definition :: struct {
@@ -227,6 +231,9 @@ Module_Outcome :: struct {
 	// module definition. The name borrows the original filter source.
 	module_name: string,
 	module_arity: int,
+	// Source byte span for the narrow jq-compatible module diagnostics below.
+	diagnostic_start: int,
+	diagnostic_end: int,
 }
 
 module_loader_depth :: 64
@@ -273,6 +280,70 @@ parse_module_include :: proc(bytes: string, at: int) -> (name: string, search: s
 	module_space(bytes, &i)
 	if i >= len(bytes) || bytes[i] != ';' do return "", "", at, false, true
 	return name, search, i+1, true, false
+}
+
+// module_metadata_diagnostic recognizes only the four constant-folding
+// diagnostics that jq emits before module loading.  Keeping this probe ahead
+// of the loader avoids treating a source-level compile error as an opaque
+// "unsupported module syntax" failure, while leaving all other malformed
+// directives on the established loader path.
+module_metadata_diagnostic :: proc(bytes: string, at: int) -> (kind: Module_Error_Kind, start, end: int) {
+	i := at
+	if module_word(bytes, i, "module") {
+		i += len("module")
+		module_space(bytes, &i)
+		if i < len(bytes) && (bytes[i] == '(' || bytes[i] == '[') {
+			open := bytes[i]
+			close: byte = ')' if open == '(' else ']'
+			depth := 0
+			for j := i; j < len(bytes); j += 1 {
+				if bytes[j] == open { depth += 1 }
+				if bytes[j] == close {
+					depth -= 1
+					if depth == 0 { return .Metadata_Constant if open == '(' else .Metadata_Object, i, j+1 }
+				}
+			}
+		}
+		return .None, 0, 0
+	}
+	if !module_word(bytes, i, "include") do return .None, 0, 0
+	i += len("include")
+	module_space(bytes, &i)
+	if i >= len(bytes) || bytes[i] != '"' do return .None, 0, 0
+	i += 1
+	for ; i < len(bytes); i += 1 {
+		if bytes[i] == '\\' {
+			if i+1 < len(bytes) && bytes[i+1] == '(' {
+				j := i+2
+				for ; j < len(bytes) && bytes[j] != ')'; j += 1 {}
+				// jq anchors this interpolation diagnostic at the opening quote and
+				// includes the complete quoted path in its caret span.
+				return .Import_Path_Constant, i-1, j+2 if j+1 < len(bytes) else len(bytes)
+			}
+			if i+1 < len(bytes) && bytes[i+1] != '"' && bytes[i+1] != '\\' {
+				return .Invalid_Escape, i, i+2
+			}
+			if i+1 < len(bytes) { i += 1 }
+			continue
+		}
+		if bytes[i] == '"' { break }
+	}
+	if i >= len(bytes) do return .None, 0, 0
+	i += 1
+	module_space(bytes, &i)
+	if i < len(bytes) && (bytes[i] == '(' || bytes[i] == '[') {
+		open := bytes[i]
+		close: byte = ')' if open == '(' else ']'
+		depth := 0
+		for j := i; j < len(bytes); j += 1 {
+			if bytes[j] == open { depth += 1 }
+			if bytes[j] == close {
+				depth -= 1
+				if depth == 0 { return .Metadata_Constant if open == '(' else .Metadata_Object, i, j+1 }
+			}
+		}
+	}
+	return .None, 0, 0
 }
 
 // jq permits a constant metadata object after an include/import path. The
@@ -2377,6 +2448,11 @@ load_filter_modules :: proc(filter: string, paths: []string, allocator: runtime.
 	active_modules: [module_loader_depth]string
 	for {
 		module_space(filter, &i)
+		metadata_kind, metadata_start, metadata_end := module_metadata_diagnostic(filter, i)
+		if metadata_kind != .None {
+			destroy_module_definitions(&definitions, allocator)
+			return nil, {kind = metadata_kind, diagnostic_start = metadata_start, diagnostic_end = metadata_end}
+		}
 		if module_word(filter, i, "def") {
 			if !definitions_initialized {
 				definitions_error: runtime.Allocator_Error
