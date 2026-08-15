@@ -45,6 +45,9 @@ filter-valued `|=` updates remain deferred under decision 0356.
 Generated path calls now preserve jq's result-bearing invalid-path diagnostics
 for scalar and non-path array results; this is covered by the extended path
 assignment shard and decision 0357.
+Binding-derived assignment paths such as jq.test:2088 remain deferred under
+`docs/decisions/0358-binding-aware-path-assignment-boundary.md`; value binding
+works, but path capture and copy-on-write continuation are not yet unified.
 Static deletion from a `null` base now preserves jq's no-op semantics for
 `.foo`, `.[0]`, and `.foo[0]`; the focused shard is
 `compat/static-del-null.jq.test` and the contract is recorded in
