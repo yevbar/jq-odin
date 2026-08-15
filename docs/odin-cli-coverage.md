@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `177721dd`, the authoritative selected catalog measurement
+At integration head `cf44f9b9`, the authoritative selected catalog measurement
 is **475/522 passed, 47 failed, 0 harness errors**
 (`/tmp/coverage-1777.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
@@ -944,3 +944,11 @@ cardinality is preserved (`id(1,2)` emits two values), semicolon/zero-argument
 misuse is rejected, and other parameterized definitions remain on the legacy
 bridge. The focused shard passes 4/4; this does not yet claim general
 parameterized lexical definitions.
+
+## Simple callable arithmetic follow-up (2026-08-15)
+
+The direct Odin callable route now also admits one parameterized definition
+whose body is an additive tree of the parameter and numeric literals. This
+covers `inc(x): x+1` and `twice(x): x+x` without broad textual expansion;
+unsupported bodies continue through the legacy bridge. The focused arithmetic
+shard passes 3/3, while general filter-valued callable bodies remain deferred.
