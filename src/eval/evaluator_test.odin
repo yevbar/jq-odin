@@ -966,6 +966,34 @@ parameterized_call_evaluates_argument_before_callee_body :: proc(t: ^testing.T) 
 }
 
 @(test)
+parameter_reference_invokes_retained_argument_filter :: proc(t: ^testing.T) {
+	// A formal reference is a closure invocation: the argument instruction is
+	// retained on the Parameter_Reference body frame and evaluated against its
+	// input, rather than copied into a lexical value binding.
+	instructions := [?]program.Instruction{
+		{opcode = .Parameter_Reference},
+		{opcode = .Identity, has_literal = true, literal_kind = .Number,
+			operands_start = 0, operands_count = 1},
+		{opcode = .Call, operands_start = 1, operands_count = 2},
+	}
+	operands := [?]program.Operand{
+		{text_start = 0, text_count = 1, kind = .Text},
+		instruction_operand(0),
+		instruction_operand(1),
+	}
+	compiled: program.Program
+	build_program(t, &compiled, instructions[:], operands[:], "1", 2)
+	input := value.null_value()
+	evaluator: Evaluator
+	testing.expect_value(t, init_evaluator(&evaluator, &compiled, &input, context.allocator).kind, Init_Error_Kind.None)
+	output := step_take(t, &evaluator)
+	expect_number(t, &output, 1)
+	testing.expect_value(t, step_evaluator(&evaluator).kind, Step_Kind.Done)
+	testing.expect_value(t, destroy_evaluator(&evaluator), runtime.Allocator_Error(nil))
+	destroy_program_test(t, &compiled)
+}
+
+@(test)
 parameterized_call_resumes_argument_generator_for_each_value :: proc(t: ^testing.T) {
 	instructions := [?]program.Instruction{
 		{opcode = .Identity},

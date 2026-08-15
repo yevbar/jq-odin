@@ -151,6 +151,9 @@ frame_phase :: enum u8 {
 	Sequence_Left_Active,
 	Sequence_Right_Active,
 	Call_Active,
+	// A formal Parameter_Reference invokes the retained argument filter on the
+	// callee input, forwarding each argument result as the formal's output.
+	Parameter_Argument_Active,
 	Field_Start_Child,
 	Field_Child_Active,
 	Field_Result_Active,
@@ -317,6 +320,11 @@ eval_frame :: struct {
 	call_path_paths: value.Value,
 	call_path_cursor: int,
 	call_path_original_root: value.Value,
+	// Parameterized calls retain the argument instruction on the formal body
+	// frame. This is an instruction edge, not a value binding.
+	call_argument: program.Instruction_Index,
+	has_call_argument: bool,
+	call_formal_reference: bool,
 	// True when the path stream was evaluated dynamically rather than
 	// materialized from literal field/index syntax. Generated paths use jq's
 	// result-bearing invalid-path diagnostic on failed assignment.
@@ -2397,6 +2405,9 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Sequence do return false
 	case .Call_Start, .Call_Argument_Active, .Call_Active:
 		if frame.mode != .Normal || instruction.opcode != .Call do return false
+	case .Parameter_Argument_Active:
+		if frame.mode != .Normal || instruction.opcode != .Parameter_Reference || !frame.has_call_argument do return false
+		return true
 	case .Binding_Start_Left, .Binding_Left_Active, .Binding_Body_Active:
 		if frame.mode != .Normal || instruction.opcode != .Binding do return false
 	case .Constructor_Start, .Constructor_Child_Active, .Constructor_Emit:
@@ -3856,7 +3867,11 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 	case .Call_Active:
 		// A two-edge call resumes its argument generator after each callee
 		// activation; legacy one-edge calls complete after their body stream.
-		frame.phase = .Complete if frame.call_path_active else (.Call_Argument_Active if instruction.operands_count == 2 else .Complete)
+		frame.phase = .Complete if frame.call_path_active || frame.call_formal_reference else (.Call_Argument_Active if instruction.operands_count == 2 else .Complete)
+	case .Parameter_Argument_Active:
+		// The formal's argument generator is exhausted; complete this body frame
+		// and let the enclosing Call frame resume/finish normally.
+		frame.phase = .Complete
 	case .Alternation_Body_Active:
 		frame.phase = .Complete
 	case .Field_Child_Active:
@@ -4563,6 +4578,10 @@ propagate_output :: proc(
 		case .Call_Active:
 			// A call forwards each value from its definition body to the caller;
 			// notify_exhausted completes this frame after the body stream ends.
+			current = parent
+		case .Parameter_Argument_Active:
+			// The argument filter is the formal body's producer; forward each
+			// result through the body and enclosing Call continuation.
 			current = parent
 		case .Alternation_Body_Active:
 			// A matched branch forwards body outputs; the retained original is
@@ -8865,9 +8884,27 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				case .Pattern_Descriptor:
 					return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				case .Parameter_Reference:
-					// Formal names denote filter closures, not lexical values. Keep
-					// this ABI marker explicit until call-frame activation exists.
-					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					// Formal names denote filter closures, not lexical values. The
+					// enclosing Call frame installs the retained argument edge on this
+					// body frame; invoke it against the callee input.
+					if !frame.has_call_argument {
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					argument := frame.call_argument
+					input_copy := value.clone_value(&frame.input)
+					if storage.frame_count == len(storage.frames) {
+						capacity_error := grow_frames(storage)
+						if capacity_error != nil {
+							_ = value.destroy_value(&input_copy)
+							return resource_step(capacity_error)
+						}
+						frame = &storage.frames[index]
+					}
+					if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, argument, index, &input_copy) {
+						return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+					}
+					frame.phase = .Parameter_Argument_Active
+					continue
 				case .Alternation_Branch:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Parameter_Identity_Update:
@@ -11790,6 +11827,17 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				if instruction.operands_count == 2 {
 					argument, argument_ok := child_instruction(storage, instruction, 1)
 					body_instruction, body_ok := program.program_instruction(storage.compiled, child)
+					if body_ok && body_instruction.opcode == .Parameter_Reference {
+						if !argument_ok || !push_frame(storage, child, index, &input_copy) {
+							return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy)
+						}
+						storage.frames[index].phase = .Call_Active
+						formal_frame := &storage.frames[storage.frame_count-1]
+						formal_frame.call_argument = argument
+						formal_frame.has_call_argument = true
+						storage.frames[index].call_formal_reference = true
+						continue
+					}
 					if body_ok && body_instruction.opcode == .Parameter_Identity_Update {
 						generator_key, generator_shape_ok := callable_generator_field_argument(storage, argument)
 						if argument_ok && generator_shape_ok && body_instruction.operands_count == 1 {
