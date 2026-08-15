@@ -1392,10 +1392,10 @@ parse_pipe :: proc(
 					term_ready = true
 					continue
 				}
-				if spelling == "with_entries" {
+				if spelling == "with_entries" && !is_definition_call {
 					advance(parser)
 				}
-				if spelling == "with_entries" && token_is(parser, .Open_Paren) {
+				if spelling == "with_entries" && !is_definition_call && token_is(parser, .Open_Paren) {
 					advance(parser)
 					argument, argument_ok := parse_pipe(parser, .Close_Paren, false)
 					if !argument_ok || !token_is(parser, .Close_Paren) { fail_from_lookahead(parser, .Close_Paren); return {}, false }
