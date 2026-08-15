@@ -7,8 +7,8 @@ behavioral oracle.
 ## Current measured checkpoint
 
 At integration head `51911671`, the authoritative selected catalog measurement
-is **477/522 passed, 45 failed, 0 harness errors**
-(`/tmp/coverage-current-519.json`). Persistent `input` stream behavior is covered by
+is **478/522 passed, 44 failed, 0 harness errors**
+(`/tmp/coverage-dynamic-3d3.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
 `compat/iterator-rhs-try-tonumber.jq.test` and decision
