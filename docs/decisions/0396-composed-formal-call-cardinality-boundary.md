@@ -4,6 +4,9 @@ The jq.test:864 closure query is parsed into nested `Binding`, `Call`,
 `Fork`, and `Parameter_Reference` instructions, but the current call ABI cannot
 preserve the formal argument stream across nested body references. The pinned
 jq oracle emits one result, `[1,100,2100,100,2100]`, for input `"more testing"`.
+The same query emits that result for `{}`, `null`, and `1`; the current
+candidate exits with status 139 for each input, so this is not an
+input-shape-specific failure.
 
 The existing direct `Parameter_Reference` phase can retain one argument edge,
 but a composed body such as `1 as $x | id([$x, x, x])` requires each formal
