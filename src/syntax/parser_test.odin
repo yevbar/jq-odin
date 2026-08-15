@@ -20,6 +20,26 @@ binding_path_assignment_shape :: proc(t: ^testing.T) {
 }
 
 @(test)
+generated_map_select_assignment_shape :: proc(t: ^testing.T) {
+	cases := [?]string{
+		`try ((map(select(.a == 1))[].b) = 10) catch .`,
+		`try ((map(select(.a == 1))[].a) |= .+1) catch .`,
+	}
+	for case_index in 0..<len(cases) {
+		text := cases[case_index]
+		parser: Parser
+		_, outcome := parse_test_filter(t, &parser, text)
+		expect_parse_success(t, &parser, outcome)
+		found := false
+		for node in parser.nodes.storage {
+			if node.kind == .Path_Assign { found = true; break }
+		}
+		testing.expect(t, found)
+		testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+	}
+}
+
+@(test)
 alternation_binding_retains_producer_and_branch_list :: proc(t: ^testing.T) {
 	parser: Parser
 	_, outcome := parse_test_filter(t, &parser, `. as [1] ?// [2] | .`)

@@ -1,0 +1,20 @@
+# Bounded generated map/select assignment diagnostics (jq.test:1273/1277).
+try ((map(select(.a == 1))[].b) = 10) catch .
+[{"a":0},{"a":1}]
+"Invalid path expression near attempt to iterate through [{\"a\":1}]"
+
+try ((map(select(.a == 1))[].a) |= .+1) catch .
+[{"a":0},{"a":1}]
+"Invalid path expression near attempt to iterate through [{\"a\":1}]"
+
+try ((map(select(.a == 1))[].b) = 10) catch .
+[]
+"Invalid path expression near attempt to iterate through []"
+
+try ((map(select(.a == 1))[].a) |= .+1) catch .
+null
+"Cannot iterate over null (null)"
+
+try ((map(select(.a == 1))[].b) = 10) catch .
+1
+"Cannot iterate over number (1)"

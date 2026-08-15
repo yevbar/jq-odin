@@ -3205,6 +3205,151 @@ materialized_map_select_result :: proc(
 	return result, true
 }
 
+// materialized_root_map_select_result recognizes the bounded assignment shape
+// `map(select(.field == NUMBER))` when it is the root of a generated path.
+// Unlike ordinary path() materialization, this retains the mapped objects so
+// the assignment frame can report jq's embedded invalid-path diagnostic before
+// attempting mutation.
+materialized_root_map_select_result :: proc(
+	storage: ^evaluator_storage,
+	input: ^value.Value,
+	map_index: program.Instruction_Index,
+) -> (value.Value, bool) {
+	map_instruction, map_ok := program.program_instruction(storage.compiled, map_index)
+	if !map_ok || map_instruction.opcode != .Map || map_instruction.operands_count != 1 do return {}, false
+	map_child, map_child_ok := child_instruction(storage, map_instruction, 0)
+	if !map_child_ok do return {}, false
+	filter, filter_ok := program.program_instruction(storage.compiled, map_child)
+	if !filter_ok || filter.opcode != .If || filter.operands_count != 3 do return {}, false
+	condition, condition_ok := child_instruction(storage, filter, 0)
+	then_branch, then_ok := child_instruction(storage, filter, 1)
+	else_branch, else_ok := child_instruction(storage, filter, 2)
+	condition_instruction, condition_valid := program.program_instruction(storage.compiled, condition)
+	then_instruction, then_valid := program.program_instruction(storage.compiled, then_branch)
+	else_instruction, else_valid := program.program_instruction(storage.compiled, else_branch)
+	if !condition_ok || !then_ok || !else_ok || !condition_valid || !then_valid || !else_valid ||
+	   condition_instruction.opcode != .Equal || then_instruction.opcode != .Identity || else_instruction.opcode != .Empty ||
+	   condition_instruction.operands_count != 2 {
+		return {}, false
+	}
+	condition_left, condition_left_ok := child_instruction(storage, condition_instruction, 0)
+	condition_right, condition_right_ok := child_instruction(storage, condition_instruction, 1)
+	field_instruction, field_ok := program.program_instruction(storage.compiled, condition_left)
+	bound_instruction, bound_ok := program.program_instruction(storage.compiled, condition_right)
+	if !condition_left_ok || !condition_right_ok || !field_ok || !bound_ok || field_instruction.opcode != .Field ||
+	   bound_instruction.opcode != .Identity || !bound_instruction.has_literal || bound_instruction.literal_kind != .Number {
+		return {}, false
+	}
+	field_name, field_name_ok := field_text(storage, field_instruction)
+	bound, _, bound_cleanup := literal_value(storage, bound_instruction)
+	if !field_name_ok || bound_cleanup != nil || value.kind_of(&bound) == .Invalid {
+		_ = value.destroy_value(&bound)
+		return {}, false
+	}
+	result, array_error := value.array_value(storage.allocator)
+	if value.array_error_kind(&array_error) != .None {
+		_ = value.destroy_value(&bound)
+		_ = value.destroy_array_error(&array_error)
+		return {}, false
+	}
+	kind := value.kind_of(input)
+	length: int
+	length_ok := false
+	if kind == .Array { length, length_ok = value.array_length(input) } else if kind == .Object { length, length_ok = value.object_length(input) }
+	if !length_ok {
+		_ = value.destroy_value(&bound)
+		_ = value.destroy_value(&result)
+		return {}, false
+	}
+	for offset in 0..<length {
+		item: value.Value
+		item_ok := false
+		if kind == .Array {
+			item, item_ok = value.array_element_copy(input, offset)
+		} else {
+			key: value.Value
+			key, item, item_ok = value.object_entry_copy(input, offset)
+			_ = value.destroy_value(&key)
+		}
+		if !item_ok {
+			_ = value.destroy_value(&bound)
+			_ = value.destroy_value(&result)
+			return {}, false
+		}
+		actual: value.Value
+		found := false
+		if value.kind_of(&item) == .Object { actual, found = value.object_get_copy(&item, field_name) }
+		matches := false
+		if found {
+			cmp, cmp_ok := compare_values(&actual, &bound)
+			matches = cmp_ok && cmp == 0
+			_ = value.destroy_value(&actual)
+		}
+		if matches {
+			copy_item := value.clone_value(&item)
+			_, append_error := value.array_append_take(&result, &copy_item)
+			if value.array_error_kind(&append_error) != .None {
+				_ = value.destroy_value(&copy_item)
+				_ = value.destroy_value(&item)
+				_ = value.destroy_value(&bound)
+				_ = value.destroy_value(&result)
+				_ = value.destroy_array_error(&append_error)
+				return {}, false
+			}
+		}
+		_ = value.destroy_value(&item)
+	}
+	_ = value.destroy_value(&bound)
+	return result, true
+}
+
+// generated_map_select_field_error_key recognizes the assignment path shape
+// `map(select(.a == 1))[].b` after parser lowering. It deliberately accepts
+// only one empty-field iterator over one Map(If(Equal(Field, Number))) tree.
+generated_map_select_field_error_key :: proc(
+	storage: ^evaluator_storage,
+	input: ^value.Value,
+	path_index: program.Instruction_Index,
+	allocator: runtime.Allocator,
+) -> (string, bool, runtime.Allocator_Error) {
+	path, path_ok := program.program_instruction(storage.compiled, path_index)
+	if !path_ok || path.opcode == .Parenthesized {
+		if path_ok {
+			child, child_ok := child_instruction(storage, path, 0)
+			if child_ok { return generated_map_select_field_error_key(storage, input, child, allocator) }
+		}
+		return "", false, nil
+	}
+	if path.opcode != .Field || path.operands_count != 2 do return "", false, nil
+	name, name_ok := field_text(storage, path)
+	if !name_ok || len(name) == 0 do return "", false, nil
+	iterator, iterator_ok := child_instruction(storage, path, 0)
+	if !iterator_ok do return "", false, nil
+	iterator_instruction, iterator_valid := program.program_instruction(storage.compiled, iterator)
+	if !iterator_valid || iterator_instruction.opcode != .Field || iterator_instruction.operands_count != 2 do return "", false, nil
+	iterator_name, iterator_name_ok := field_text(storage, iterator_instruction)
+	if !iterator_name_ok || len(iterator_name) != 0 do return "", false, nil
+	map_index, map_ok := child_instruction(storage, iterator_instruction, 0)
+	if !map_ok do return "", false, nil
+	if value.kind_of(input) != .Array && value.kind_of(input) != .Object {
+		key, key_error := cannot_iterate_runtime_key(input, allocator)
+		return key, true, key_error
+	}
+	materialized, materialized_ok := materialized_root_map_select_result(storage, input, map_index)
+	if !materialized_ok do return "", false, nil
+	builder: strings.Builder
+	_, init_error := strings.builder_init(&builder, allocator)
+	if init_error != nil { _ = value.destroy_value(&materialized); return "", false, init_error }
+	prefix := "Invalid path expression near attempt to iterate through "
+	if strings.write_string(&builder, prefix) != len(prefix) || !text_append_json_value(&builder, &materialized) {
+		strings.builder_destroy(&builder)
+		_ = value.destroy_value(&materialized)
+		return "", false, nil
+	}
+	_ = value.destroy_value(&materialized)
+	return strings.to_string(builder), true, nil
+}
+
 // materialized_map_select_index_error_key recognizes the one additional
 // diagnostic shape exercised by jq's path tests:
 // `path(.a | map(select(.b == 0)) | .[0])`.  The map/select prefix is
@@ -8552,6 +8697,20 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						// assignment frame can report jq's result-bearing diagnostic.
 						path_child = path_body
 					}
+				}
+				generated_key, generated_ok, generated_error := generated_map_select_field_error_key(storage, &frame.input, path_child, storage.allocator)
+				if generated_error != nil do return resource_step(generated_error)
+				if generated_ok {
+					_ = value.destroy_value(&frame.path_assign_results)
+					kind: Runtime_Error_Kind = .User_Error
+					if value.kind_of(&frame.input) != .Array && value.kind_of(&frame.input) != .Object do kind = .Cannot_Iterate
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=kind, input_kind=value.kind_of(&frame.input), span=instruction.span, key=generated_key})
+					if len(generated_key) > 0 {
+						free_error := runtime.mem_free_bytes(transmute([]byte)generated_key, storage.allocator)
+						if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+					}
+					if ready do return result
+					continue
 				}
 				input_copy := value.clone_value(&frame.input)
 				if value.kind_of(&input_copy) == .Invalid || !push_frame(storage, path_child, index, &input_copy) { _ = value.destroy_value(&frame.path_assign_results); return begin_terminal_misuse_owned(storage, .Malformed_Program, &input_copy) }

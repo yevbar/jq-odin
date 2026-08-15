@@ -2534,7 +2534,6 @@ parse_pipe :: proc(
 						continue
 					}
 					argument_closing := Token_Kind.Close_Paren
-					if spelling == "map" || spelling == "map_values" do argument_closing = .Invalid
 					stop_argument_at_comma := spelling != "bsearch" && spelling != "join" && spelling != "flatten" && spelling != "index" && spelling != "rindex" && spelling != "indices" && spelling != "first" && spelling != "last" && spelling != "isempty" && spelling != "map" && spelling != "map_values"
 					argument, argument_ok := parse_pipe(parser, argument_closing, stop_argument_at_comma)
 					if !argument_ok || !token_is(parser, .Close_Paren) {
@@ -2973,6 +2972,40 @@ parse_pipe :: proc(
 				if left_node.kind == .Parenthesized && left_node.has_child {
 					left_id = left_node.child
 					left_node = parser.nodes.storage[int(left_id)]
+				}
+				// The generated map/select path update has the same invalid-path
+				// semantics for `|=` as for `=`. Admit only the exact empty-field
+				// iterator over a Map(If(...)) tree; evaluator dispatch reports the
+				// materialized result before evaluating this filter-valued RHS.
+				generated_map_select_field := generated_map_select_field_shape(parser, left_id)
+				if generated_map_select_field {
+					advance(parser)
+					right, right_ok := parse_pipe(parser, closing, true, false, false, true)
+					if !right_ok do return {}, false
+					for right >= 0 && parser.nodes.storage[int(right)].kind == .Parenthesized && parser.nodes.storage[int(right)].has_child {
+						right = parser.nodes.storage[int(right)].child
+					}
+					rhs := parser.nodes.storage[int(right)]
+					valid_rhs := rhs.form == .Binary && rhs.binary_operator == .Add && rhs.left >= 0 && rhs.right >= 0
+					if valid_rhs {
+						identity := parser.nodes.storage[int(rhs.left)]
+						number := parser.nodes.storage[int(rhs.right)]
+						valid_rhs = identity.form == .Kinded && identity.kind == .Identity && !identity.has_child && !identity.has_value &&
+							number.form == .Kinded && number.kind == .Number && !number.has_child && number.has_number_text
+					}
+					if !valid_rhs {
+						fail_from_lookahead(parser, .Expression)
+						return {}, false
+					}
+					path_span, path_span_ok := spanning(parser, left_node.span, left_node.span); assert(path_span_ok)
+					path_node, path_node_ok := append_node(parser, Node{kind=.Path, span=path_span, child=left_id, has_child=true})
+					if !path_node_ok do return {}, false
+					span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
+					assign, assign_ok := append_node(parser, Node{kind=.Path_Assign, span=span, left=path_node, right=right})
+					if !assign_ok do return {}, false
+					if int(pipe_root) < 0 do return assign, true
+					tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = assign; tail.has_child = false
+					return pipe_root, true
 				}
 				// A bounded filtered-iterator deletion such as
 				// `(.[] | select(. >= 2)) |= empty` is equivalent to applying
@@ -3454,10 +3487,19 @@ parse_pipe :: proc(
 			}
 			left := current if pipe_root != invalid_id else result
 			left_node := parser.nodes.storage[int(left)]
+			// A generated map/select path inside a parenthesized assignment closes
+			// its inner frame before this operator is reduced.  Unwrap that source
+			// grouping only for the strict generated-path admission below; ordinary
+			// static assignment helpers retain their existing wrapper behavior.
+			if left_node.kind == .Parenthesized && left_node.has_child {
+				left = left_node.child
+				left_node = parser.nodes.storage[int(left)]
+			}
 			// Bounded generated-path assignment: retain a path filter (including a
 			// zero-argument definition call) and its RHS stream. The evaluator owns
 			// stream collection and copy-on-write application.
-			if left_node.form == .Kinded && (left_node.kind == .Index || left_node.kind == .Comma || left_node.kind == .Call) {
+			generated_map_select_field := generated_map_select_field_shape(parser, left)
+			if left_node.form == .Kinded && (left_node.kind == .Index || left_node.kind == .Comma || left_node.kind == .Call || generated_map_select_field) {
 				advance(parser)
 				right, right_ok := parse_pipe(parser, closing, true, false, false, true)
 				if !right_ok do return {}, false
@@ -4427,6 +4469,36 @@ parse_static_field_set_number :: proc(parser: ^Parser, left, pipe_root, pipe_tai
 	if int(pipe_root) < 0 do return update, true
 	tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update
 	return pipe_root, true
+}
+
+// generated_map_select_field_shape admits only the exact jq.test:1273/1277
+// path producer: map(select(.field == NUMBER))[].field.  Keeping this check at
+// the syntax boundary prevents arbitrary filter-valued paths from entering the
+// Path_Assign evaluator continuation.
+generated_map_select_field_shape :: proc(parser: ^Parser, left: Node_Id) -> bool {
+	if left < 0 || int(left) >= len(parser.nodes.storage) do return false
+	outer := parser.nodes.storage[int(left)]
+	if outer.form != .Kinded || outer.kind != .Field || !outer.has_child || !outer.has_name_span do return false
+	name_start, name_end, name_ok := diagnostic.span_offsets(parser.source, outer.name_span)
+	if !name_ok || name_end <= name_start do return false
+	iterator := parser.nodes.storage[int(outer.child)]
+	if iterator.form != .Kinded || iterator.kind != .Field || !iterator.has_child || !iterator.has_name_span do return false
+	iterator_start, iterator_end, iterator_ok := diagnostic.span_offsets(parser.source, iterator.name_span)
+	if !iterator_ok || iterator_start != iterator_end do return false
+	map_node := parser.nodes.storage[int(iterator.child)]
+	if map_node.form != .Kinded || map_node.kind != .Map || !map_node.has_child do return false
+	filter := parser.nodes.storage[int(map_node.child)]
+	if filter.form != .Kinded || filter.kind != .If || !filter.has_if_condition || !filter.has_if_then || !filter.has_if_else do return false
+	condition := parser.nodes.storage[int(filter.if_condition)]
+	then_branch := parser.nodes.storage[int(filter.if_then)]
+	else_branch := parser.nodes.storage[int(filter.if_else)]
+	if condition.form != .Binary || condition.binary_operator != .Equal || condition.left < 0 || condition.right < 0 do return false
+	if then_branch.form != .Kinded || then_branch.kind != .Identity || then_branch.has_child || then_branch.has_value do return false
+	if else_branch.form != .Kinded || else_branch.kind != .Empty || else_branch.has_child || else_branch.has_value do return false
+	field := parser.nodes.storage[int(condition.left)]
+	number := parser.nodes.storage[int(condition.right)]
+	return field.form == .Kinded && field.kind == .Field && field.has_name_span &&
+		number.form == .Kinded && number.kind == .Number && !number.has_child && number.has_number_text
 }
 
 @(private="package")
