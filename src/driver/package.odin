@@ -1022,6 +1022,32 @@ filter_definition_shape :: proc(source: string) -> (has_definition: bool, has_pa
 	return
 }
 
+// query_local_parameterized_definition identifies a declaration introduced in
+// an enclosing filter body (`... | def f(...): ...`).  Top-level declaration
+// lists use a semicolon separator and remain on the module expansion bridge;
+// only the pipe-introduced lexical form needs the evaluator's retained formal
+// scope ABI.
+query_local_parameterized_definition :: proc(source: string) -> bool {
+	in_string := false
+	escaped := false
+	in_comment := false
+	is_ident := proc(c: byte) -> bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' }
+	for i := 0; i+4 <= len(source); i += 1 {
+		c := source[i]
+		if in_comment { if c == '\n' do in_comment = false; continue }
+		if in_string { if escaped { escaped = false; continue }; if c == '\\' { escaped = true; continue }; if c == '"' do in_string = false; continue }
+		if c == '"' { in_string = true; continue }
+		if c == '#' { in_comment = true; continue }
+		if source[i:i+4] != "def " || (i > 0 && is_ident(source[i-1])) do continue
+		before := i - 1
+		for before >= 0 && (source[before] == ' ' || source[before] == '\t' || source[before] == '\n' || source[before] == '\r') { before -= 1 }
+		if before >= 0 && source[before] == '|' {
+			return true
+		}
+	}
+	return false
+}
+
 // simple_callable_term accepts only the bounded arithmetic body understood by
 // the executable parameterized-call slice. Parameter identifiers are
 // distinguished from `.` by their source span; both lower to Identity in the
@@ -1274,7 +1300,7 @@ run_with_options :: proc(
 		// parser path so jq emits a filter diagnostic instead of a module-loader
 		// error; this is a routing guard, not source expansion.
 		parameterized_identity_syntax := strings.has_prefix(trimmed_filter, "def id(x): x; id(")
-		if has_definition && !module_directive_prefix && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax || parameterized_path_identity) {
+		if has_definition && !module_directive_prefix && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax || parameterized_path_identity || (nested_parameterized && query_local_parameterized_definition(trimmed_filter))) {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
