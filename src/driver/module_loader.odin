@@ -443,6 +443,33 @@ module_import_uses_data_binding :: proc(bytes: string, at: int) -> bool {
 	return i < len(bytes) && bytes[i] == '$'
 }
 
+// Query-local definitions still need the module loader when a leading import
+// binds JSON data (`as $name`).  The ordinary zero-argument definition route
+// otherwise sends the raw import directive to the jq parser, which cannot
+// consume module syntax.  Scan only the leading directive prefix so an
+// unrelated string/comment cannot trigger the bridge.
+module_filter_has_data_import :: proc(bytes: string) -> bool {
+	i := 0
+	for {
+		module_space(bytes, &i)
+		if i >= len(bytes) do return false
+		if module_word(bytes, i, "import") {
+			if module_import_uses_data_binding(bytes, i) do return true
+			_, _, _, next, ok, unsupported := parse_module_import(bytes, i)
+			if !ok || unsupported do return false
+			i = next
+			continue
+		}
+		if module_word(bytes, i, "include") {
+			_, _, next, ok, unsupported := parse_module_include(bytes, i)
+			if !ok || unsupported do return false
+			i = next
+			continue
+		}
+		return false
+	}
+}
+
 // Data imports are jq's JSON-module stream wrapped in an array.  Keep the
 // complete structured literals, rather than looking up a field in raw text:
 // the compiler must perform ordinary JSON indexing so nested keys cannot

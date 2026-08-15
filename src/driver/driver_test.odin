@@ -871,6 +871,19 @@ module_metadata_diagnostics_preserve_jq_spans :: proc(t: ^testing.T) {
 	}
 }
 
+@(test)
+module_data_import_prefix_routes_query_local_definitions :: proc(t: ^testing.T) {
+	testing.expect_value(t, module_filter_has_data_import(
+		`import "data" as $a; def f: {$a}; f`,
+	), true)
+	testing.expect_value(t, module_filter_has_data_import(
+		`import "answer" as a; def f: a::answer; f`,
+	), false)
+	testing.expect_value(t, module_filter_has_data_import(
+		`def f: .; f`,
+	), false)
+}
+
 module_expansion_rejects_wrong_arity :: proc(
 	t: ^testing.T,
 	definitions: [dynamic]module_definition,
