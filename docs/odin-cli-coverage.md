@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `d4d5ddd3`, the authoritative selected catalog measurement
+At integration head `9a642b3b`, the authoritative selected catalog measurement
 is **515/522 passed, 7 failed, 0 harness errors**
 (`/tmp/coverage-reduce-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
