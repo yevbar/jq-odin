@@ -1,0 +1,16 @@
+# Bounded binding-aware path assignment for an unused binding.
+try ((.a as $x | .b) = "b") catch .
+{"a":1,"b":2}
+{"a":1,"b":"b"}
+
+try ((.a as $x | .b) = "b") catch .
+null
+{"b":"b"}
+
+try ((.a as $x | .b) = "b") catch .
+[1,2]
+"Cannot index array with string \"a\""
+
+try ((.a as $x | .b) = "b") catch .
+1
+"Cannot index number with string \"a\""

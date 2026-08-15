@@ -8861,7 +8861,76 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					result, ready := unwind_break(storage, index, name)
 					if ready do return result
 					continue
-				case .Path, .Getpath, .Paths, .Path_Assign, .Binding_Path_Assign, .Dynamic_Index_Assign, .Parameter_Path_Update, .Setpath, .Delpaths:
+				case .Binding_Path_Assign:
+					// Bounded binding-path assignment: preserve jq's root/path
+					// semantics for the literal unused-binding shape
+					// `(.a as $x | .b) = literal`.  The producer is evaluated
+					// first for typed index errors; the body is then materialized
+					// as a static path against the original root.
+					if instruction.operands_count != 2 do return begin_terminal_misuse(storage, .Malformed_Program)
+					binding, binding_ok := child_instruction(storage, instruction, 0)
+					rhs_index, rhs_ok := child_instruction(storage, instruction, 1)
+					binding_instruction, binding_valid := program.program_instruction(storage.compiled, binding)
+					rhs_instruction, rhs_valid := program.program_instruction(storage.compiled, rhs_index)
+					if !binding_ok || !rhs_ok || !binding_valid || !rhs_valid || binding_instruction.opcode != .Binding ||
+						binding_instruction.operands_count != 3 {
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					producer, producer_ok := child_instruction(storage, binding_instruction, 0)
+					body, body_ok := child_instruction(storage, binding_instruction, 1)
+					producer_instruction, producer_instruction_valid := program.program_instruction(storage.compiled, producer)
+					body_instruction, body_valid := program.program_instruction(storage.compiled, body)
+					producer_field_shape := producer_instruction_valid && producer_instruction.opcode == .Field && producer_instruction.operands_count == 1
+					body_field_shape := body_valid && body_instruction.opcode == .Field && body_instruction.operands_count == 1
+					if producer_instruction_valid && producer_instruction.opcode == .Field && producer_instruction.operands_count == 2 {
+						base, base_ok := child_instruction(storage, producer_instruction, 0)
+						base_instruction, base_valid := program.program_instruction(storage.compiled, base)
+						producer_field_shape = base_ok && base_valid && base_instruction.opcode == .Identity && base_instruction.operands_count == 0
+					}
+					if body_valid && body_instruction.opcode == .Field && body_instruction.operands_count == 2 {
+						base, base_ok := child_instruction(storage, body_instruction, 0)
+						base_instruction, base_valid := program.program_instruction(storage.compiled, base)
+						body_field_shape = base_ok && base_valid && base_instruction.opcode == .Identity && base_instruction.operands_count == 0
+					}
+					producer_path, producer_path_ok := static_filter_path(storage, producer)
+					body_path, body_path_ok := static_filter_path(storage, body)
+					replacement, _, replacement_cleanup := literal_value(storage, rhs_instruction)
+					if !producer_ok || !body_ok || !producer_field_shape || !body_field_shape ||
+						!producer_path_ok || !body_path_ok || replacement_cleanup != nil ||
+						value.kind_of(&replacement) == .Invalid {
+						_ = value.destroy_value(&producer_path); _ = value.destroy_value(&body_path); _ = value.destroy_value(&replacement)
+						return begin_terminal_misuse(storage, .Unsupported_Opcode)
+					}
+					producer_value, producer_error, producer_valid := lookup_path(&frame.input, &producer_path)
+					_ = value.destroy_value(&producer_path)
+					_ = value.destroy_value(&producer_value)
+					if !producer_valid {
+						producer_name, producer_name_ok := field_text(storage, producer_instruction)
+						if !producer_name_ok { _ = value.destroy_value(&body_path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=value.kind_of(&frame.input), span=instruction.span, key=producer_name})
+						_ = value.destroy_value(&body_path); _ = value.destroy_value(&replacement)
+						if ready do return result
+						continue
+					}
+					if producer_error != .None {
+						producer_name, producer_name_ok := field_text(storage, producer_instruction)
+						if !producer_name_ok { _ = value.destroy_value(&body_path); _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+						result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=value.kind_of(&frame.input), span=instruction.span, key=producer_name})
+						_ = value.destroy_value(&body_path); _ = value.destroy_value(&replacement)
+						if ready do return result
+						continue
+					}
+					updated, updated_ok := set_path_value(&frame.input, &body_path, 0, &replacement, storage.allocator)
+					_ = value.destroy_value(&body_path); _ = value.destroy_value(&replacement)
+					if !updated_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+					_ = value.destroy_value(&frame.input); frame.input = updated
+					output := value.clone_value(&frame.input)
+					if value.kind_of(&output) == .Invalid do return resource_step(.Out_Of_Memory)
+					frame.phase = .Leaf_Yielded
+					result, ready := propagate_output(storage, index, &output)
+					if ready do return result
+					continue
+				case .Path, .Getpath, .Paths, .Path_Assign, .Dynamic_Index_Assign, .Parameter_Path_Update, .Setpath, .Delpaths:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Alternation:
 					if instruction.operands_count < 3 || !capture_composite_instruction(storage, frame, instruction) {
