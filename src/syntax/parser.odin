@@ -469,6 +469,11 @@ Parse_Error :: struct {
 	has_actual: bool,
 	// message is either empty or a static, non-owning diagnostic string.
 	message: string,
+	// jq may report a second, source-overlapping object-key diagnostic when a
+	// literal arithmetic expression is used without parentheses.
+	secondary_span: diagnostic.Span,
+	secondary_message: string,
+	has_secondary: bool,
 }
 
 Parse_Outcome_Kind :: enum {
@@ -4743,6 +4748,20 @@ parse_container :: proc(parser: ^Parser, opener: Token_Kind) -> (Node_Id, bool) 
 				return {}, false
 			}
 			shorthand = !token_is(parser, .Colon)
+		case .Number:
+			key_token := parser.lookahead.token
+			key_ok: bool
+			key, key_ok = append_node(parser, Node{
+				kind = .Number,
+				span = key_token.span,
+				number_text = token_spelling(parser, key_token),
+				has_number_text = true,
+			})
+			if !key_ok {
+				parser.container_depth -= 1
+				return {}, false
+			}
+			advance(parser)
 		case .Open_Paren:
 			// Keep a parenthesized query as source syntax, not a runtime key.
 			key_ok: bool
@@ -4798,6 +4817,16 @@ parse_container :: proc(parser: ^Parser, opener: Token_Kind) -> (Node_Id, bool) 
 			}
 		} else {
 			if !token_is(parser, .Colon) {
+				key_node := parser.nodes.storage[int(key)]
+				if key_node.kind == .Number && parser.lookahead.kind == .Token {
+					#partial switch parser.lookahead.token.kind {
+					case .Plus, .Minus, .Multiply, .Divide, .Modulo:
+						fail_object_key_expression(parser, key_node.span)
+						parser.container_depth -= 1
+						return {}, false
+					case:
+					}
+				}
 				fail_from_lookahead(parser, .Expression)
 				parser.container_depth -= 1
 				return {}, false
@@ -6612,6 +6641,41 @@ fail_at_current :: proc(
 			expected = expected,
 			actual = parser.lookahead.token.kind,
 			has_actual = kind == .Unexpected_Token,
+		},
+	}
+}
+
+// jq emits two diagnostics for an unparenthesized literal arithmetic object
+// key: the parser's unexpected literal, followed by a targeted precedence
+// hint. Capture the complete key expression through the following colon while
+// retaining borrowed source spans and the normal parser failure lifecycle.
+fail_object_key_expression :: proc(parser: ^Parser, key_span: diagnostic.Span) {
+	if parser.failed do return
+	_, key_end, key_ok := diagnostic.span_offsets(parser.source, key_span)
+	if !key_ok {
+		fail_from_lookahead(parser, .Expression)
+		return
+	}
+	end := key_end
+	for parser.lookahead.kind == .Token && !token_is(parser, .Colon) && !token_is(parser, .Close_Brace) {
+		_, token_end, span_ok := diagnostic.span_offsets(parser.source, parser.lookahead.token.span)
+		if span_ok && token_end > end do end = token_end
+		advance(parser)
+	}
+	secondary, secondary_ok := diagnostic.make_span(parser.source, key_end-1, end)
+	if !secondary_ok { fail_from_lookahead(parser, .Expression); return }
+	parser.failed = true
+	parser.failure = Parse_Outcome{
+		kind = .Input_Error,
+		error = Parse_Error{
+			kind = .Unexpected_Token,
+			span = key_span,
+			expected = .Expression,
+			actual = .Number,
+			has_actual = true,
+			secondary_span = secondary,
+			secondary_message = "May need parentheses around object key expression",
+			has_secondary = true,
 		},
 	}
 }

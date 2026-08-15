@@ -345,6 +345,40 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, "\njq: 1 compile error\n") && ok
 		return ok
 	}
+	// jq preserves both parser findings for an unparenthesized arithmetic
+	// object key. The syntax package supplies borrowed spans for the literal
+	// token and the overlapping precedence hint.
+	if err.kind == .Filter_Parse && err.filter_has_secondary && len(source) > 0 {
+		start := err.filter_start
+		end := err.filter_end
+		second_start := err.filter_secondary_span.start
+		second_end := err.filter_secondary_span.end
+		if start < 0 || end <= start || end > len(source) || second_start < 0 || second_end <= second_start || second_end > len(source) {
+			return write_all(os.stderr, "jq-odin: filter parse error\n")
+		}
+		line_start := 0
+		for at := 0; at < start; at += 1 { if source[at] == '\n' { line_start = at + 1 } }
+		line := 1
+		for at := 0; at < start; at += 1 { if source[at] == '\n' { line += 1 } }
+		line_end := line_start
+		for line_end < len(source) && source[line_end] != '\n' do line_end += 1
+		ok = write_all(os.stderr, "jq: error: syntax error, unexpected LITERAL at <top-level>, line ") && ok
+		ok = write_all(os.stderr, fmt.tprintf("%d, column %d:\n    ", line, start-line_start+1)) && ok
+		ok = write_all(os.stderr, source[line_start:line_end]) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 0..<start-line_start do ok = write_all(os.stderr, " ") && ok
+		for _ in start..<end do ok = write_all(os.stderr, "^") && ok
+		ok = write_all(os.stderr, "\n") && ok
+		ok = write_all(os.stderr, "jq: error: ") && ok
+		ok = write_all(os.stderr, err.filter_secondary_message) && ok
+		ok = write_all(os.stderr, fmt.tprintf(" at <top-level>, line %d, column %d:\n    ", line, second_start-line_start+1)) && ok
+		ok = write_all(os.stderr, source[line_start:line_end]) && ok
+		ok = write_all(os.stderr, "\n    ") && ok
+		for _ in 0..<second_start-line_start do ok = write_all(os.stderr, " ") && ok
+		for _ in second_start..<second_end do ok = write_all(os.stderr, "^") && ok
+		ok = write_all(os.stderr, "\njq: 2 compile errors\n") && ok
+		return ok
+	}
 	// A leading modulo token is syntactically an operand, not a complete
 	// filter. jq reports its source spelling (rather than the internal token
 	// name) and anchors the diagnostic at the first byte. Keep this formatter

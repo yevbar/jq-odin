@@ -2300,6 +2300,20 @@ test_parser_rejects_malformed_delimiters_and_trailing_tokens :: proc(t: ^testing
 }
 
 @(test)
+test_parser_preserves_object_key_recovery_diagnostic :: proc(t: ^testing.T) {
+	parser: Parser
+	source, outcome := parse_test_filter(t, &parser, "{1+2:3}")
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Input_Error)
+	testing.expect_value(t, outcome.error.kind, Parse_Error_Kind.Unexpected_Token)
+	testing.expect_value(t, outcome.error.actual, Token_Kind.Number)
+	expect_span(t, source, outcome.error.span, 1, 2)
+	testing.expect(t, outcome.error.has_secondary)
+	expect_span(t, source, outcome.error.secondary_span, 1, 4)
+	testing.expect_value(t, outcome.error.secondary_message, "May need parentheses around object key expression")
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
+}
+
+@(test)
 test_parser_postfix_dot_error_boundary_matches_jq :: proc(t: ^testing.T) {
 	parser: Parser
 	source, outcome := parse_test_filter(t, &parser, "(.a).?")
