@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `56aac415`, the authoritative selected catalog measurement
+At integration head `27163a51`, the authoritative selected catalog measurement
 is **516/522 passed, 6 failed, 0 harness errors**
 (`/tmp/coverage-callable-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
@@ -76,9 +76,12 @@ Instruction-valued dynamic index assignment for the bounded root form
 `.[{}] = 0` now preserves jq's typed errors and optional suppression; its
 focused 10-case shard is `compat/dynamic-index-assignment.jq.test` and the
 implementation contract is `docs/decisions/0360-dynamic-index-assignment-implementation.md`.
-Binding-derived assignment paths such as jq.test:2088 remain deferred under
-`docs/decisions/0358-binding-aware-path-assignment-boundary.md`; value binding
-works, but path capture and copy-on-write continuation are not yet unified.
+Binding-derived assignment paths such as jq.test:2088 remain runtime-deferred
+under `docs/decisions/0358-binding-aware-path-assignment-boundary.md`. The
+structural phase now preserves `(.a as $x | .b) = "b"` as an append-only
+`Binding_Path_Assign` opcode and reaches an explicit unsupported boundary;
+caller-root capture, binding scope, path cardinality, and copy-on-write
+continuation are not yet unified (`docs/decisions/0393-binding-path-assign-structural-phase.md`).
 Static deletion from a `null` base now preserves jq's no-op semantics for
 `.foo`, `.[0]`, and `.foo[0]`; the focused shard is
 `compat/static-del-null.jq.test` and the contract is recorded in
