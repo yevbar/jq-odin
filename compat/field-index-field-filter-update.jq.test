@@ -1,0 +1,40 @@
+# Bounded `.field[index].field |= FILTER` updates.
+.foo[2].bar |= {"old":.,"new":(.+1)}
+{"foo":[11],"bar":42}
+{"foo":[11,null,{"bar":{"old":null,"new":1}}],"bar":42}
+
+.foo[2].bar |= empty
+{"foo":[{"bar":1}],"bar":42}
+{"foo":[{"bar":1}],"bar":42}
+
+.foo[0].bar |= empty
+{"foo":[{"bar":1}],"bar":42}
+{"foo":[{}],"bar":42}
+
+.foo[0].bar |= (1,2)
+{"foo":[{"bar":1}],"bar":42}
+{"foo":[{"bar":1}],"bar":42}
+
+try (.foo[0].bar |= (2,error("late"))) catch .
+{"foo":[{"bar":1}],"bar":42}
+{"foo":[{"bar":2}],"bar":42}
+
+.foo[0].bar |= {"old":.,"new":(.+1)}
+{"foo":[{}]}
+{"foo":[{"bar":{"old":null,"new":1}}]}
+
+.foo[0].bar |= empty
+null
+null
+
+try (.foo[0].bar |= 1) catch .
+{"foo":[1]}
+"Cannot index number with string \"bar\""
+
+try (.foo[0].bar |= 1) catch .
+{"foo":{}}
+"Cannot index object with number"
+
+try (.foo[0].bar |= 1) catch .
+{"foo":1}
+"Cannot index number with number"

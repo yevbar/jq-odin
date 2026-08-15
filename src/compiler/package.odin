@@ -198,6 +198,9 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Static_Index_Field_Update:
 		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 && node.has_name_span && node.has_number_text &&
 		       no_container_links && !node.has_value && !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text)
+	case .Static_Field_Index_Field_Update:
+		return node.container_kind == .None && no_child && node.left == 0 && node.right >= 0 && node.has_name_span && node.has_base_name_span && node.has_number_text &&
+		       no_container_links && !node.has_value && !node.boolean_value && !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Field_Set:
 		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right >= 0 &&
 			node.has_name_span && no_container_links && !node.has_value &&
@@ -494,6 +497,8 @@ validate_binding_scopes :: proc(nodes: []syntax.Node, id: syntax.Node_Id, source
 	case .Static_Field_Index_Update:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Static_Index_Field_Update:
+		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
+	case .Static_Field_Index_Field_Update:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
 	case .Dynamic_Field_Set:
 		return validate_binding_scopes(nodes, node.right, source, scopes, depth, next_budget)
@@ -808,6 +813,13 @@ lower_filter :: proc(
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
 			if !name_ok || name_end < name_start || !node_reference_valid(node.right, len(nodes)) || !checked_count_add(&operand_count, 3) ||
 				!checked_count_add(&text_count, u64(len(node.number_text))+u64(name_end-name_start)) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
+		case .Static_Field_Index_Field_Update:
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+			base_start, base_end, base_ok := diagnostic.span_offsets(source, node.base_name_span)
+			if !name_ok || !base_ok || name_end < name_start || base_end < base_start || !node_reference_valid(node.right, len(nodes)) ||
+				!checked_count_add(&operand_count, 4) || !checked_count_add(&text_count, u64(name_end-name_start)+u64(base_end-base_start)+u64(len(node.number_text))) {
 				return Lower_Outcome{kind = .Size_Overflow}
 			}
 		case .Dynamic_Field_Set:
@@ -1419,6 +1431,23 @@ lower_filter :: proc(
 			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)}))
 			operand_at += 1
 			instruction.operands_count = 3
+		case .Static_Field_Index_Field_Update:
+			instruction.opcode = .Static_Field_Index_Field_Update
+			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
+			base_start, base_end, base_ok := diagnostic.span_offsets(source, node.base_name_span)
+			assert(name_ok && base_ok && name_end >= name_start && base_end >= base_start)
+			assert(program.set_text(output, program.Byte_Offset(text_at), string(bytes[base_start:base_end])))
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(base_end-base_start)}))
+			text_at += u32(base_end-base_start); operand_at += 1
+			assert(program.set_text(output, program.Byte_Offset(text_at), node.number_text))
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(node.number_text))}))
+			text_at += u32(len(node.number_text)); operand_at += 1
+			assert(program.set_text(output, program.Byte_Offset(text_at), string(bytes[name_start:name_end])))
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(name_end-name_start)}))
+			text_at += u32(name_end-name_start); operand_at += 1
+			assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Instruction, instruction=program.Instruction_Index(node.right)}))
+			operand_at += 1
+			instruction.operands_count = 4
 		case .Dynamic_Field_Set:
 			instruction.opcode = .Dynamic_Field_Set
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

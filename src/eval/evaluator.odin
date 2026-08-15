@@ -178,6 +178,8 @@ frame_phase :: enum u8 {
 	Static_Field_Index_Update_Empty,
 	Static_Index_Field_Update_Child_Active,
 	Static_Index_Field_Update_Empty,
+	Static_Field_Index_Field_Update_Child_Active,
+	Static_Field_Index_Field_Update_Empty,
 	Binding_Start_Left,
 	Binding_Left_Active,
 	Binding_Body_Active,
@@ -227,7 +229,7 @@ eval_frame :: struct {
 	// that established their phase. Resumption compares the live Program bytes
 	// before using either the saved phase or a current operand.
 	saved_instruction: program.Instruction,
-	saved_operands:    [3]program.Operand,
+	saved_operands:    [4]program.Operand,
 	saved_operand_count: u8,
 	has_saved_instruction: bool,
 	// Constructors materialize each child generator into one owned array before
@@ -267,6 +269,11 @@ eval_frame :: struct {
 	static_index_field: int,
 	static_index_field_in_range: bool,
 	static_index_field_root_null: bool,
+	static_field_index_field_update_seen: bool,
+	static_field_index_field: int,
+	static_field_index_field_in_range: bool,
+	static_field_index_field_root_null: bool,
+	static_field_index_field_missing: bool,
 	reduce_accumulator: value.Value,
 	reduce_binding: value.Value,
 	in_source_value: value.Value,
@@ -1279,6 +1286,23 @@ static_index_field_update_operands :: proc(storage: ^evaluator_storage, instruct
 }
 
 @(private)
+static_field_index_field_update_operands :: proc(storage: ^evaluator_storage, instruction: program.Instruction) -> (base_key, index_text, key: string, rhs: program.Instruction_Index, ok: bool) {
+	if instruction.opcode != .Static_Field_Index_Field_Update || instruction.operands_count != 4 do return
+	base_operand, base_ok := program.program_operand(storage.compiled, instruction.operands_start)
+	index_operand, index_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+1))
+	key_operand, key_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+2))
+	rhs_operand, rhs_ok := program.program_operand(storage.compiled, program.Operand_Index(u32(instruction.operands_start)+3))
+	if !base_ok || !index_ok || !key_ok || !rhs_ok || base_operand.kind != .Text || index_operand.kind != .Text || key_operand.kind != .Text || rhs_operand.kind != .Instruction do return
+	base_key, base_ok = program.operand_text(storage.compiled, base_operand)
+	index_text, index_ok = program.operand_text(storage.compiled, index_operand)
+	key, key_ok = program.operand_text(storage.compiled, key_operand)
+	_, rhs_ok = program.program_instruction(storage.compiled, rhs_operand.instruction)
+	rhs = rhs_operand.instruction
+	ok = base_ok && index_ok && key_ok && rhs_ok
+	return
+}
+
+@(private)
 static_iterator_set_operand :: proc(
 	storage: ^evaluator_storage,
 	instruction: program.Instruction,
@@ -2139,6 +2163,10 @@ capture_composite_instruction :: proc(
 		if instruction.operands_count != 3 do return false
 		_, child_ok := child_instruction(storage, instruction, 2)
 		if !child_ok do return false
+	case .Static_Field_Index_Field_Update:
+		if instruction.operands_count != 4 do return false
+		_, child_ok := child_instruction(storage, instruction, 3)
+		if !child_ok do return false
 	case .Path, .Getpath, .Delpaths:
 		if instruction.operands_count != 1 do return false
 		_, child_ok := child_instruction(storage, instruction, 0)
@@ -2213,6 +2241,8 @@ resumed_composite_instruction_valid :: proc(
 		if frame.mode != .Normal || instruction.opcode != .Static_Field_Index_Update do return false
 	case .Static_Index_Field_Update_Child_Active, .Static_Index_Field_Update_Empty:
 		if frame.mode != .Normal || instruction.opcode != .Static_Index_Field_Update do return false
+	case .Static_Field_Index_Field_Update_Child_Active, .Static_Field_Index_Field_Update_Empty:
+		if frame.mode != .Normal || instruction.opcode != .Static_Field_Index_Field_Update do return false
 	case .Contains_Child_Active:
 		if frame.mode != .Normal || instruction.opcode != .Contains do return false
 	case .In_Child_Active, .In_First_Child_Active, .In_Second_Start, .In_Second_Child_Active, .In_Result:
@@ -2283,6 +2313,8 @@ resumed_composite_instruction_valid :: proc(
 		expected_operand_count = 3
 	} else if frame.phase == .Static_Index_Field_Update_Child_Active || frame.phase == .Static_Index_Field_Update_Empty {
 		expected_operand_count = 3
+	} else if frame.phase == .Static_Field_Index_Field_Update_Child_Active || frame.phase == .Static_Field_Index_Field_Update_Empty {
+		expected_operand_count = 4
 	}
 	else if frame.phase == .Binding_Start_Left || frame.phase == .Binding_Left_Active || frame.phase == .Binding_Body_Active {
 		expected_operand_count = 3
@@ -3691,6 +3723,10 @@ notify_exhausted :: proc(storage: ^evaluator_storage, parent: int) -> bool {
 		frame.phase = .Static_Index_Field_Update_Empty
 	case .Static_Index_Field_Update_Empty:
 		return false
+	case .Static_Field_Index_Field_Update_Child_Active:
+		frame.phase = .Static_Field_Index_Field_Update_Empty
+	case .Static_Field_Index_Field_Update_Empty:
+		return false
 	case .Binary_Left_Active:
 		// Defined-or treats an empty left stream like a null/false result and
 		// must start its right-hand generator when the producer exhausts without
@@ -4430,6 +4466,47 @@ propagate_output :: proc(
 			displaced_array, array_error := value.array_set_take(&frame.input, frame.static_index_field, &selected)
 			_ = value.destroy_value(&displaced_array)
 			if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_array_error(&array_error); return begin_terminal_misuse(storage, .Malformed_Program), true }
+			free_error := destroy_frames_to(storage, parent+1); if free_error != nil { return resource_step(free_error), true }
+			frame = &storage.frames[parent]; frame.phase = .Complete
+			output := value.take_value(&frame.input)
+			return propagate_output(storage, parent, &output)
+		case .Static_Field_Index_Field_Update_Child_Active:
+			if frame.static_field_index_field_update_seen { _ = value.destroy_value(owned); return {}, false }
+			frame.static_field_index_field_update_seen = true
+			capacity_error := prepare_output(storage, parent)
+			if capacity_error != nil { storage.pending_value = value.take_value(owned); return resource_step(capacity_error), true }
+			frame = &storage.frames[parent]
+			base_key, _, key_text, _, operands_ok := static_field_index_field_update_operands(storage, instruction)
+			if !operands_ok { return begin_terminal_misuse_owned(storage, .Malformed_Program, owned), true }
+			base_array: value.Value
+			base_array_error: value.Array_Operation_Error
+			if frame.static_field_index_field_missing {
+				base_array, base_array_error = value.array_value(storage.allocator)
+				if value.array_error_kind(&base_array_error) != .None { _ = value.destroy_value(owned); _ = value.destroy_array_error(&base_array_error); return resource_step(.Out_Of_Memory), true }
+			} else {
+				found: bool
+				base_array, found = value.object_get_copy(&frame.input, base_key)
+				if !found || value.kind_of(&base_array) != .Array { _ = value.destroy_value(&base_array); _ = value.destroy_value(owned); return begin_terminal_misuse(storage, .Malformed_Program), true }
+			}
+			selected: value.Value
+			if frame.static_field_index_field_in_range { selected, _ = value.array_element_copy(&base_array, frame.static_field_index_field) } else { selected = value.null_value() }
+			if value.kind_of(&selected) == .Null {
+				empty_object, object_error := value.object_value(storage.allocator)
+				if value.object_error_kind(&object_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_value(&base_array); _ = value.destroy_object_error(&object_error); return resource_step(.Out_Of_Memory), true }
+				_ = value.destroy_value(&selected); selected = empty_object
+			}
+			key, key_ok := existing_object_key_copy(&selected, key_text)
+			if !key_ok { key_error: value.Constructor_Error; key, key_error = value.string_value(key_text, storage.allocator); if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_value(&base_array); _ = value.destroy_value(owned); _ = value.destroy_constructor_error(&key_error); return resource_step(.Out_Of_Memory), true } }
+			duplicate, displaced, object_error := value.object_set_take(&selected, &key, owned)
+			_ = value.destroy_value(&key); _ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced)
+			if value.object_error_kind(&object_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_value(&base_array); _ = value.destroy_object_error(&object_error); return begin_terminal_misuse(storage, .Malformed_Program), true }
+		displaced_item, array_error := value.array_set_take(&base_array, frame.static_field_index_field, &selected); _ = value.destroy_value(&displaced_item)
+			if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_value(&base_array); _ = value.destroy_array_error(&array_error); return begin_terminal_misuse(storage, .Malformed_Program), true }
+			field_key, field_key_ok := existing_object_key_copy(&frame.input, base_key)
+			if !field_key_ok { key_error: value.Constructor_Error; field_key, key_error = value.string_value(base_key, storage.allocator); if value.constructor_error_kind(&key_error) != .None { _ = value.destroy_value(&base_array); _ = value.destroy_constructor_error(&key_error); return resource_step(.Out_Of_Memory), true } }
+			duplicate_field, displaced_field, root_error := value.object_set_take(&frame.input, &field_key, &base_array)
+			_ = value.destroy_value(&duplicate_field); _ = value.destroy_value(&displaced_field)
+			if value.object_error_kind(&root_error) != .None { _ = value.destroy_value(&field_key); _ = value.destroy_value(&base_array); _ = value.destroy_object_error(&root_error); return begin_terminal_misuse(storage, .Malformed_Program), true }
 			free_error := destroy_frames_to(storage, parent+1); if free_error != nil { return resource_step(free_error), true }
 			frame = &storage.frames[parent]; frame.phase = .Complete
 			output := value.take_value(&frame.input)
@@ -8882,6 +8959,60 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 			if !push_frame(storage, rhs_instruction, index, &replacement) { _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
 			storage.frames[index].static_index_field_update_seen = false
 			storage.frames[index].phase = .Static_Index_Field_Update_Child_Active
+			case .Static_Field_Index_Field_Update:
+				base_key, index_text, key_text, rhs_instruction, operands_ok := static_field_index_field_update_operands(storage, instruction)
+				if !operands_ok || !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
+				index_float, index_ok := strconv.parse_f64(index_text)
+				if !index_ok || math.is_nan(index_float) || math.is_inf(index_float) || index_float < 0 || index_float > f64(max(int)) { return begin_terminal_misuse(storage, .Unsupported_Opcode) }
+				input_kind := value.kind_of(&frame.input)
+				if input_kind != .Object && input_kind != .Null {
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=input_kind, span=instruction.span, key=base_key}); if ready do return result
+					continue
+				}
+				frame.static_field_index_field_root_null = input_kind == .Null
+				if input_kind == .Null {
+					empty_object, object_error := value.object_value(storage.allocator)
+					if value.object_error_kind(&object_error) != .None { _ = value.destroy_object_error(&object_error); return resource_step(.Out_Of_Memory) }
+					_ = value.destroy_value(&frame.input); frame.input = empty_object
+				}
+				base_value, found := value.object_get_copy(&frame.input, base_key)
+				frame.static_field_index_field_missing = !found || value.kind_of(&base_value) == .Null
+				if !found || value.kind_of(&base_value) == .Null {
+					_ = value.destroy_value(&base_value)
+					array_error: value.Array_Operation_Error
+					base_value, array_error = value.array_value(storage.allocator)
+					if value.array_error_kind(&array_error) != .None { _ = value.destroy_array_error(&array_error); return resource_step(.Out_Of_Memory) }
+				} else if value.kind_of(&base_value) != .Array {
+					kind := value.kind_of(&base_value); _ = value.destroy_value(&base_value)
+					message := "Cannot index object with number"
+					switch kind { case .Boolean: message = "Cannot index boolean with number"; case .Number: message = "Cannot index number with number"; case .String: message = "Cannot index string with number"; case .Object: message = "Cannot index object with number"; case .Array, .Null, .Invalid: }
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.User_Error, input_kind=kind, span=instruction.span, key=message}); if ready do return result
+					continue
+				}
+				frame.static_field_index_field = int(index_float)
+				length, length_ok := value.array_length(&base_value); if !length_ok { _ = value.destroy_value(&base_value); return begin_terminal_misuse(storage, .Malformed_Program) }
+				frame.static_field_index_field_in_range = frame.static_field_index_field < length
+				replacement := value.null_value()
+				if frame.static_field_index_field_in_range {
+					selected, selected_ok := value.array_element_copy(&base_value, frame.static_field_index_field)
+					if !selected_ok { _ = value.destroy_value(&base_value); return begin_terminal_misuse(storage, .Malformed_Program) }
+					selected_kind := value.kind_of(&selected)
+					if selected_kind == .Object {
+						replacement, found = value.object_get_copy(&selected, key_text); if !found do replacement = value.null_value()
+						_ = value.destroy_value(&selected)
+					} else if selected_kind == .Null {
+						_ = value.destroy_value(&selected)
+					} else {
+						_ = value.destroy_value(&selected); _ = value.destroy_value(&base_value)
+						result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=selected_kind, span=instruction.span, key=key_text}); if ready do return result
+						continue
+					}
+				}
+				_ = value.destroy_value(&base_value)
+				if storage.frame_count == len(storage.frames) { capacity_error := grow_frames(storage); if capacity_error != nil { _ = value.destroy_value(&replacement); return resource_step(capacity_error) }; frame = &storage.frames[index] }
+				if !push_frame(storage, rhs_instruction, index, &replacement) { _ = value.destroy_value(&replacement); return begin_terminal_misuse(storage, .Malformed_Program) }
+				storage.frames[index].static_field_index_field_update_seen = false
+				storage.frames[index].phase = .Static_Field_Index_Field_Update_Child_Active
 			case .Static_Field_Index_Update:
 				key_text, index_text, rhs_instruction, operands_ok := static_field_index_update_operands(storage, instruction)
 				if !operands_ok || !capture_composite_instruction(storage, frame, instruction) do return begin_terminal_misuse(storage, .Malformed_Program)
@@ -11228,7 +11359,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if found { _, removed, _, delete_error := value.object_delete_take(&selected, key_text); _ = value.destroy_value(&key); _ = value.destroy_value(&removed); if value.object_error_kind(&delete_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_object_error(&delete_error); return begin_terminal_misuse(storage, .Malformed_Program) } } else { _ = value.destroy_value(&key) }
 					displaced, array_error := value.array_set_take(&frame.input, frame.static_index_field, &selected); _ = value.destroy_value(&displaced); if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_array_error(&array_error); return begin_terminal_misuse(storage, .Malformed_Program) }
 				} else if value.kind_of(&selected) == .Null {
-					_ = value.destroy_value(&selected)
+					// Keep the null element owned for the array replacement below.
 				} else {
 					selected_kind := value.kind_of(&selected)
 					_ = value.destroy_value(&selected)
@@ -11236,6 +11367,35 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					if ready do return result
 					continue
 				}
+			}
+			output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result
+		case .Static_Field_Index_Field_Update_Empty:
+			base_key, _, key_text, _, operands_ok := static_field_index_field_update_operands(storage, instruction)
+			if !operands_ok do return begin_terminal_misuse(storage, .Malformed_Program)
+			if frame.static_field_index_field_root_null {
+				_ = value.destroy_value(&frame.input)
+				frame.input = value.null_value()
+			} else if !frame.static_field_index_field_missing && frame.static_field_index_field_in_range {
+				base_array, found := value.object_get_copy(&frame.input, base_key)
+				if !found || value.kind_of(&base_array) != .Array { _ = value.destroy_value(&base_array); return begin_terminal_misuse(storage, .Malformed_Program) }
+				selected, selected_ok := value.array_element_copy(&base_array, frame.static_field_index_field)
+				if !selected_ok { _ = value.destroy_value(&base_array); return begin_terminal_misuse(storage, .Malformed_Program) }
+				if value.kind_of(&selected) == .Object {
+					key, found_key := existing_object_key_copy(&selected, key_text)
+					if found_key { _, removed, _, delete_error := value.object_delete_take(&selected, key_text); _ = value.destroy_value(&key); _ = value.destroy_value(&removed); if value.object_error_kind(&delete_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_value(&base_array); _ = value.destroy_object_error(&delete_error); return begin_terminal_misuse(storage, .Malformed_Program) } } else { _ = value.destroy_value(&key) }
+				} else if value.kind_of(&selected) == .Null {
+					// Keep null selected for array_set_take below.
+				} else {
+					selected_kind := value.kind_of(&selected); _ = value.destroy_value(&selected); _ = value.destroy_value(&base_array)
+					result, ready := raise_runtime(storage, index, Runtime_Error{kind=.Cannot_Index_With_String, input_kind=selected_kind, span=instruction.span, key=key_text}); if ready do return result
+					continue
+				}
+				displaced, array_error := value.array_set_take(&base_array, frame.static_field_index_field, &selected); _ = value.destroy_value(&displaced)
+				if value.array_error_kind(&array_error) != .None { _ = value.destroy_value(&selected); _ = value.destroy_value(&base_array); _ = value.destroy_array_error(&array_error); return begin_terminal_misuse(storage, .Malformed_Program) }
+				field_key, field_key_ok := existing_object_key_copy(&frame.input, base_key)
+				if !field_key_ok { _ = value.destroy_value(&base_array); return begin_terminal_misuse(storage, .Malformed_Program) }
+				duplicate, displaced_field, root_error := value.object_set_take(&frame.input, &field_key, &base_array); _ = value.destroy_value(&duplicate); _ = value.destroy_value(&displaced_field)
+				if value.object_error_kind(&root_error) != .None { _ = value.destroy_value(&field_key); _ = value.destroy_value(&base_array); _ = value.destroy_object_error(&root_error); return begin_terminal_misuse(storage, .Malformed_Program) }
 			}
 			output := value.take_value(&frame.input); frame.phase = .Leaf_Yielded; result, ready := propagate_output(storage, index, &output); if ready do return result
 
