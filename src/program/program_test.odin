@@ -6,6 +6,25 @@ import "core:testing"
 
 TRACKING_MEMORY : bool : #config(ODIN_TEST_TRACK_MEMORY, true)
 
+@(test)
+parameter_reference_opcode_has_zero_operands :: proc(t: ^testing.T) {
+	p: Program
+	err := init_program(&p, 1, 0, 0, context.allocator)
+	testing.expect_value(t, err.kind, Init_Error_Kind.None)
+	testing.expect(t, set_instruction(&p, 0, Instruction{
+		opcode = .Parameter_Reference,
+		operands_count = 0,
+		span = {start = 0, end = 1},
+	}))
+	testing.expect(t, set_root(&p, 0))
+	testing.expect(t, finalize_program(&p))
+	instruction, ok := program_instruction(&p, 0)
+	testing.expect(t, ok)
+	testing.expect_value(t, instruction.opcode, Opcode.Parameter_Reference)
+	testing.expect_value(t, instruction_child_count(&p, instruction), Count(0))
+	testing.expect_value(t, destroy_program(&p), runtime.Allocator_Error.None)
+}
+
 @(private="package")
 Fail_Allocator :: struct {
 	backing: runtime.Allocator,

@@ -4248,7 +4248,32 @@ parameterized_identity_definition_records_argument_root :: proc(t: ^testing.T) {
 }
 
 @(test)
+nested_formal_reference_is_distinct_from_lexical_variable :: proc(t: ^testing.T) {
+	parser: Parser
+	source := diagnostic.borrow_source("<nested-formal-reference>", `1 | def f(x): x; f(1)`)
+	testing.expect(t, init_parser(&parser, source, context.allocator))
+	outcome := parse_filter(&parser)
+	testing.expect_value(t, outcome.kind, Parse_Outcome_Kind.Success)
+	definitions := parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 1)
+	testing.expect(t, definitions[0].scope_depth > 0 && definitions[0].has_parameter)
+	body := parser.nodes.storage[int(definitions[0].body)]
+	testing.expect_value(t, body.kind, Node_Kind.Parameter_Reference)
+	testing.expect_value(t, destroy_parser(&parser), runtime.Allocator_Error.None)
 
+	parser2: Parser
+	source2 := diagnostic.borrow_source("<nested-lexical-variable>", `1 as $x | def f(x): $x; f(1)`)
+	testing.expect(t, init_parser(&parser2, source2, context.allocator))
+	outcome2 := parse_filter(&parser2)
+	testing.expect_value(t, outcome2.kind, Parse_Outcome_Kind.Success)
+	definitions2 := parser_definitions(&parser2)
+	testing.expect_value(t, len(definitions2), 1)
+	body2 := parser2.nodes.storage[int(definitions2[0].body)]
+	testing.expect_value(t, body2.kind, Node_Kind.Variable)
+	testing.expect_value(t, destroy_parser(&parser2), runtime.Allocator_Error.None)
+}
+
+@(test)
 parameterized_definition_rejects_extra_formal_argument :: proc(t: ^testing.T) {
 	parser: Parser
 	source := diagnostic.borrow_source("<parameterized-arity>", `def id(x): x; id(1;2)`)

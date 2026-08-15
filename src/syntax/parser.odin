@@ -314,6 +314,10 @@ Node_Kind :: enum {
 	// Pattern_Descriptor wraps recursive destructuring branches for staged
 	// lowering; evaluator capture activation is a later phase.
 	Pattern_Descriptor,
+	// Parameter_Reference identifies a formal filter reference inside a nested
+	// definition. It is distinct from `$name` lexical variables and remains
+	// evaluator-unsupported until closure activation is implemented.
+	Parameter_Reference,
 }
 
 Node_Id :: distinct int
@@ -1699,7 +1703,9 @@ parse_pipe :: proc(
 				if uppercase_in do spelling = "in"
 				if parser.has_definition_parameter && definition_name_matches(parser, parser.definition_parameter, spelling) && !token_is(parser, .Open_Paren) {
 					advance(parser)
-					new_term, parameter_ok := append_node(parser, Node{kind=.Identity, span=token.span})
+					parameter_kind := Node_Kind.Identity
+					if parser.definition_scope_depth > 0 do parameter_kind = .Parameter_Reference
+					new_term, parameter_ok := append_node(parser, Node{kind=parameter_kind, span=token.span})
 					if !parameter_ok { return {}, false }
 					term = new_term
 					term_ready = true

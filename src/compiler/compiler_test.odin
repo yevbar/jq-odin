@@ -313,6 +313,20 @@ parameterized_identity_call_lowers_argument_edge :: proc(t: ^testing.T) {
 }
 
 @(test)
+nested_formal_reference_lowers_to_explicit_opcode :: proc(t: ^testing.T) {
+	parser: syntax.Parser
+	compiled: program.Program
+	_, _, lowered := parse_and_lower(t, `1 | def f(x): x; f(1)`, &parser, &compiled)
+	testing.expect_value(t, lowered.kind, Lower_Error_Kind.None)
+	definitions := syntax.parser_definitions(&parser)
+	testing.expect_value(t, len(definitions), 1)
+	body := instruction_at(&compiled, program.Instruction_Index(definitions[0].body))
+	testing.expect_value(t, body.opcode, program.Opcode.Parameter_Reference)
+	testing.expect_value(t, body.operands_count, program.Count(0))
+	expect_cleanup(t, &parser, &compiled)
+}
+
+@(test)
 mktime_lowers_to_append_only_builtin_opcode :: proc(t: ^testing.T) {
 	parser: syntax.Parser
 	compiled: program.Program

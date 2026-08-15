@@ -8864,6 +8864,10 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 					frame.phase = .Alternation_Body_Active
 				case .Pattern_Descriptor:
 					return begin_terminal_misuse(storage, .Unsupported_Opcode)
+				case .Parameter_Reference:
+					// Formal names denote filter closures, not lexical values. Keep
+					// this ABI marker explicit until call-frame activation exists.
+					return begin_terminal_misuse(storage, .Unsupported_Opcode)
 				case .Alternation_Branch:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Parameter_Identity_Update:
