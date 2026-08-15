@@ -976,12 +976,14 @@ shard passes 3/3, while general filter-valued callable bodies remain deferred.
 
 ## Destructuring alternation follow-up (2026-08-15)
 
-The current reviewed implementation head (`f31acdd9`) measures **490/522
-passed, 32 failed, 0 harness errors** against the pinned jq 1.8.1 catalog.
+The current reviewed implementation head (`34a009d1`) measures **494/522
+passed, 28 failed, 0 harness errors** against the pinned jq 1.8.1 catalog.
 The bounded alternation runtime preserves array-pattern branch rollback and
 handles `. as [$a] ?// [$b] | .` for arrays and `null`, with jq-compatible
 indexed-type diagnostics for non-array inputs. Existing object-pattern
 permutations remain on their specialized lowering path; regression fixtures
 cover those permutations. Array/object pattern captures visible in the body,
 literal patterns, generators, and general multi-output rollback remain
-deferred under the branch-scope ABI decision.
+deferred under the branch-scope ABI decision. The repeated same-name
+object-pattern form `{a:$a} ?// {a:$a} ?// {a:$a}` is also covered, including
+generator-fed inputs; the focused alternation shard is 15/15.
