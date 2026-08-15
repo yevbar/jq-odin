@@ -1,0 +1,40 @@
+# Bounded root-index to field filter updates consume one RHS result.
+.[0].a |= {"old":., "new":(.+1)}
+null
+[ {"a":{"old":null,"new":1}} ]
+
+.[0].a |= {"old":., "new":(.+1)}
+[{"a":1}]
+[{"a":{"old":1,"new":2}}]
+
+.[0].a |= empty
+null
+null
+
+.[0].a |= empty
+[{"a":1}]
+[{}]
+
+.[0].a |= (empty,empty)
+null
+null
+
+.[0].a |= (1,2)
+[{"a":1}]
+[{"a":1}]
+
+try (.[0].a |= (2,error("late"))) catch .
+[{"a":1}]
+[{"a":2}]
+
+try (.[0].a |= 1) catch .
+[1]
+"Cannot index number with string \"a\""
+
+try (.[0].a |= 1) catch .
+{}
+"Cannot index object with number"
+
+try (.[0].a |= 1) catch .
+3
+"Cannot index number with number"
