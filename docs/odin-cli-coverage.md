@@ -6,9 +6,9 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `4c752975`, the authoritative selected catalog measurement
-is **514/522 passed, 8 failed, 0 harness errors**
-(`/tmp/coverage-object-key-integrated.json`). The bounded same-name destructuring alternation
+At integration head `d4d5ddd3`, the authoritative selected catalog measurement
+is **515/522 passed, 7 failed, 0 harness errors**
+(`/tmp/coverage-reduce-integrated.json`). The bounded same-name destructuring alternation
 subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 :1015, :1022, and :1029 through existing Binding/Try
 continuations; the remaining `?//` forms still require a first-class
@@ -1031,3 +1031,12 @@ Unparenthesized arithmetic object keys match jq's two-diagnostic output and
 carets (`{1+2:3}`, `{1-2:3}`, `{1*2+3:4}`), while literal, pipe, and
 parenthesized key forms retain their existing behavior. The catalog rises to
 **514/522**; broad parser recovery remains deferred.
+
+## Dynamic reduce assignment follow-up (2026-08-15)
+
+The reducer now supports literal three-operand `range(START;END;STEP)` with a
+same-name dynamic index key and RHS over an array or null seed. It applies
+transactional sparse updates with jq-compatible null filling and descending
+range order, covering jq.test:490. General key/RHS streams, computed bounds,
+and resumable empty/error cardinality remain deferred. Coverage is now
+**515/522**.
