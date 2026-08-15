@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `cf44f9b9`, the authoritative selected catalog measurement
+At integration head `23953048`, the authoritative selected catalog measurement
 is **475/522 passed, 47 failed, 0 harness errors**
 (`/tmp/coverage-1777.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
@@ -35,6 +35,10 @@ covered by `compat/walk-filter-postorder.jq.test` and decision
 `docs/decisions/0348-walk-filter-ast-lowering-prototype.md`; it uses recursive
 AST calls with post-order `Map`/`Map_Values` rebuilding rather than a driver
 rewrite.
+Parameterized callable arithmetic is now routed through real argument/callee
+frames for the bounded `+`, `-`, `*`, `/`, and `%` body shapes; focused parity
+is covered by `compat/parameterized-call-arithmetic.jq.test` (9/9). Unsupported
+callable bodies continue through the existing module fallback.
 Static deletion from a `null` base now preserves jq's no-op semantics for
 `.foo`, `.[0]`, and `.foo[0]`; the focused shard is
 `compat/static-del-null.jq.test` and the contract is recorded in
