@@ -6,7 +6,7 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `51911671`, the authoritative selected catalog measurement
+At integration head `fc60a0d9`, the authoritative selected catalog measurement
 is **478/522 passed, 44 failed, 0 harness errors**
 (`/tmp/coverage-dynamic-3d3.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
@@ -45,6 +45,10 @@ filter-valued `|=` updates remain deferred under decision 0356.
 Generated path calls now preserve jq's result-bearing invalid-path diagnostics
 for scalar and non-path array results; this is covered by the extended path
 assignment shard and decision 0357.
+Instruction-valued dynamic index assignment for the bounded root form
+`.[{}] = 0` now preserves jq's typed errors and optional suppression; its
+focused 10-case shard is `compat/dynamic-index-assignment.jq.test` and the
+implementation contract is `docs/decisions/0360-dynamic-index-assignment-implementation.md`.
 Binding-derived assignment paths such as jq.test:2088 remain deferred under
 `docs/decisions/0358-binding-aware-path-assignment-boundary.md`; value binding
 works, but path capture and copy-on-write continuation are not yet unified.
