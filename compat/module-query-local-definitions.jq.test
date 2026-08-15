@@ -1,0 +1,7 @@
+import "a" as foo; import "b" as bar; def fooa: foo::a; [fooa, bar::a, bar::b, foo::a]
+null
+["a","b","c","a"]
+
+import "data" as $a; import "data" as $b; def f: {$a, $b}; f
+null
+{"a":[{"this":"is a test","that":"is too"}],"b":[{"this":"is a test","that":"is too"}]}

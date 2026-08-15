@@ -1255,7 +1255,8 @@ run_with_options :: proc(
 		// parser path so jq emits a filter diagnostic instead of a module-loader
 		// error; this is a routing guard, not source expansion.
 		parameterized_identity_syntax := strings.has_prefix(trimmed_filter, "def id(x): x; id(")
-		if has_definition && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax || parameterized_path_identity) {
+		has_leading_module_directive := strings.has_prefix(trimmed_filter, "import ") || strings.has_prefix(trimmed_filter, "include ")
+		if has_definition && !has_leading_module_directive && (!parameterized_definition || parameterized_simple || parameterized_identity_syntax || parameterized_path_identity) {
 			filter_memory, module_outcome = nil, {}
 		} else {
 			filter_memory, module_outcome = load_filter_modules(filter, options.module_paths, allocator)
