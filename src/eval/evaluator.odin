@@ -309,6 +309,8 @@ eval_frame :: struct {
 	// sealed Program text and is valid for the evaluator lifetime.
 	call_path_key: string,
 	call_path_active: bool,
+	call_path_add: bool,
+	call_path_add_number: f64,
 	// True when the path stream was evaluated dynamically rather than
 	// materialized from literal field/index syntax. Generated paths use jq's
 	// result-bearing invalid-path diagnostic on failed assignment.
@@ -8833,7 +8835,7 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 				case .Alternation_Branch:
 					return begin_terminal_misuse(storage, .Malformed_Program)
 				case .Parameter_Identity_Update:
-					if instruction.operands_count != 0 || frame.parent < 0 {
+					if (instruction.operands_count != 0 && instruction.operands_count != 1) || frame.parent < 0 {
 						return begin_terminal_misuse(storage, .Malformed_Program)
 					}
 					caller := &storage.frames[frame.parent]
@@ -8887,6 +8889,39 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 								_ = value.destroy_object_error(&set_error)
 								return begin_terminal_misuse(storage, .Malformed_Program)
 							}
+						}
+					}
+					if caller.call_path_add {
+						selected, found := value.object_get_copy(&frame.input, caller.call_path_key)
+						if !found { selected = value.null_value() }
+						rhs := value.number_value(caller.call_path_add_number)
+						updated, runtime_kind, resource_error := apply_binary(.Add, &selected, &rhs, instruction.span, storage.allocator)
+						if resource_error != nil {
+							_ = value.destroy_value(&selected); _ = value.destroy_value(&rhs)
+							return resource_step(resource_error)
+						}
+						if runtime_kind != .None {
+							message, message_error := binary_type_error_runtime_key(&selected, &rhs, "added", storage.allocator)
+							_ = value.destroy_value(&updated); _ = value.destroy_value(&selected); _ = value.destroy_value(&rhs)
+							if message_error != nil do return resource_step(message_error)
+							result, ready := raise_runtime(storage, index, Runtime_Error{kind=runtime_kind, input_kind=input_kind, span=instruction.span, key=message})
+							if len(message) > 0 {
+								free_error := runtime.mem_free_bytes(transmute([]byte)message, storage.allocator)
+								if free_error != nil && free_error != .Mode_Not_Implemented do return resource_step(free_error)
+							}
+							if ready do return result
+							continue
+						}
+						key_value, key_error := value.string_value(caller.call_path_key, storage.allocator)
+						if value.constructor_error_kind(&key_error) != .None {
+							_ = value.destroy_value(&selected); _ = value.destroy_value(&rhs); _ = value.destroy_constructor_error(&key_error)
+							return resource_step(.Out_Of_Memory)
+						}
+						_, displaced, set_error := value.object_set_take(&frame.input, &key_value, &updated)
+						_ = value.destroy_value(&displaced); _ = value.destroy_value(&selected); _ = value.destroy_value(&rhs)
+						if value.object_error_kind(&set_error) != .None {
+							_ = value.destroy_value(&key_value); _ = value.destroy_value(&updated); _ = value.destroy_object_error(&set_error)
+							return begin_terminal_misuse(storage, .Malformed_Program)
 						}
 					}
 					output := value.clone_value(&frame.input)
@@ -11631,6 +11666,20 @@ step_evaluator :: proc(evaluator: ^Evaluator) -> Step_Result {
 						}
 						frame.call_path_key = key
 						frame.call_path_active = true
+						frame.call_path_add = body_instruction.operands_count == 1
+						if frame.call_path_add {
+							operand, operand_ok := program.program_operand(storage.compiled, body_instruction.operands_start)
+							text, text_ok := program.operand_text(storage.compiled, operand)
+							number, number_error := value.literal_number_value(text, storage.allocator)
+							number_value, number_ok := value.number_value_get(&number)
+							_ = value.destroy_value(&number)
+							if !operand_ok || operand.kind != .Text || !text_ok || value.constructor_error_kind(&number_error) != .None || !number_ok {
+								if value.constructor_error_kind(&number_error) != .None { _ = value.destroy_constructor_error(&number_error) }
+								_ = value.destroy_value(&input_copy)
+								return begin_terminal_misuse(storage, .Malformed_Program)
+							}
+							frame.call_path_add_number = number_value
+						}
 						if !push_frame(storage, child, index, &input_copy) {
 							_ = value.destroy_value(&input_copy)
 							return begin_terminal_misuse(storage, .Malformed_Program)

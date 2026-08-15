@@ -206,7 +206,7 @@ node_payload_shape_valid :: proc(node: syntax.Node) -> bool {
 	case .Dynamic_Index_Assign:
 		return node.container_kind == .None && !node.has_child && node.left >= 0 && node.right >= 0 && node.has_reduce_update && node.reduce_update >= 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
 	case .Parameter_Identity_Update:
-		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right == 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && no_number && !node.has_string_text && string_header_absent(node.string_text)
+		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right == 0 && no_name && no_container_links && !node.has_value && !node.boolean_value && (!node.has_number_text || len(node.number_text) > 0) && !node.has_string_text && string_header_absent(node.string_text)
 	case .Dynamic_Field_Set:
 		return node.container_kind == .None && !node.has_child && node.left == 0 && node.right >= 0 &&
 			node.has_name_span && no_container_links && !node.has_value &&
@@ -867,7 +867,10 @@ lower_filter :: proc(
 			}
 		case .Parameter_Identity_Update:
 			// The callable parameter and identity RHS are represented by the
-			// node marker; the caller supplies the literal field path.
+			// node marker; an optional numeric text operand carries `.+N`.
+			if node.has_number_text && (!checked_count_add(&operand_count, 1) || !checked_count_add(&text_count, u64(len(node.number_text)))) {
+				return Lower_Outcome{kind = .Size_Overflow}
+			}
 		case .Dynamic_Field_Set:
 			if !node_reference_valid(node.right, len(nodes)) do return Lower_Outcome{kind = .Invalid_AST}
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)
@@ -1555,7 +1558,12 @@ lower_filter :: proc(
 			instruction.operands_count = 3
 		case .Parameter_Identity_Update:
 			instruction.opcode = .Parameter_Identity_Update
-			instruction.operands_count = 0
+			if node.has_number_text {
+				assert(program.set_text(output, program.Byte_Offset(text_at), node.number_text))
+				assert(program.set_operand(output, program.Operand_Index(operand_at), program.Operand{kind=.Text, text_start=program.Byte_Offset(text_at), text_count=program.Count(len(node.number_text))}))
+				text_at += u32(len(node.number_text)); operand_at += 1
+			}
+			instruction.operands_count = 1 if node.has_number_text else 0
 		case .Dynamic_Field_Set:
 			instruction.opcode = .Dynamic_Field_Set
 			name_start, name_end, name_ok := diagnostic.span_offsets(source, node.name_span)

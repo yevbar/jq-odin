@@ -24,3 +24,13 @@ def id(x): x |= .; try id(.a) catch .
 def id(x): x |= .; try id(.a) catch .
 1
 "Cannot index number with string \"a\""
+
+# A literal-field callable may apply a bounded numeric update while retaining
+# the caller root. Generator-valued paths remain outside this phase.
+def inc(x): x |= .+1; inc(.a)
+{"a":1,"b":2}
+{"a":2,"b":2}
+
+def inc(x): x |= .+1; try inc(.a) catch .
+{"a":"s","b":2}
+"string (\"s\") and number (1) cannot be added"

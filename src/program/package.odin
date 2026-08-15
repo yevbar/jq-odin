@@ -721,7 +721,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 	case .Dynamic_Index_Assign:
 		if count != 3 { return false }; expected_count = 3
 	case .Parameter_Identity_Update:
-		if count != 0 { return false }; expected_count = 0
+		if count != 0 && count != 1 { return false }; expected_count = count
 	case .Static_Slice_Set_Number:
 		if count != 3 { return false }; expected_count = 3
 	case .Dynamic_Field_Set:
@@ -812,6 +812,7 @@ instruction_structure_valid :: proc(program: ^Program, instruction: Instruction,
 		index_key_instruction := instruction.opcode == .Index && instruction.index_key_kind == .Instruction && offset == 1
 		if instruction.opcode == .Static_Field_Add_Number || instruction.opcode == .Static_Field_Set_Number || instruction.opcode == .Static_Field_Add_Field || instruction.opcode == .Static_Field_Optional_Identity || instruction.opcode == .Static_Field_Delete || (instruction.opcode == .Static_Field_Update && offset == 0) || (instruction.opcode == .Static_Field_Index_Update && offset < 2) || (instruction.opcode == .Static_Index_Field_Update && offset < 2) || (instruction.opcode == .Static_Field_Index_Field_Update && offset < 3) || instruction.opcode == .Static_Iterator_Set_Number || (instruction.opcode == .Static_Iterator_Update && offset != 0) || instruction.opcode == .Static_Index_Set_Number || instruction.opcode == .Static_Slice_Set_Number || (instruction.opcode == .Dynamic_Field_Set && offset == 0) ||
 		   (!index_key_instruction && (instruction.opcode == .Field || instruction.opcode == .Index) && offset == count-1) ||
+		   (instruction.opcode == .Parameter_Identity_Update && offset == 0) ||
 		   (instruction.opcode == .Slice && offset > 0 && operand.kind != .Instruction) ||
 		   (instruction.has_literal && offset == 0) {
 			expected_kind = .Text

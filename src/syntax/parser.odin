@@ -3153,12 +3153,30 @@ parse_pipe :: proc(
 							right = parser.nodes.storage[int(right)].child
 						}
 						rhs := parser.nodes.storage[int(right)]
-						if rhs.form != .Kinded || rhs.kind != .Identity || rhs.has_child || rhs.has_value {
+						identity_rhs := rhs.form == .Kinded && rhs.kind == .Identity && !rhs.has_child && !rhs.has_value
+						add_rhs := rhs.form == .Binary && rhs.binary_operator == .Add && rhs.left >= 0 && rhs.right >= 0
+						if add_rhs {
+							identity := parser.nodes.storage[int(rhs.left)]
+							number := parser.nodes.storage[int(rhs.right)]
+							identity_rhs = identity.form == .Kinded && identity.kind == .Identity && !identity.has_child && !identity.has_value &&
+								number.form == .Kinded && number.kind == .Number && number.has_number_text && !number.has_child && !number.has_value
+							if identity_rhs {
+								identity_start, identity_end, identity_ok := diagnostic.span_offsets(parser.source, identity.span)
+								identity_rhs = identity_ok && identity_end-identity_start == 1 && diagnostic.source_bytes(parser.source)[identity_start:identity_end] == "."
+							}
+						}
+						if !identity_rhs {
 							fail_from_lookahead(parser, .Expression)
 							return {}, false
 						}
 						span, span_ok := spanning(parser, left_node.span, rhs.span); assert(span_ok)
-						update, update_ok := append_node(parser, Node{kind=.Parameter_Identity_Update, span=span})
+						update_node := Node{kind=.Parameter_Identity_Update, span=span}
+						if add_rhs {
+							number := parser.nodes.storage[int(rhs.right)]
+							update_node.number_text = number.number_text
+							update_node.has_number_text = true
+						}
+						update, update_ok := append_node(parser, update_node)
 						if !update_ok do return {}, false
 						if pipe_root == invalid_id do return update, true
 						tail := &parser.nodes.storage[int(pipe_tail)]; tail.right = update; tail.has_child = false
