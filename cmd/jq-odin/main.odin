@@ -331,6 +331,8 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 				line_start = at + 1
 			}
 		}
+		line_end := line_start
+		for line_end < len(source) && source[line_end] != '\n' do line_end += 1
 		inner_line := line
 		inner_column := start + 2 - line_start
 		ok = write_all(os.stderr, "jq: error: ") && ok
@@ -346,7 +348,7 @@ write_driver_error :: proc(err: driver.Run_Error, source: string = "") -> bool {
 		ok = write_all(os.stderr, ", column ") && ok
 		ok = write_all(os.stderr, fmt.tprintf("%d", start-line_start+1)) && ok
 		ok = write_all(os.stderr, ":\n    ") && ok
-		ok = write_all(os.stderr, source[line_start:]) && ok
+		ok = write_all(os.stderr, source[line_start:line_end]) && ok
 		ok = write_all(os.stderr, "\n    ") && ok
 		for _ in 1..<start-line_start+1 do ok = write_all(os.stderr, " ") && ok
 		for _ in start..<end do ok = write_all(os.stderr, "^") && ok
