@@ -1678,7 +1678,7 @@ parse_pipe :: proc(
 					kind = .Label
 				} else if spelling == "break" {
 					kind = .Break
-				} else if spelling != "null" && spelling != "JOIN" {
+				} else if spelling != "null" && spelling != "JOIN" && spelling != "INDEX" {
 					fail_at_current(parser, .Unexpected_Token, .Expression)
 					return {}, false
 				}
@@ -1913,7 +1913,7 @@ parse_pipe :: proc(
 					span, span_ok := spanning(parser, token.span, close.span); assert(span_ok)
 					new_term, ok := append_node(parser, Node{kind=.Nth, span=span, left=count, right=generator})
 					if !ok { return {}, false }; term = new_term
-				} else if (spelling == "add" || spelling == "pow" || spelling == "join" || spelling == "JOIN" || spelling == "contains" || spelling == "inside" || spelling == "in" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
+				} else if (spelling == "add" || spelling == "pow" || spelling == "join" || spelling == "JOIN" || spelling == "INDEX" || spelling == "contains" || spelling == "inside" || spelling == "in" || spelling == "split" || spelling == "index" || spelling == "rindex" || spelling == "indices" || spelling == "startswith" || spelling == "endswith" || spelling == "has" || spelling == "bsearch" || spelling == "flatten" || spelling == "ltrimstr" || spelling == "rtrimstr" || spelling == "trimstr" || spelling == "error" || spelling == "isempty" || spelling == "strftime" || spelling == "strflocaltime" || spelling == "strptime" || spelling == "any" || spelling == "all" || spelling == "first" || spelling == "last" || spelling == "map" || spelling == "map_values") && token_is(parser, .Open_Paren) {
 					advance(parser)
 					if spelling == "pow" {
 						left, left_ok := parse_pipe(parser, .Semicolon, false)
@@ -2068,6 +2068,81 @@ parse_pipe :: proc(
 						mapped, mapped_ok := append_node(parser, Node{kind=.Map, span=mapped_span, child=pair, has_child=true})
 						if !mapped_ok do return {}, false
 						term = mapped
+						term_ready = true
+						continue
+					}
+					if spelling == "INDEX" {
+						// Bounded INDEX(stream; key): collect the source stream,
+						// compute one key filter per source item, and reuse the
+						// existing from_entries materializer. This is a genuine AST
+						// lowering, not a driver rewrite; arbitrary key filters and
+						// stream producers retain normal evaluator semantics.
+						source_filter, source_ok := parse_pipe(parser, .Semicolon, false)
+						if !source_ok || !token_is(parser, .Semicolon) {
+							fail_from_lookahead(parser, .Expression)
+							return {}, false
+						}
+						advance(parser)
+						key_filter, key_ok := parse_pipe(parser, .Close_Paren, false)
+						if !key_ok || !token_is(parser, .Close_Paren) {
+							fail_from_lookahead(parser, .Close_Paren)
+							return {}, false
+						}
+						close := parser.lookahead.token
+						advance(parser)
+						item, item_ok := append_node(parser, Node{kind=.Identity, span=token.span})
+						if !item_ok do return {}, false
+						source_array, source_array_ok := append_node(parser, Node{
+							kind=.Identity, span=token.span, container_kind=.Array,
+							value=source_filter, has_value=true,
+						})
+						if !source_array_ok do return {}, false
+						key_name, key_name_ok := append_decoded_string_node(parser, "key", token.span, 0)
+						value_name, value_name_ok := append_decoded_string_node(parser, "value", token.span, 0)
+						if !key_name_ok || !value_name_ok do return {}, false
+						key_text, key_text_ok := append_node(parser, Node{kind=.Tostring, span=token.span})
+						if !key_text_ok do return {}, false
+						key_filter_text, key_filter_text_ok := append_node(parser, Node{kind=.Pipe, span=token.span, left=key_filter, right=key_text})
+						if !key_filter_text_ok do return {}, false
+						key_entry, key_entry_ok := append_node(parser, Node{
+							kind=.Field, container_kind=.Object_Entry, span=token.span,
+							name_span=parser.nodes.storage[int(key_name)].span, has_name_span=true, key=key_name, has_key=true, value=key_filter_text, has_value=true,
+						})
+						if !key_entry_ok do return {}, false
+						value_entry, value_entry_ok := append_node(parser, Node{
+			kind=.Field, container_kind=.Object_Entry, span=token.span,
+							name_span=parser.nodes.storage[int(value_name)].span, has_name_span=true, key=value_name, has_key=true, value=item, has_value=true,
+						})
+						if !value_entry_ok do return {}, false
+						parser.nodes.storage[int(key_entry)].next = value_entry
+						parser.nodes.storage[int(key_entry)].has_next = true
+						pair, pair_ok := append_node(parser, Node{
+							kind=.Identity, span=token.span, container_kind=.Object,
+							value=key_entry, has_value=true,
+						})
+						if !pair_ok do return {}, false
+						mapped, mapped_ok := append_node(parser, Node{
+							kind=.Map, span=token.span, child=pair, has_child=true,
+						})
+						if !mapped_ok do return {}, false
+						result_span, result_span_ok := spanning(parser, token.span, close.span)
+						assert(result_span_ok)
+						// Feed the collected source into map(pair), then materialize
+						// the pairs as an object with existing from_entries semantics.
+						mapped_pipe, mapped_pipe_ok := append_node(parser, Node{
+							kind=.Pipe, span=token.span, left=source_array, right=mapped,
+						})
+						if !mapped_pipe_ok do return {}, false
+						from_entries, from_entries_ok := append_node(parser, Node{
+							kind=.From_Entries, span=result_span,
+						})
+						if !from_entries_ok do return {}, false
+						result, result_ok := append_node(parser, Node{
+							kind=.Pipe, span=result_span,
+							left=mapped_pipe, right=from_entries,
+						})
+						if !result_ok do return {}, false
+						term = result
 						term_ready = true
 						continue
 					}
@@ -3904,7 +3979,7 @@ lookahead_starts_supported_term :: proc(parser: ^Parser) -> bool {
 		return true
 	case .Identifier:
 		spelling := token_spelling(parser, token)
-		return spelling == "false" || spelling == "true" || spelling == "null" || spelling == "nan" || spelling == "infinite" || spelling == "sort_by" || spelling == "group_by"
+		return spelling == "false" || spelling == "true" || spelling == "null" || spelling == "nan" || spelling == "infinite" || spelling == "sort_by" || spelling == "group_by" || spelling == "INDEX"
 	case:
 		return false
 	}

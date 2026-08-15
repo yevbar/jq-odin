@@ -1,0 +1,14 @@
+# Bounded INDEX(stream; key) lowering, covering jq.test:2047.
+INDEX(range(5)|[., .]; .[0])
+null
+{"0":[0,0],"1":[1,1],"2":[2,2],"3":[3,3],"4":[4,4]}
+
+# Object sources and string key coercion use the same from_entries path.
+INDEX(.[]; .id)
+[{"id":"a"},{"id":"b"}]
+{"a":{"id":"a"},"b":{"id":"b"}}
+
+# An empty source stream produces no object result.
+INDEX(empty; .)
+null
+
