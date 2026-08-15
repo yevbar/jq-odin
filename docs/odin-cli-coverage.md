@@ -14,6 +14,9 @@ subset covers jq.test:952, :959, :966, :973, :980, :987, :994, :1001, :1008,
 continuations; the remaining `?//` forms still require a first-class
 alternation ABI. Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
+The six remaining selected failures are jq.test:864, :929, :1273, :1277,
+:2088, and :2093; existing decisions document their required lexical-call,
+recursive-pattern, or filter-path continuation ABIs.
 Undefined-variable compile diagnostics now include jq-compatible source/name spans
 and carets (jq.test:560); boolean object-key diagnostics remain deferred.
 Invalid string escapes now preserve the lexical message and offending-line caret
