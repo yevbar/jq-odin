@@ -1,0 +1,12 @@
+# Real AST-lowered walk(filter), covering post-order object and array pruning.
+walk(select(IN({}, []) | not))
+{"a":1,"b":[]}
+{"a":1}
+
+walk(select(IN({}, []) | not))
+[{},[],1,{"x":[],"y":{}}]
+[1]
+
+walk(select(IN({}, []) | not))
+{"outer":{"empty":{},"arr":[],"n":0},"top":[]}
+{"outer":{"n":0}}
