@@ -6,8 +6,8 @@ behavioral oracle.
 
 ## Current measured checkpoint
 
-At integration head `f70b6e88`, the authoritative selected catalog measurement
-is **464/522 passed, 58 failed, 0 harness errors**
+At integration head `8a9bc630`, the authoritative selected catalog measurement
+is **466/522 passed, 56 failed, 0 harness errors**
 (`/tmp/coverage-66699.json`). Persistent `input` stream behavior is covered by
 `compat/input-stream.jq.test` and decision `docs/decisions/0331-input-stream-implementation.md`.
 Root iterator filter updates are covered by
@@ -853,10 +853,18 @@ these remain implementation work rather than skipped coverage.
 
 ## Tuple-key follow-up (2026-08-14)
 
-The current integration head (`adbc49de`) measures **465/522 passed, 57
+The current integration head (`8a9bc630`) measures **466/522 passed, 56
 failed, 0 harness errors**. The static keyed materialization lane accepts
 comma-separated static tuple selectors in `sort_by(.a,.b)` and
 `group_by(.a,.b)`, plus bounded arithmetic/comparison expressions such as
 `group_by(.a + .b - .c == 2)`; the focused keyed shard passes 5/5 against jq
 1.8.1. Variables, postfix paths, dynamic key expressions, generator-valued
 keys, and the remaining composite sort/group forms remain deferred.
+
+## Literal getpath assignment follow-up (2026-08-14)
+
+The current head also accepts the bounded scalar form
+`getpath(["a",0,"b"]) |= 5`, lowering it to the existing copy-on-write
+`Setpath` evaluator. The jq.test:1241-shaped fixture passes 2/2, including
+catchable typed number/object path errors. Dynamic path filters, variable
+paths, and generator-valued RHS updates remain deferred.
