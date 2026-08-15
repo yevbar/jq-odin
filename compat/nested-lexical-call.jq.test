@@ -1,0 +1,9 @@
+# Nested lexical formal calls from jq.test:864.
+def id(x):x; 2000 as $x | def f(x):1 as $x | id([$x, x, x]); def g(x): 100 as $x | f($x,$x+x); g($x)
+"more testing"
+[1,100,2100,100,2100]
+
+# Direct parameterized calls remain on the ordinary call path.
+def f(x): x + x; f(3)
+null
+6
