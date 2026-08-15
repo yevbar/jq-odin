@@ -850,3 +850,12 @@ initializer is covered by the same three-clause foreach shard. The remaining
 failures are primarily richer destructuring/foreach, update-path assignment,
 `?//`, module closures, dynamic builtins, process I/O, and exact diagnostics;
 these remain implementation work rather than skipped coverage.
+
+## Tuple-key follow-up (2026-08-14)
+
+The current integration head (`4190df85`) keeps the catalog at **464/522
+passed, 58 failed, 0 harness errors**. The static keyed materialization lane
+now accepts comma-separated static tuple selectors in `sort_by(.a,.b)` and
+`group_by(.a,.b)`; the focused keyed shard passes 4/4 against jq 1.8.1.
+Dynamic key expressions, generator-valued keys, and the remaining composite
+sort/group forms remain deferred.
